@@ -1,6 +1,6 @@
-# AI Assistant Module for Godot
+# Godot_AI
 
-`ai_assistant` is a custom Godot module that adds AI-assisted tooling inside the editor.
+AI assistant support inside the Godot editor as a custom `ai_assistant` module.
 
 ## Current Scope
 
