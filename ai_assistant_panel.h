@@ -14,13 +14,15 @@
 #include "ai_profiler_collector.h"
 #include "ai_ui_agent.h"
 #include "ai_web_search.h"
+#include "ai_mention_highlighter.h"
+#include "ai_mention_text_edit.h"
 
 #include "scene/gui/box_container.h"
+#include "scene/gui/item_list.h"
 #include "core/os/thread.h"
 #include "core/os/mutex.h"
 
 class RichTextLabel;
-class TextEdit;
 class Button;
 class HTTPRequest;
 class AISettingsDialog;
@@ -28,18 +30,30 @@ class ScrollContainer;
 class Timer;
 class AcceptDialog;
 class ConfirmationDialog;
+class Panel;
+class EditorFileDialog;
 
 class OptionButton;
 
 class AIAssistantPanel : public VBoxContainer {
 	GDCLASS(AIAssistantPanel, VBoxContainer);
 
+public:
+	// Public struct used by autocomplete and external code.
+	struct NodeInfo {
+		String name;
+		String path;
+		String type;
+	};
+
+private:
 	enum AIMode { MODE_ASK, MODE_AGENT, MODE_PLAN };
 
 	// UI elements — chat view.
 	RichTextLabel *chat_display = nullptr;
-	TextEdit *input_field = nullptr;
+	AIMentionTextEdit *input_field = nullptr;
 	Button *send_button = nullptr;
+	Button *stop_button = nullptr;
 	HBoxContainer *input_bar = nullptr;
 	HBoxContainer *preset_bar = nullptr;
 
@@ -93,9 +107,10 @@ class AIAssistantPanel : public VBoxContainer {
 	String pending_web_query;  // Original query or URL.
 	String pending_web_user_message; // Original user message to re-send with results.
 
-	// N4: Object attachment.
+	// N4: File attachment.
 	Vector<String> pending_attachments;
 	Button *attach_button = nullptr;
+	EditorFileDialog *file_dialog = nullptr;
 
 	// N5: Saved code blocks for "Save" feature.
 	Vector<String> displayed_code_blocks;
@@ -130,9 +145,12 @@ class AIAssistantPanel : public VBoxContainer {
 	Vector<StreamChunk> stream_chunk_queue;
 	String stream_accumulated;         // Content text only.
 	String stream_thinking_accumulated; // Thinking text only.
+	bool stream_inside_think_tag = false; // Tracking <think>...</think> in content.
+	String stream_tag_buffer;          // Buffer for partial tag detection.
 	bool stream_active = false;
 	bool stream_finished = false;
 	bool stream_error = false;
+	bool stream_stop_requested = false;
 	String stream_error_msg;
 	int stream_response_code = 0;
 	Timer *stream_poll_timer = nullptr;
@@ -143,6 +161,7 @@ class AIAssistantPanel : public VBoxContainer {
 	bool thinking_collapsed = false;       // Thinking has been collapsed into a link.
 	bool ai_prefix_shown = false;          // Whether "AI: " prefix was added.
 	int thinking_display_para_start = 0;   // Paragraph index where thinking display starts.
+	bool generic_thinking_shown = false;   // Generic "Thinking..." shown for non-thinking models.
 
 	String _stream_url;
 	Vector<String> _stream_headers;
@@ -151,6 +170,7 @@ class AIAssistantPanel : public VBoxContainer {
 
 	// Methods.
 	void _on_send_pressed();
+	void _on_stop_pressed();
 	void _on_new_chat_pressed();
 	void _on_history_pressed();
 	void _on_settings_pressed();
@@ -159,8 +179,11 @@ class AIAssistantPanel : public VBoxContainer {
 	void _on_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
 	void _send_to_api(const String &p_message);
-	void _handle_ai_response(const String &p_response);
-	void _append_message(const String &p_sender, const String &p_text, const Color &p_color);
+	// p_is_stopped_partial: true when the user pressed Stop and the response is
+	// incomplete.  In that case code blocks are NOT executed and the auto-retry
+	// loop is suppressed — we never want Stop to trigger new API requests.
+	void _handle_ai_response(const String &p_response, bool p_is_stopped_partial = false);
+	void _append_message(const String &p_sender, const String &p_text, const Color &p_color, bool p_bbcode = false);
 	void _append_code_block(const String &p_code);
 	void _update_provider();
 
@@ -179,9 +202,29 @@ class AIAssistantPanel : public VBoxContainer {
 	void _on_deferred_error_check();
 	String _extract_code_summary(const String &p_code) const;
 
+	// Node mention system (chip-based via inline objects).
+	AIMentionHighlighter *mention_highlighter = nullptr; // Hides PUA placeholder chars.
+	Panel *autocomplete_panel = nullptr;
+	ItemList *autocomplete_list = nullptr;
+	int autocomplete_at_line = -1;
+	int autocomplete_at_col = -1;
+	bool _suppress_autocomplete = false; // Prevents re-opening during commit.
+	Button *mention_button = nullptr;
+
+	void _update_input_height();
+	void _on_input_text_changed();
+	void _show_mention_autocomplete(int p_line, int p_col, const String &p_partial);
+	void _hide_mention_autocomplete();
+	void _commit_mention_autocomplete(int p_item_idx);
+	void _on_mention_button_pressed();
+	Vector<String> _get_all_scene_node_names() const;
+
+	Vector<NodeInfo> _get_all_scene_node_infos() const;
+	Vector<NodeInfo> autocomplete_node_infos; // Cached during autocomplete show.
+
 	// N4: Attachment methods.
 	void _on_attach_pressed();
-	void _attach_selected_nodes();
+	void _on_file_attach_selected(const String &p_path);
 
 	// N5: Code save.
 	void _on_meta_clicked(const Variant &p_meta);
@@ -227,6 +270,10 @@ protected:
 	static void _bind_methods();
 
 public:
+	// Called by AIAssistantPlugin when "Mention in AI Assistant" is picked
+	// from the scene-tree right-click menu.
+	void insert_mention_of_selected_node();
+
 	AIAssistantPanel();
 	~AIAssistantPanel();
 };

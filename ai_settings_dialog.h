@@ -19,7 +19,7 @@ class AISettingsDialog : public AcceptDialog {
 
 	OptionButton *provider_option = nullptr;
 	LineEdit *api_key_edit = nullptr;
-	LineEdit *model_edit = nullptr;
+	OptionButton *model_option = nullptr;
 	LineEdit *endpoint_edit = nullptr;
 	SpinBox *max_tokens_spin = nullptr;
 	SpinBox *temperature_spin = nullptr;
@@ -49,11 +49,17 @@ class AISettingsDialog : public AcceptDialog {
 	Ref<AIProvider> fetch_provider;
 	bool is_fetching = false;
 
-	// Known defaults for auto-switch.
+	// Per-provider API keys (index matches provider dropdown: 0=Anthropic, 1=OpenAI, 2=Gemini).
+	String provider_api_keys[3];
+	int current_provider_idx = 0;
+
+	// Default model per provider (used to seed dropdown before fetch completes).
 	String _get_default_model_for(int p_provider_index) const;
-	bool _is_known_default(const String &p_model) const;
+	// Known current models per provider — seeds dropdown immediately; live fetch updates it.
+	PackedStringArray _get_fallback_models_for(int p_provider_index) const;
 
 	void _on_provider_changed(int p_index);
+	void _on_api_key_changed(const String &p_text);
 	void _on_language_changed(int p_index);
 	void _on_confirmed();
 	void _load_settings();

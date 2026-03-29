@@ -3,6 +3,8 @@
 #include "ai_assistant_plugin.h"
 #include "ai_assistant_panel.h"
 #include "ai_settings_dialog.h"
+#include "ai_mention_highlighter.h"
+#include "ai_mention_text_edit.h"
 #include "ai_provider.h"
 #include "ai_response_parser.h"
 #include "ai_script_executor.h"
@@ -42,6 +44,8 @@ void initialize_ai_assistant_module(ModuleInitializationLevel p_level) {
 	}
 
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+		GDREGISTER_CLASS(AIMentionHighlighter);
+		GDREGISTER_CLASS(AIMentionTextEdit);
 		GDREGISTER_CLASS(AISettingsDialog);
 		GDREGISTER_CLASS(AIAssistantPanel);
 		GDREGISTER_CLASS(AIAssistantPlugin);

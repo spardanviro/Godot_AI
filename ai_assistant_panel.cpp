@@ -13,6 +13,7 @@
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "editor/editor_interface.h"
+#include "editor/editor_node.h"
 #include "editor/editor_data.h"
 #include "editor/file_system/editor_file_system.h"
 #include "scene/gui/button.h"
@@ -24,6 +25,8 @@
 #include "scene/gui/option_button.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/file_dialog.h"
+#include "scene/gui/panel.h"
+#include "editor/gui/editor_file_dialog.h"
 #include "scene/main/http_request.h"
 #include "scene/main/timer.h"
 #include "core/input/input_event.h"
@@ -39,6 +42,16 @@
 #define AI_ERR(msg) ERR_PRINT(String("[Godot AI] ") + msg)
 #define AI_WARN(msg) WARN_PRINT(String("[Godot AI] ") + msg)
 
+// Forward-declare mention helper used in _on_input_gui_input (defined later).
+static bool _is_mention_word_char(char32_t c);
+
+// Sorter for NodeInfo by name.
+struct _NodeInfoSorter {
+	bool operator()(const AIAssistantPanel::NodeInfo &a, const AIAssistantPanel::NodeInfo &b) const {
+		return a.name.naturalcasecmp_to(b.name) < 0;
+	}
+};
+
 void AIAssistantPanel::_bind_methods() {
 }
 
@@ -48,6 +61,23 @@ void AIAssistantPanel::_notification(int p_what) {
 			_update_provider();
 			_append_message("System", TR(STR_SYS_READY), Color(0.6, 0.8, 1.0));
 			AI_LOG("Panel initialized and ready.");
+
+			// Attach the autocomplete overlay to the editor root so it floats
+			// above all panels without creating a separate OS window.
+			// Must be deferred: the editor root may still be setting up children
+			// when NOTIFICATION_READY fires, and add_child() would assert otherwise.
+			Control *base = EditorInterface::get_singleton()->get_base_control();
+			if (base && autocomplete_panel) {
+				base->call_deferred("add_child", autocomplete_panel);
+			}
+		} break;
+		case NOTIFICATION_EXIT_TREE: {
+			// Remove the overlay from the editor root before this node is freed.
+			if (autocomplete_panel && autocomplete_panel->get_parent()) {
+				autocomplete_panel->get_parent()->remove_child(autocomplete_panel);
+				memdelete(autocomplete_panel);
+				autocomplete_panel = nullptr;
+			}
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
 		} break;
@@ -115,7 +145,7 @@ void AIAssistantPanel::_refresh_ui_texts() {
 		send_button->set_text(TR(STR_BTN_SEND));
 	}
 	if (attach_button) {
-		attach_button->set_tooltip_text(TR(STR_TIP_ATTACH));
+		attach_button->set_tooltip_text(TTR("Attach file (.md, .mermaid, .txt, .json, .yaml, .gd ...)"));
 	}
 	if (input_field) {
 		if (_get_send_on_enter()) {
@@ -125,16 +155,12 @@ void AIAssistantPanel::_refresh_ui_texts() {
 		}
 	}
 
-	// Update preset buttons.
+	// Update preset buttons (Fix Errors, Performance).
 	AILocalization::StringID preset_ids[] = {
-		AILocalization::STR_PRESET_DESCRIBE,
-		AILocalization::STR_PRESET_ADD_PLAYER,
-		AILocalization::STR_PRESET_ADD_LIGHT,
-		AILocalization::STR_PRESET_ADD_UI,
 		AILocalization::STR_PRESET_FIX_ERRORS,
 		AILocalization::STR_PRESET_PERFORMANCE,
 	};
-	for (int i = 0; i < preset_buttons.size() && i < 6; i++) {
+	for (int i = 0; i < preset_buttons.size() && i < 2; i++) {
 		preset_buttons[i]->set_text(AILocalization::get(preset_ids[i]));
 	}
 }
@@ -147,7 +173,16 @@ void AIAssistantPanel::_update_provider() {
 	}
 
 	String provider_name = es->get_setting("ai_assistant/provider");
-	String api_key_val = es->get_setting("ai_assistant/api_key");
+	// Load provider-specific API key; fall back to legacy single key.
+	String api_key_val;
+	{
+		String per_provider_key = "ai_assistant/api_key_" + provider_name;
+		if (es->has_setting(per_provider_key) && !String(es->get_setting(per_provider_key)).is_empty()) {
+			api_key_val = es->get_setting(per_provider_key);
+		} else {
+			api_key_val = es->get_setting("ai_assistant/api_key");
+		}
+	}
 	String model_val = es->get_setting("ai_assistant/model");
 	String endpoint_val = es->get_setting("ai_assistant/api_endpoint");
 	int max_tokens_val = es->get_setting("ai_assistant/max_tokens");
@@ -155,11 +190,8 @@ void AIAssistantPanel::_update_provider() {
 
 	if (provider_name == "anthropic") {
 		current_provider = Ref<AnthropicProvider>(memnew(AnthropicProvider));
-	} else if (provider_name == "openai" || provider_name == "deepseek") {
+	} else if (provider_name == "openai") {
 		current_provider = Ref<OpenAIProvider>(memnew(OpenAIProvider));
-		if (provider_name == "deepseek" && endpoint_val.is_empty()) {
-			endpoint_val = "https://api.deepseek.com/v1/chat/completions";
-		}
 	} else if (provider_name == "gemini") {
 		current_provider = Ref<GeminiProvider>(memnew(GeminiProvider));
 	} else {
@@ -208,6 +240,21 @@ void AIAssistantPanel::_update_provider() {
 
 // --- Chat Actions ---
 
+void AIAssistantPanel::_on_stop_pressed() {
+	if (!is_waiting_response) {
+		return;
+	}
+	// Signal the stream thread to exit its read loop.
+	stream_mutex.lock();
+	stream_stop_requested = true;
+	stream_mutex.unlock();
+	// If the timer is running, the next poll will see stream_finished and clean up.
+	// Force a final poll immediately so the UI updates without a noticeable delay.
+	if (!stream_poll_timer->is_stopped()) {
+		_on_stream_poll();
+	}
+}
+
 void AIAssistantPanel::_on_send_pressed() {
 	if (history_visible) {
 		_show_chat_view();
@@ -233,10 +280,20 @@ void AIAssistantPanel::_on_send_pressed() {
 		chat_display->add_newline();
 	}
 
-	_append_message("You", text, Color(0.9, 0.9, 0.9));
-	input_field->set_text("");
+	// Dismiss autocomplete before sending.
+	_hide_mention_autocomplete();
 
-	_send_to_api(text);
+	// Display user message with mention chips rendered via BBCode.
+	_append_message("You", input_field->get_text_with_mention_bbcode(), Color(0.9, 0.9, 0.9), true);
+
+	// Send to AI with mentions expanded to full node-info context.
+	const String expanded = input_field->get_text_with_expanded_mentions();
+
+	input_field->set_text("");
+	input_field->clear_mentions();
+	input_field->set_custom_minimum_size(Size2(0, 60)); // Reset to minimum after send.
+
+	_send_to_api(expanded);
 }
 
 void AIAssistantPanel::_on_new_chat_pressed() {
@@ -253,6 +310,8 @@ void AIAssistantPanel::_on_new_chat_pressed() {
 	displayed_code_blocks.clear();
 	stored_detail_responses.clear();
 	stored_thinking_texts.clear();
+	input_field->set_text("");
+	input_field->clear_mentions();
 
 	if (history_visible) {
 		_show_chat_view();
@@ -279,50 +338,373 @@ void AIAssistantPanel::_on_settings_pressed() {
 
 void AIAssistantPanel::_on_input_gui_input(const Ref<InputEvent> &p_event) {
 	Ref<InputEventKey> key = p_event;
-	if (key.is_valid() && key->is_pressed() && !key->is_echo()) {
-		if (_get_send_on_enter()) {
-			if (key->get_keycode() == Key::ENTER && !key->is_shift_pressed() && !key->is_ctrl_pressed()) {
-				_on_send_pressed();
+	if (!key.is_valid() || !key->is_pressed() || key->is_echo()) {
+		return;
+	}
+
+	// ── Autocomplete navigation (when popup is visible) ──────────────────────
+	if (autocomplete_panel && autocomplete_panel->is_visible()) {
+		const int item_count = autocomplete_list->get_item_count();
+		PackedInt32Array sel = autocomplete_list->get_selected_items();
+		const int cur = sel.is_empty() ? 0 : sel[0];
+
+		switch (key->get_keycode()) {
+			case Key::ESCAPE:
+				_hide_mention_autocomplete();
 				input_field->accept_event();
-			}
-		} else {
-			if (key->get_keycode() == Key::ENTER && key->is_ctrl_pressed()) {
-				_on_send_pressed();
+				return;
+			case Key::UP:
+				if (item_count > 0) {
+					int next = (cur - 1 + item_count) % item_count;
+					autocomplete_list->select(next);
+					autocomplete_list->ensure_current_is_visible();
+				}
 				input_field->accept_event();
-			}
+				return;
+			case Key::DOWN:
+				if (item_count > 0) {
+					int next = (cur + 1) % item_count;
+					autocomplete_list->select(next);
+					autocomplete_list->ensure_current_is_visible();
+				}
+				input_field->accept_event();
+				return;
+			case Key::ENTER:
+			case Key::KP_ENTER:
+			case Key::TAB:
+				if (!sel.is_empty()) {
+					_commit_mention_autocomplete(sel[0]);
+				}
+				input_field->accept_event();
+				return;
+			default:
+				break; // Let the key through to TextEdit for filter-as-you-type.
+		}
+	}
+
+	// Note: Mention chips are single PUA characters, so standard Backspace
+	// already deletes them atomically. No special handling needed.
+
+	// ── Send on Enter ─────────────────────────────────────────────────────────
+	if (_get_send_on_enter()) {
+		if (key->get_keycode() == Key::ENTER && !key->is_shift_pressed() && !key->is_ctrl_pressed()) {
+			_on_send_pressed();
+			input_field->accept_event();
+		}
+	} else {
+		if (key->get_keycode() == Key::ENTER && key->is_ctrl_pressed()) {
+			_on_send_pressed();
+			input_field->accept_event();
 		}
 	}
 }
 
-// --- N4: Attachment ---
+// --- Node mention helpers (file-scope statics) ---
+
+static bool _is_mention_word_char(char32_t c) {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_';
+}
+
+static Node *_find_node_by_name_r(Node *p_node, const String &p_name) {
+	if (!p_node) {
+		return nullptr;
+	}
+	if (p_node->get_name() == p_name) {
+		return p_node;
+	}
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		Node *found = _find_node_by_name_r(p_node->get_child(i), p_name);
+		if (found) {
+			return found;
+		}
+	}
+	return nullptr;
+}
+
+// --- Node mention methods ---
+
+// Recalculates and applies the input field height. Called deferred from
+// _on_input_text_changed so layout changes don't interrupt active signals.
+void AIAssistantPanel::_update_input_height() {
+	if (!input_field) {
+		return;
+	}
+	const int MIN_H = 60;
+	const int MAX_H = 200;
+
+	const int line_h = input_field->get_line_height();
+	const int visible_lines = input_field->get_total_visible_line_count();
+
+	Ref<StyleBox> style = input_field->get_theme_stylebox(SNAME("normal"), SNAME("TextEdit"));
+	const int v_margin = style.is_valid()
+			? (int)(style->get_margin(SIDE_TOP) + style->get_margin(SIDE_BOTTOM))
+			: 8;
+
+	const int desired_h = CLAMP(visible_lines * line_h + v_margin, MIN_H, MAX_H);
+	if ((int)input_field->get_custom_minimum_size().y != desired_h) {
+		input_field->set_custom_minimum_size(Size2(0, desired_h));
+	}
+}
+
+// Fires every time the input_field text changes; show/update autocomplete
+// when the cursor is immediately after a @partial token.
+void AIAssistantPanel::_on_input_text_changed() {
+	// Defer height recalculation so it runs after the text_changed signal
+	// has fully settled — avoids triggering a mid-signal layout pass that
+	// fires NOTIFICATION_ACCESSIBILITY_UPDATE with a stale caret column.
+	callable_mp(this, &AIAssistantPanel::_update_input_height).call_deferred();
+
+	// Suppress re-opening during _commit_mention_autocomplete to avoid the
+	// freshly-inserted mention chip immediately re-triggering the popup.
+	if (_suppress_autocomplete) {
+		return;
+	}
+
+	const int caret_col = input_field->get_caret_column();
+	const int caret_line = input_field->get_caret_line();
+	const String line = input_field->get_line(caret_line);
+
+	// Walk backwards from cursor through word chars, looking for a leading '@'.
+	// Skip over PUA mention characters (they are chips, not text).
+	int at_pos = -1;
+	for (int i = caret_col - 1; i >= 0; i--) {
+		const char32_t c = line[i];
+		if (c == '@') {
+			// Only trigger if '@' is at start of line or preceded by whitespace/non-word.
+			if (i == 0 || !_is_mention_word_char(line[i - 1])) {
+				at_pos = i;
+			}
+			break;
+		}
+		// Stop scanning if we hit a PUA char (mention chip) or non-word char.
+		if (input_field->is_mention_char(c) || !_is_mention_word_char(c)) {
+			break;
+		}
+	}
+
+	if (at_pos >= 0) {
+		const String partial = line.substr(at_pos + 1, caret_col - at_pos - 1);
+		_show_mention_autocomplete(caret_line, at_pos, partial);
+	} else {
+		_hide_mention_autocomplete();
+	}
+}
+
+void AIAssistantPanel::_show_mention_autocomplete(int p_line, int p_col, const String &p_partial) {
+	autocomplete_at_line = p_line;
+	autocomplete_at_col = p_col;
+
+	// Collect all scene node info (name + type + path).
+	autocomplete_node_infos = _get_all_scene_node_infos();
+
+	autocomplete_list->clear();
+	const String partial_lower = p_partial.to_lower();
+	for (int i = 0; i < autocomplete_node_infos.size(); i++) {
+		const NodeInfo &ni = autocomplete_node_infos[i];
+		if (partial_lower.is_empty() || ni.name.to_lower().contains(partial_lower)) {
+			// Show node type icon alongside the name in the autocomplete list.
+			Ref<Texture2D> icon;
+			if (EditorNode::get_singleton()) {
+				icon = EditorNode::get_singleton()->get_class_icon(ni.type, "Node");
+			}
+			autocomplete_list->add_item(ni.name, icon);
+			// Store the index into autocomplete_node_infos as metadata.
+			autocomplete_list->set_item_metadata(autocomplete_list->get_item_count() - 1, i);
+		}
+	}
+
+	if (autocomplete_list->get_item_count() == 0) {
+		_hide_mention_autocomplete();
+		return;
+	}
+
+	// Block signals during programmatic select() so that the connected
+	// item_selected → _commit_mention_autocomplete is NOT triggered here.
+	autocomplete_list->set_block_signals(true);
+	autocomplete_list->select(0);
+	autocomplete_list->set_block_signals(false);
+
+	// Position the overlay panel above the caret (upward expansion).
+	// We position in editor-root-control local space to avoid OS-window focus issues.
+	const float POPUP_W = 250.0f;
+	const float ITEM_H = 26.0f;
+	const float MAX_H = 200.0f;
+	const float popup_h = MIN((float)autocomplete_list->get_item_count() * ITEM_H + 8.0f, MAX_H);
+
+	const Vector2 caret_screen = input_field->get_screen_position() + input_field->get_caret_draw_pos();
+	Control *base = EditorInterface::get_singleton()->get_base_control();
+	const Vector2 base_origin = base ? base->get_screen_position() : Vector2();
+	const Vector2 local_pos = caret_screen - base_origin + Vector2(-4.0f, -popup_h - 4.0f);
+
+	autocomplete_panel->set_position(local_pos);
+	autocomplete_panel->set_size(Vector2(POPUP_W, popup_h));
+	autocomplete_panel->show();
+	autocomplete_panel->move_to_front(); // Ensure it draws on top.
+}
+
+void AIAssistantPanel::_hide_mention_autocomplete() {
+	if (autocomplete_panel && autocomplete_panel->is_visible()) {
+		autocomplete_panel->hide();
+	}
+	autocomplete_at_line = -1;
+	autocomplete_at_col = -1;
+}
+
+// Replaces the "@partial" text with a mention chip, then closes the autocomplete.
+// Called both by item_selected signal (single click) and keyboard Enter/Tab.
+void AIAssistantPanel::_commit_mention_autocomplete(int p_item_idx) {
+	if (p_item_idx < 0 || p_item_idx >= autocomplete_list->get_item_count()) {
+		return;
+	}
+	if (autocomplete_at_col < 0) {
+		return;
+	}
+
+	// Look up the full node info from our cached data.
+	const int info_idx = autocomplete_list->get_item_metadata(p_item_idx);
+	if (info_idx < 0 || info_idx >= autocomplete_node_infos.size()) {
+		return;
+	}
+	const NodeInfo &ni = autocomplete_node_infos[info_idx];
+	const int current_col = input_field->get_caret_column();
+
+	// Suppress _on_input_text_changed during the edit so the freshly-inserted
+	// chip does not immediately re-open the autocomplete popup.
+	_suppress_autocomplete = true;
+
+	// Delete the entire "@partial" text (including the '@' itself).
+	input_field->select(autocomplete_at_line, autocomplete_at_col,
+			autocomplete_at_line, current_col);
+	input_field->delete_selection();
+
+	// Insert the mention chip (a single PUA character that renders as a chip).
+	input_field->insert_mention(ni.name, ni.path, ni.type);
+
+	_suppress_autocomplete = false;
+	_hide_mention_autocomplete();
+	input_field->grab_focus();
+}
+
+// Toolbar "@" button: inserts @NodeName for every currently selected node.
+void AIAssistantPanel::_on_mention_button_pressed() {
+	insert_mention_of_selected_node();
+}
+
+void AIAssistantPanel::insert_mention_of_selected_node() {
+#ifdef TOOLS_ENABLED
+	EditorSelection *sel = EditorInterface::get_singleton()->get_selection();
+	if (!sel) {
+		return;
+	}
+	const TypedArray<Node> nodes = sel->get_selected_nodes();
+	if (nodes.is_empty()) {
+		_append_message("System", TTR("No nodes selected in the scene tree."), Color(1.0f, 0.8f, 0.3f));
+		return;
+	}
+	for (int i = 0; i < nodes.size(); i++) {
+		const Node *n = Object::cast_to<Node>(nodes[i]);
+		if (!n) {
+			continue;
+		}
+		input_field->insert_mention(
+				String(n->get_name()),
+				String(n->get_path()),
+				n->get_class());
+	}
+	input_field->grab_focus();
+#endif
+}
+
+// Returns deduplicated sorted list of all node names in the current scene.
+Vector<String> AIAssistantPanel::_get_all_scene_node_names() const {
+	Vector<String> names;
+	const Vector<NodeInfo> infos = _get_all_scene_node_infos();
+	for (int i = 0; i < infos.size(); i++) {
+		names.push_back(infos[i].name);
+	}
+	return names;
+}
+
+// Returns deduplicated sorted list of all scene nodes with name, path, and type.
+Vector<AIAssistantPanel::NodeInfo> AIAssistantPanel::_get_all_scene_node_infos() const {
+	Vector<NodeInfo> infos;
+#ifdef TOOLS_ENABLED
+	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+	if (!root) {
+		return infos;
+	}
+	HashSet<String> seen;
+	List<Node *> queue;
+	queue.push_back(root);
+	while (!queue.is_empty()) {
+		Node *n = queue.front()->get();
+		queue.pop_front();
+		const String nm = n->get_name();
+		if (!seen.has(nm)) {
+			seen.insert(nm);
+			NodeInfo ni;
+			ni.name = nm;
+			ni.path = String(n->get_path());
+			ni.type = n->get_class();
+			infos.push_back(ni);
+		}
+		for (int i = 0; i < n->get_child_count(); i++) {
+			queue.push_back(n->get_child(i));
+		}
+	}
+	infos.sort_custom<_NodeInfoSorter>();
+#endif
+	return infos;
+}
+
+// Note: _expand_mentions and _render_mentions_bbcode are now handled by
+// AIMentionTextEdit::get_text_with_expanded_mentions() and
+// AIMentionTextEdit::get_text_with_mention_bbcode() respectively.
+
+// --- N4: File Attachment ---
 
 void AIAssistantPanel::_on_attach_pressed() {
-	_attach_selected_nodes();
+#ifdef TOOLS_ENABLED
+	if (!file_dialog) {
+		return;
+	}
+	file_dialog->popup_centered_ratio(0.6f);
+#endif
 }
 
-void AIAssistantPanel::_attach_selected_nodes() {
-#ifdef TOOLS_ENABLED
-	EditorSelection *selection = EditorInterface::get_singleton()->get_selection();
-	if (!selection) {
-		_append_message("System", TR(STR_SYS_NO_SELECTION), Color(1.0, 0.7, 0.3));
+void AIAssistantPanel::_on_file_attach_selected(const String &p_path) {
+	// Read the file and store its content as an attachment for the next message.
+	Ref<FileAccess> fa = FileAccess::open(p_path, FileAccess::READ);
+	if (fa.is_null()) {
+		_append_message("System", TTR("Failed to open file: ") + p_path, Color(1.0, 0.4, 0.4));
 		return;
 	}
 
-	TypedArray<Node> selected = selection->get_selected_nodes();
-	if (selected.is_empty()) {
-		_append_message("System", TR(STR_SYS_NO_NODES_SELECTED), Color(1.0, 0.7, 0.3));
-		return;
+	const int MAX_CHARS = 50000;
+	String content = fa->get_as_utf8_string();
+	fa->close();
+
+	bool truncated = false;
+	if (content.length() > MAX_CHARS) {
+		content = content.substr(0, MAX_CHARS);
+		truncated = true;
 	}
 
-	for (int i = 0; i < selected.size(); i++) {
-		Node *node = Object::cast_to<Node>(selected[i]);
-		if (node) {
-			String dump = context_collector->get_detailed_node_dump(node);
-			pending_attachments.push_back(dump);
-			_append_message("System", "Attached: " + node->get_name() + " (" + node->get_class() + ")", Color(0.5, 0.8, 1.0));
-		}
+	const String filename = p_path.get_file();
+	String attachment = "--- ATTACHED FILE: " + filename + " ---\n" + content + "\n--- END FILE ---";
+	if (truncated) {
+		attachment += "\n[File truncated at " + itos(MAX_CHARS) + " characters]";
 	}
-#endif
+
+	pending_attachments.push_back(attachment);
+
+	String status = String(U"\U0001F4CE") + " Attached: " + filename;
+	if (truncated) {
+		status += TTR(" (truncated)");
+	}
+	_append_message("System", status, Color(0.5, 0.8, 1.0));
+	AI_LOG("File attached: " + p_path + " (" + itos(content.length()) + " chars)");
 }
 
 // --- N5: Code Save ---
@@ -477,7 +859,8 @@ void AIAssistantPanel::_send_to_api(const String &p_message) {
 	}
 
 	is_waiting_response = true;
-	send_button->set_disabled(true);
+	send_button->set_visible(false);
+	stop_button->set_visible(true);
 
 	AI_LOG("Step 1: Building system prompt...");
 	String system_prompt = _get_system_prompt(p_message);
@@ -571,9 +954,12 @@ void AIAssistantPanel::_start_streaming(const String &p_url, const Vector<String
 	stream_chunk_queue.clear();
 	stream_accumulated = "";
 	stream_thinking_accumulated = "";
+	stream_inside_think_tag = false;
+	stream_tag_buffer = "";
 	stream_active = true;
 	stream_finished = false;
 	stream_error = false;
+	stream_stop_requested = false;
 	stream_error_msg = "";
 	stream_response_code = 0;
 	stream_display_started = false;
@@ -584,6 +970,18 @@ void AIAssistantPanel::_start_streaming(const String &p_url, const Vector<String
 	thinking_collapsed = false;
 	ai_prefix_shown = false;
 	thinking_display_para_start = 0;
+	generic_thinking_shown = false;
+
+	// Show generic "Thinking..." indicator for all models immediately.
+	// Real thinking tokens will replace this; content will collapse/remove it.
+	thinking_display_para_start = chat_display->get_paragraph_count();
+	chat_display->push_color(Color(0.55, 0.55, 0.65));
+	chat_display->push_italics();
+	chat_display->add_text(TR(STR_THINKING_LABEL) + "...");
+	chat_display->pop(); // italics
+	chat_display->pop(); // color
+	chat_display->add_newline();
+	generic_thinking_shown = true;
 
 	// "AI: " prefix is now deferred — shown when first content delta arrives,
 	// so thinking can display above it.
@@ -728,6 +1126,14 @@ void AIAssistantPanel::_stream_thread_func() {
 	bool done = false;
 
 	while (client->get_status() == HTTPClient::STATUS_BODY && !done) {
+		// Check if the user requested a stop.
+		stream_mutex.lock();
+		bool stop_req = stream_stop_requested;
+		stream_mutex.unlock();
+		if (stop_req) {
+			break;
+		}
+
 		client->poll();
 		PackedByteArray chunk = client->read_response_body_chunk();
 
@@ -769,11 +1175,57 @@ void AIAssistantPanel::_stream_thread_func() {
 						stream_thinking_accumulated += thinking_delta;
 					}
 					if (!content_delta.is_empty()) {
-						StreamChunk chunk;
-						chunk.text = content_delta;
-						chunk.is_thinking = false;
-						stream_chunk_queue.push_back(chunk);
-						stream_accumulated += content_delta;
+						// Handle <think>...</think> tags embedded in content (e.g. DeepSeek models).
+						String remaining = content_delta;
+						while (!remaining.is_empty()) {
+							if (stream_inside_think_tag) {
+								int close_pos = remaining.find("</think>");
+								if (close_pos != -1) {
+									// End of think tag found.
+									String think_part = remaining.substr(0, close_pos);
+									remaining = remaining.substr(close_pos + 8);
+									stream_inside_think_tag = false;
+									if (!think_part.is_empty()) {
+										StreamChunk chunk;
+										chunk.text = think_part;
+										chunk.is_thinking = true;
+										stream_chunk_queue.push_back(chunk);
+										stream_thinking_accumulated += think_part;
+									}
+								} else {
+									// Still inside think tag.
+									StreamChunk chunk;
+									chunk.text = remaining;
+									chunk.is_thinking = true;
+									stream_chunk_queue.push_back(chunk);
+									stream_thinking_accumulated += remaining;
+									remaining = "";
+								}
+							} else {
+								int open_pos = remaining.find("<think>");
+								if (open_pos != -1) {
+									// Think tag found in content.
+									String before = remaining.substr(0, open_pos);
+									remaining = remaining.substr(open_pos + 7);
+									stream_inside_think_tag = true;
+									if (!before.is_empty()) {
+										StreamChunk chunk;
+										chunk.text = before;
+										chunk.is_thinking = false;
+										stream_chunk_queue.push_back(chunk);
+										stream_accumulated += before;
+									}
+								} else {
+									// Normal content.
+									StreamChunk chunk;
+									chunk.text = remaining;
+									chunk.is_thinking = false;
+									stream_chunk_queue.push_back(chunk);
+									stream_accumulated += remaining;
+									remaining = "";
+								}
+							}
+						}
 					}
 					stream_mutex.unlock();
 				}
@@ -806,12 +1258,18 @@ void AIAssistantPanel::_on_stream_poll() {
 
 		if (chunks[i].is_thinking) {
 			// --- Thinking delta ---
-			// Show thinking in ALL modes (gives feedback that AI is working).
 			if (!thinking_phase_active) {
-				// Start thinking display.
+				// Remove generic indicator and start real thinking display.
+				if (generic_thinking_shown) {
+					int cur = chat_display->get_paragraph_count();
+					int remove_count = cur - thinking_display_para_start;
+					for (int r = 0; r < remove_count; r++) {
+						chat_display->remove_paragraph(thinking_display_para_start);
+					}
+					generic_thinking_shown = false;
+				}
 				thinking_phase_active = true;
 				thinking_display_para_start = chat_display->get_paragraph_count();
-
 				chat_display->push_color(Color(0.55, 0.55, 0.65));
 				chat_display->push_italics();
 				chat_display->add_text(TR(STR_THINKING_LABEL) + ": ");
@@ -820,7 +1278,16 @@ void AIAssistantPanel::_on_stream_poll() {
 
 		} else {
 			// --- Content delta ---
-			// If thinking was active, collapse it now.
+			// Remove generic "Thinking..." indicator if still showing.
+			if (generic_thinking_shown && !thinking_phase_active) {
+				int cur = chat_display->get_paragraph_count();
+				int remove_count = cur - thinking_display_para_start;
+				for (int r = 0; r < remove_count; r++) {
+					chat_display->remove_paragraph(thinking_display_para_start);
+				}
+				generic_thinking_shown = false;
+			}
+			// If real thinking was active, collapse it now.
 			if (thinking_phase_active && !thinking_collapsed) {
 				_collapse_thinking_display();
 			}
@@ -851,9 +1318,45 @@ void AIAssistantPanel::_on_stream_poll() {
 
 		stream_active = false;
 
-		// If thinking was still active at stream end (no content followed), collapse it.
+		// Clean up any remaining thinking display at stream end.
+		if (generic_thinking_shown) {
+			int cur = chat_display->get_paragraph_count();
+			int remove_count = cur - thinking_display_para_start;
+			for (int r = 0; r < remove_count; r++) {
+				chat_display->remove_paragraph(thinking_display_para_start);
+			}
+			generic_thinking_shown = false;
+		}
 		if (thinking_phase_active && !thinking_collapsed) {
 			_collapse_thinking_display();
+		}
+
+		// Restore send/stop button state.
+		is_waiting_response = false;
+		send_button->set_visible(true);
+		stop_button->set_visible(false);
+
+		if (stream_stop_requested) {
+			// User stopped generation — show partial response if any.
+			stream_stop_requested = false;
+			if (mode == MODE_ASK) {
+				chat_display->add_newline();
+			}
+			chat_display->push_color(Color(0.6, 0.6, 0.6));
+			chat_display->push_italics();
+			chat_display->add_text(" [stopped]");
+			chat_display->pop();
+			chat_display->pop();
+			chat_display->add_newline();
+			String partial = stream_accumulated;
+			_stream_provider.unref();
+			if (!partial.is_empty()) {
+				// Save partial response to history so context is preserved.
+				// Pass is_stopped_partial=true so code blocks are NOT executed
+				// and the auto-retry loop is suppressed — stopping must be final.
+				_handle_ai_response(partial, true);
+			}
+			return;
 		}
 
 		if (error) {
@@ -861,8 +1364,6 @@ void AIAssistantPanel::_on_stream_poll() {
 			chat_display->add_newline();
 			AI_ERR("Streaming error: " + error_msg);
 			_append_message("System", "Error: " + error_msg, Color(1.0, 0.4, 0.4));
-			is_waiting_response = false;
-			send_button->set_disabled(false);
 			return;
 		}
 
@@ -875,9 +1376,6 @@ void AIAssistantPanel::_on_stream_poll() {
 		AI_LOG("Step 6: Streaming complete. Response length: " + itos(full_response.length()) + " chars");
 
 		_stream_provider.unref();
-
-		is_waiting_response = false;
-		send_button->set_disabled(false);
 
 		_handle_ai_response(full_response);
 	}
@@ -931,10 +1429,13 @@ void AIAssistantPanel::_on_request_completed(int p_result, int p_response_code, 
 
 // --- Response Handling ---
 
-void AIAssistantPanel::_handle_ai_response(const String &p_response) {
+void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_stopped_partial) {
 	Dictionary assistant_msg;
 	assistant_msg["role"] = "assistant";
 	assistant_msg["content"] = p_response;
+	if (!stream_thinking_accumulated.is_empty()) {
+		assistant_msg["thinking"] = stream_thinking_accumulated;
+	}
 	conversation_history.push_back(assistant_msg);
 
 	// Auto-compress context when history gets too long.
@@ -983,12 +1484,53 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response) {
 			}
 		}
 
-		// In ASK mode, don't execute code blocks - just display them.
-		if (_get_current_mode() == MODE_ASK) {
-			AI_LOG("  ASK mode: skipping code execution.");
+		// In ASK mode, or when the user pressed Stop (partial/truncated response),
+		// don't execute code blocks — a truncated script would likely be broken
+		// and we must never let a Stop trigger a new API request via auto-retry.
+		if (_get_current_mode() == MODE_ASK || p_is_stopped_partial) {
+			if (p_is_stopped_partial) {
+				AI_LOG("  Stopped partial response: skipping code execution and auto-retry.");
+			} else {
+				AI_LOG("  ASK mode: skipping code execution.");
+			}
 			auto_retry_count = 0;
 		} else {
 			pending_code = code_blocks[code_blocks.size() - 1];
+
+			// ── PRE-EXECUTION COMPILE CHECK ──────────────────────────────────────
+			// Run the GDScript parser on the code BEFORE any execution or safety
+			// checks. Parse errors (wrong syntax, standalone lambdas, bad type
+			// inference, etc.) are caught here and fed straight back to the AI so
+			// it can correct them in one shot — no runtime crash required.
+			{
+				String compile_error = script_executor->compile_check(pending_code);
+				if (!compile_error.is_empty()) {
+					AI_WARN("Pre-execution compile check FAILED:\n" + compile_error);
+					if (auto_retry_count < MAX_AUTO_RETRIES) {
+						auto_retry_count++;
+						String retry_num = itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES);
+						AI_LOG("Pre-execution compile retry " + retry_num);
+						_append_message("System",
+								(String(U"⚠") + " GDScript syntax error - auto-fixing... (" + retry_num + ")"),
+								Color(1.0, 0.82f, 0.25f));
+						String retry_msg =
+								"The GDScript code you generated has parse errors that prevent it from compiling:\n\n" +
+								compile_error +
+								"\n\nFix ONLY these errors and output the corrected GDScript code block. "
+								"Do not change anything else.";
+						pending_code = "";
+						_send_to_api(retry_msg);
+					} else {
+						_append_message("System",
+								"GDScript parse errors (auto-fix limit reached):\n" + compile_error,
+								Color(1.0, 0.4f, 0.4f));
+						auto_retry_count = 0;
+						pending_code = "";
+					}
+					return;
+				}
+			}
+			// ── END COMPILE CHECK ─────────────────────────────────────────────────
 
 			AI_LOG("Step 8: Safety check...");
 			String safety_error = script_executor->check_safety(pending_code);
@@ -1231,8 +1773,17 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 			int detail_id = stored_detail_responses.size();
 			stored_detail_responses.push_back(last_full_response);
 
-			// Extract descriptive summary from code.
-			String summary = _extract_code_summary(p_code);
+			// Use actual runtime output as summary (all print() lines visible).
+			// Fall back to code-extracted summary only when output is empty.
+			String summary;
+			if (!output.strip_edges().is_empty()) {
+				summary = output.strip_edges().replace("\n", "  |  ");
+				if (summary.length() > 300) {
+					summary = summary.left(300) + "...";
+				}
+			} else {
+				summary = _extract_code_summary(p_code);
+			}
 
 			// Compact summary: "AI: ✅ [summary]  [Details] [Save] [Revert]"
 			chat_display->push_color(Color(0.7, 0.85, 1.0));
@@ -1450,14 +2001,18 @@ void AIAssistantPanel::_on_asset_request_completed(int p_result, int p_response_
 
 // --- Display Helpers ---
 
-void AIAssistantPanel::_append_message(const String &p_sender, const String &p_text, const Color &p_color) {
+void AIAssistantPanel::_append_message(const String &p_sender, const String &p_text, const Color &p_color, bool p_bbcode) {
 	chat_display->push_color(p_color);
 	chat_display->push_bold();
 	chat_display->add_text(p_sender + ": ");
 	chat_display->pop();
 	chat_display->pop();
 
-	chat_display->add_text(p_text);
+	if (p_bbcode) {
+		chat_display->append_text(p_text); // Parses BBCode (used for @mention pills).
+	} else {
+		chat_display->add_text(p_text);
+	}
 	chat_display->add_newline();
 	chat_display->add_newline();
 }
@@ -1535,12 +2090,23 @@ String AIAssistantPanel::_get_system_prompt(const String &p_current_message) con
 		String content = p_current_message.to_lower();
 		bool is_error_query = content.find("error") != -1 || content.find("fix") != -1 ||
 				content.find("bug") != -1 || content.find("warning") != -1 ||
-				content.find(String::utf8("错误")) != -1 || content.find(String::utf8("修复")) != -1;
+				content.find(String::utf8("错误")) != -1 || content.find(String::utf8("修复")) != -1 ||
+				content.find(String::utf8("警告")) != -1 || content.find("debug") != -1;
 
 		if (is_error_query || error_monitor->get_recent_error_count() > 0) {
-			prompt += "\n--- RECENT CONSOLE ERRORS (not caused by AI) ---\n";
+			prompt += "\n--- RECENT CONSOLE ERRORS (editor, not caused by AI) ---\n";
 			prompt += error_monitor->get_recent_console_errors(10);
 			prompt += "\n--- END CONSOLE ERRORS ---\n";
+		}
+
+		// Include game runtime debugger errors (from running the game).
+		if (is_error_query || error_monitor->get_debugger_error_count() > 0) {
+			String dbg_errors = error_monitor->get_recent_debugger_errors(10);
+			if (!dbg_errors.is_empty()) {
+				prompt += "\n--- GAME RUNTIME ERRORS (from running the game, shown in debugger panel) ---\n";
+				prompt += dbg_errors;
+				prompt += "\n--- END GAME RUNTIME ERRORS ---\n";
+			}
 		}
 	}
 
@@ -1667,6 +2233,7 @@ void AIAssistantPanel::_load_chat(const String &p_file_path) {
 	displayed_code_blocks.clear();
 
 	chat_display->clear();
+	stored_thinking_texts.clear();
 	for (int i = 0; i < conversation_history.size(); i++) {
 		Dictionary msg = conversation_history[i];
 		String role = msg["role"];
@@ -1675,15 +2242,106 @@ void AIAssistantPanel::_load_chat(const String &p_file_path) {
 		if (role == "user") {
 			_append_message("You", content, Color(0.9, 0.9, 0.9));
 		} else if (role == "assistant") {
-			Dictionary parsed_msg = response_parser->parse(content);
-			Array text_segs = parsed_msg["text_segments"];
-			Array code_blks = parsed_msg["code_blocks"];
+			// Render thinking as collapsed clickable link if present.
+			String thinking_text = msg.has("thinking") ? String(msg["thinking"]) : "";
 
-			for (int j = 0; j < text_segs.size(); j++) {
-				_append_message("AI", text_segs[j], Color(0.7, 0.85, 1.0));
+			// Also handle <think>...</think> tags embedded in content by some models.
+			String clean_content = content;
+			if (clean_content.find("<think>") != -1) {
+				int think_start = clean_content.find("<think>");
+				int think_end = clean_content.find("</think>");
+				if (think_end != -1) {
+					if (thinking_text.is_empty()) {
+						thinking_text = clean_content.substr(think_start + 7, think_end - think_start - 7).strip_edges();
+					}
+					clean_content = clean_content.substr(0, think_start) + clean_content.substr(think_end + 8);
+					clean_content = clean_content.strip_edges();
+				}
 			}
-			for (int j = 0; j < code_blks.size(); j++) {
-				_append_code_block(code_blks[j]);
+
+			if (!thinking_text.is_empty()) {
+				int thinking_id = stored_thinking_texts.size();
+				stored_thinking_texts.push_back(thinking_text);
+
+				chat_display->push_color(Color(0.5, 0.5, 0.6));
+				chat_display->push_italics();
+				chat_display->add_text("[");
+				chat_display->push_meta("thinking:" + itos(thinking_id));
+				chat_display->push_color(Color(0.4, 0.7, 1.0));
+				chat_display->add_text(TR(STR_THINKING_COLLAPSED));
+				chat_display->pop(); // color
+				chat_display->pop(); // meta
+				chat_display->add_text("]");
+				chat_display->pop(); // italics
+				chat_display->pop(); // color
+				chat_display->add_newline();
+			}
+
+			Dictionary parsed_msg = response_parser->parse(clean_content);
+			Array text_segs = parsed_msg["text_segments"];
+			Array code_blks_raw = parsed_msg["code_blocks"];
+
+			// Deduplicate consecutive identical code blocks.
+			Array code_blks;
+			for (int j = 0; j < code_blks_raw.size(); j++) {
+				if (j == 0 || String(code_blks_raw[j]) != String(code_blks_raw[j - 1])) {
+					code_blks.push_back(code_blks_raw[j]);
+				}
+			}
+
+			if (!code_blks.is_empty()) {
+				// Store full response for [▶ Details] popup.
+				int detail_id = stored_detail_responses.size();
+				stored_detail_responses.push_back(clean_content);
+
+				// Store each code block for [Save].
+				for (int j = 0; j < code_blks.size(); j++) {
+					displayed_code_blocks.push_back(code_blks[j]);
+				}
+				int last_block_idx = displayed_code_blocks.size() - 1;
+
+				// Show any non-empty text segments (brief descriptions).
+				for (int j = 0; j < text_segs.size(); j++) {
+					String seg = String(text_segs[j]).strip_edges();
+					if (!seg.is_empty()) {
+						_append_message("AI", seg, Color(0.7, 0.85, 1.0));
+					}
+				}
+
+				// Compact format: "AI: [summary]  [▶ Details] [Save]"
+				String summary = _extract_code_summary(code_blks[code_blks.size() - 1]);
+
+				chat_display->push_color(Color(0.7, 0.85, 1.0));
+				chat_display->push_bold();
+				chat_display->add_text("AI: ");
+				chat_display->pop();
+				chat_display->pop();
+
+				chat_display->push_color(Color(0.5, 1.0, 0.5));
+				chat_display->add_text(summary);
+				chat_display->pop();
+				chat_display->add_text("  ");
+
+				chat_display->push_color(Color(0.6, 0.6, 0.8));
+				chat_display->push_meta("details:" + itos(detail_id));
+				chat_display->add_text(String::utf8("[\xe2\x96\xb6 Details]"));
+				chat_display->pop();
+				chat_display->pop();
+				chat_display->add_text(" ");
+
+				chat_display->push_color(Color(0.4, 0.8, 1.0));
+				chat_display->push_meta("save:" + itos(last_block_idx));
+				chat_display->add_text("[Save]");
+				chat_display->pop();
+				chat_display->pop();
+
+				chat_display->add_newline();
+				chat_display->add_newline();
+			} else {
+				// Text-only response: render normally.
+				for (int j = 0; j < text_segs.size(); j++) {
+					_append_message("AI", text_segs[j], Color(0.7, 0.85, 1.0));
+				}
 			}
 		}
 	}
@@ -1869,16 +2527,13 @@ AIAssistantPanel::AIAssistantPanel() {
 		AILocalization::StringID label_id;
 		const char *prompt;
 	};
+	// Only keep high-frequency presets: Fix Errors and Performance.
 	PresetInfo presets[] = {
-		{ AILocalization::STR_PRESET_DESCRIBE, "Describe the current scene structure and suggest improvements" },
-		{ AILocalization::STR_PRESET_ADD_PLAYER, "Create a CharacterBody3D player with a collision shape and a camera" },
-		{ AILocalization::STR_PRESET_ADD_LIGHT, "Add a DirectionalLight3D as sunlight and a WorldEnvironment with sky" },
-		{ AILocalization::STR_PRESET_ADD_UI, "Create a basic HUD with a score Label and a health ProgressBar" },
-		{ AILocalization::STR_PRESET_FIX_ERRORS, "Analyze the recent console errors and fix them" },
+		{ AILocalization::STR_PRESET_FIX_ERRORS, "Analyze the recent errors and warnings from both the editor console and the game debugger panel, then fix them" },
 		{ AILocalization::STR_PRESET_PERFORMANCE, "Analyze the current performance metrics and suggest optimizations" },
 	};
 
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < 2; i++) {
 		Button *btn = memnew(Button);
 		btn->set_text(AILocalization::get(presets[i].label_id));
 		btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -1902,26 +2557,61 @@ AIAssistantPanel::AIAssistantPanel() {
 	input_bar = memnew(HBoxContainer);
 	add_child(input_bar);
 
-	// N4: Attach button.
+	// N4: File attach button — opens EditorFileDialog to pick a text/script file.
 	attach_button = memnew(Button);
 	attach_button->set_text("+");
-	attach_button->set_tooltip_text(TR(STR_TIP_ATTACH));
+	attach_button->set_tooltip_text(TTR("Attach file (.md, .mermaid, .txt, .json, .yaml, .gd ...)"));
 	attach_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_attach_pressed));
 	input_bar->add_child(attach_button);
 
-	input_field = memnew(TextEdit);
+	// @ Mention button — inserts @NodeName for currently selected scene node.
+	mention_button = memnew(Button);
+	mention_button->set_text("@");
+	mention_button->set_tooltip_text(TTR("Insert mention of selected scene node (@NodeName)"));
+	mention_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_mention_button_pressed));
+	input_bar->add_child(mention_button);
+
+	input_field = memnew(AIMentionTextEdit);
 	input_field->set_placeholder(TR(STR_INPUT_PLACEHOLDER_ENTER));
 	input_field->set_custom_minimum_size(Size2(0, 60));
 	input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	// Do NOT set SIZE_EXPAND_FILL vertically — height is controlled manually.
+	input_field->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	input_field->set_line_wrapping_mode(TextEdit::LineWrappingMode::LINE_WRAPPING_BOUNDARY);
 	input_field->connect("gui_input", callable_mp(this, &AIAssistantPanel::_on_input_gui_input));
+	input_field->connect("text_changed", callable_mp(this, &AIAssistantPanel::_on_input_text_changed));
 	input_bar->add_child(input_field);
+
+	// SyntaxHighlighter that hides PUA placeholder characters (rendered as chips).
+	mention_highlighter = memnew(AIMentionHighlighter);
+	input_field->set_syntax_highlighter(mention_highlighter);
+
+	// Autocomplete overlay panel — a plain Control child of the editor root.
+	// Avoids OS-window focus stealing that PopupPanel causes.
+	// Added to EditorInterface::get_base_control() in NOTIFICATION_READY.
+	autocomplete_panel = memnew(Panel);
+	autocomplete_panel->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	autocomplete_panel->hide();
+	autocomplete_list = memnew(ItemList);
+	autocomplete_list->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	autocomplete_list->set_focus_mode(Control::FOCUS_NONE);
+	// Single-click on a list item commits the autocomplete.
+	autocomplete_list->connect("item_selected",
+			callable_mp(this, &AIAssistantPanel::_commit_mention_autocomplete));
+	autocomplete_panel->add_child(autocomplete_list);
 
 	send_button = memnew(Button);
 	send_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
 	send_button->set_text(TR(STR_BTN_SEND));
 	send_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_send_pressed));
 	input_bar->add_child(send_button);
+
+	stop_button = memnew(Button);
+	stop_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
+	stop_button->set_text(U"\u25A0 Stop");
+	stop_button->set_visible(false);
+	stop_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_stop_pressed));
+	input_bar->add_child(stop_button);
 
 	// --- HTTP Request Nodes ---
 	http_request = memnew(HTTPRequest);
@@ -1978,6 +2668,18 @@ AIAssistantPanel::AIAssistantPanel() {
 	details_rtl->set_use_bbcode(true);
 	details_rtl->set_scroll_follow(false);
 	details_dialog->add_child(details_rtl);
+
+	// --- File Attachment Dialog ---
+	file_dialog = memnew(EditorFileDialog);
+	file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
+	file_dialog->set_title(TTR("Attach File to AI Assistant"));
+	// AI-friendly text / diagram / data / script formats.
+	file_dialog->add_filter("*.md,*.mmd,*.mermaid", TTR("Markdown / Diagram"));
+	file_dialog->add_filter("*.txt,*.json,*.yaml,*.yml,*.toml,*.csv", TTR("Text / Data"));
+	file_dialog->add_filter("*.gd,*.gdscript", TTR("GDScript"));
+	file_dialog->connect("file_selected",
+			callable_mp(this, &AIAssistantPanel::_on_file_attach_selected));
+	add_child(file_dialog);
 
 	// --- Settings Dialog ---
 	settings_dialog = memnew(AISettingsDialog);

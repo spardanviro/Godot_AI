@@ -27,23 +27,36 @@ void AISettingsDialog::_notification(int p_what) {
 
 String AISettingsDialog::_get_default_model_for(int p_provider_index) const {
 	switch (p_provider_index) {
-		case 0: return "claude-opus-4-6";          // Anthropic
-		case 1: return "gpt-5.4";                  // OpenAI
-		case 2: return "deepseek-reasoner";         // DeepSeek
-		case 3: return "gemini-2.5-pro";            // Gemini
+		case 0: return "claude-opus-4-6";   // Anthropic
+		case 1: return "gpt-5.4";           // OpenAI
+		case 2: return "gemini-3.0-pro";    // Gemini
 		default: return "claude-opus-4-6";
 	}
 }
 
-bool AISettingsDialog::_is_known_default(const String &p_model) const {
-	// Returns true if the model looks like a default that was auto-selected,
-	// so we can safely replace it when provider changes or a new best model is fetched.
-	// User custom models (not matching these patterns) won't be overwritten.
-	return p_model.is_empty() ||
-			p_model.begins_with("claude-") ||
-			p_model.begins_with("gpt-") ||
-			p_model.begins_with("deepseek-") ||
-			p_model.begins_with("gemini-");
+PackedStringArray AISettingsDialog::_get_fallback_models_for(int p_provider_index) const {
+	PackedStringArray models;
+	switch (p_provider_index) {
+		case 0: // Anthropic — claude 4.x series
+			models.push_back("claude-opus-4-6");
+			models.push_back("claude-sonnet-4-6");
+			models.push_back("claude-haiku-4-6");
+			break;
+		case 1: // OpenAI — current generation only
+			models.push_back("gpt-5.4");
+			models.push_back("o3");
+			break;
+		case 2: // Google Gemini — 3.x then 2.5 fallback
+			models.push_back("gemini-3.0-pro");
+			models.push_back("gemini-3.0-flash");
+			models.push_back("gemini-2.5-pro");
+			models.push_back("gemini-2.5-flash");
+			break;
+		default:
+			models.push_back(_get_default_model_for(0));
+			break;
+	}
+	return models;
 }
 
 void AISettingsDialog::_load_settings() {
@@ -53,25 +66,32 @@ void AISettingsDialog::_load_settings() {
 	}
 
 	String provider = es->get_setting("ai_assistant/provider");
+	int idx = 0;
 	if (provider == "anthropic") {
-		provider_option->select(0);
+		idx = 0;
 	} else if (provider == "openai") {
-		provider_option->select(1);
-	} else if (provider == "deepseek") {
-		provider_option->select(2);
+		idx = 1;
 	} else if (provider == "gemini") {
-		provider_option->select(3);
+		idx = 2;
 	}
+	provider_option->select(idx);
+	current_provider_idx = idx;
 
-	api_key_edit->set_text(es->get_setting("ai_assistant/api_key"));
-
-	String saved_model = es->get_setting("ai_assistant/model");
-	int idx = provider_option->get_selected();
-	if (saved_model.is_empty()) {
-		model_edit->set_text(_get_default_model_for(idx));
-	} else {
-		model_edit->set_text(saved_model);
+	// Load per-provider API keys. Fall back to legacy single key for the active provider.
+	{
+		const char *prov_names[] = { "anthropic", "openai", "gemini" };
+		String legacy_key = es->has_setting("ai_assistant/api_key") ? String(es->get_setting("ai_assistant/api_key")) : String();
+		for (int i = 0; i < 3; i++) {
+			String setting_key = "ai_assistant/api_key_" + String(prov_names[i]);
+			if (es->has_setting(setting_key) && !String(es->get_setting(setting_key)).is_empty()) {
+				provider_api_keys[i] = es->get_setting(setting_key);
+			} else if (i == idx) {
+				// Migrate legacy key to the currently active provider.
+				provider_api_keys[i] = legacy_key;
+			}
+		}
 	}
+	api_key_edit->set_text(provider_api_keys[idx]);
 
 	endpoint_edit->set_text(es->get_setting("ai_assistant/api_endpoint"));
 	max_tokens_spin->set_value(es->get_setting("ai_assistant/max_tokens"));
@@ -116,7 +136,24 @@ void AISettingsDialog::_load_settings() {
 		}
 	}
 
+	// _on_provider_changed seeds the dropdown with the provider default and starts a fetch.
+	// Restore the saved model so it shows immediately and is preserved when fetch completes.
 	_on_provider_changed(idx);
+	String saved_model = es->get_setting("ai_assistant/model");
+	if (!saved_model.is_empty()) {
+		bool found = false;
+		for (int i = 0; i < model_option->get_item_count(); i++) {
+			if (model_option->get_item_text(i) == saved_model) {
+				model_option->select(i);
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			model_option->add_item(saved_model);
+			model_option->select(model_option->get_item_count() - 1);
+		}
+	}
 }
 
 void AISettingsDialog::refresh() {
@@ -187,6 +224,10 @@ void AISettingsDialog::_update_ui_texts() {
 }
 
 void AISettingsDialog::_on_provider_changed(int p_index) {
+	// Switch to the API key stored for this provider.
+	current_provider_idx = p_index;
+	api_key_edit->set_text(provider_api_keys[p_index]);
+
 	switch (p_index) {
 		case 0:
 			endpoint_edit->set_placeholder("https://api.anthropic.com/v1/messages");
@@ -195,21 +236,26 @@ void AISettingsDialog::_on_provider_changed(int p_index) {
 			endpoint_edit->set_placeholder("https://api.openai.com/v1/chat/completions");
 			break;
 		case 2:
-			endpoint_edit->set_placeholder("https://api.deepseek.com/v1/chat/completions");
-			break;
-		case 3:
 			endpoint_edit->set_placeholder("https://generativelanguage.googleapis.com/v1beta/models/");
 			break;
 	}
 
-	// Auto-switch model when provider changes (only if current model is a known default).
-	String current_model = model_edit->get_text().strip_edges();
-	if (_is_known_default(current_model)) {
-		model_edit->set_text(_get_default_model_for(p_index));
+	// Seed dropdown with hardcoded current models immediately (fetch may update it).
+	model_option->clear();
+	PackedStringArray fallback = _get_fallback_models_for(p_index);
+	for (int i = 0; i < fallback.size(); i++) {
+		model_option->add_item(fallback[i]);
 	}
+	model_option->select(0);
 
-	// Auto-fetch to get the real best model.
 	_auto_fetch_models();
+}
+
+void AISettingsDialog::_on_api_key_changed(const String &p_text) {
+	// Keep the per-provider cache in sync as the user types.
+	if (current_provider_idx >= 0 && current_provider_idx < 3) {
+		provider_api_keys[current_provider_idx] = p_text;
+	}
 }
 
 Ref<AIProvider> AISettingsDialog::_create_provider_for_index(int p_index, const String &p_api_key, const String &p_endpoint) const {
@@ -223,12 +269,6 @@ Ref<AIProvider> AISettingsDialog::_create_provider_for_index(int p_index, const 
 			provider = Ref<OpenAIProvider>(memnew(OpenAIProvider));
 			break;
 		case 2:
-			provider = Ref<OpenAIProvider>(memnew(OpenAIProvider));
-			if (p_endpoint.is_empty()) {
-				provider->set_api_endpoint("https://api.deepseek.com/v1/chat/completions");
-			}
-			break;
-		case 3:
 			provider = Ref<GeminiProvider>(memnew(GeminiProvider));
 			break;
 		default:
@@ -246,8 +286,17 @@ Ref<AIProvider> AISettingsDialog::_create_provider_for_index(int p_index, const 
 
 void AISettingsDialog::_auto_fetch_models() {
 	String current_api_key = api_key_edit->get_text().strip_edges();
-	if (current_api_key.is_empty() || is_fetching) {
+	if (current_api_key.is_empty()) {
+		fetch_status_label->set_text("Enter API key to fetch models");
+		fetch_status_label->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
 		return;
+	}
+
+	// Cancel any in-flight request before starting a new one.
+	// Reset is_fetching first so the new request is never blocked.
+	if (is_fetching) {
+		models_http_request->cancel_request();
+		is_fetching = false;
 	}
 
 	int provider_idx = provider_option->get_selected();
@@ -264,14 +313,13 @@ void AISettingsDialog::_auto_fetch_models() {
 
 	fetch_status_label->set_text(TR(STR_FETCH_FETCHING));
 	fetch_status_label->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
-	is_fetching = true;
 
-	models_http_request->cancel_request();
 	Error err = models_http_request->request(url, headers, HTTPClient::METHOD_GET);
 	if (err != OK) {
 		fetch_status_label->set_text(TR(STR_FETCH_FAILED));
 		fetch_status_label->add_theme_color_override("font_color", Color(1.0, 0.4, 0.4));
-		is_fetching = false;
+	} else {
+		is_fetching = true;
 	}
 }
 
@@ -279,8 +327,18 @@ void AISettingsDialog::_on_models_request_completed(int p_result, int p_response
 	is_fetching = false;
 
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
-		fetch_status_label->set_text(TR(STR_FETCH_DEFAULT));
-		fetch_status_label->add_theme_color_override("font_color", Color(1.0, 0.7, 0.3));
+		String err_msg;
+		if (p_result != HTTPRequest::RESULT_SUCCESS) {
+			err_msg = "Fetch error (network)";
+		} else if (p_response_code == 401) {
+			err_msg = "Fetch failed (401 — wrong API key?)";
+		} else if (p_response_code == 403) {
+			err_msg = "Fetch failed (403 — no model list access)";
+		} else {
+			err_msg = "Fetch failed (HTTP " + itos(p_response_code) + ")";
+		}
+		fetch_status_label->set_text(err_msg);
+		fetch_status_label->add_theme_color_override("font_color", Color(1.0, 0.5, 0.3));
 		return;
 	}
 
@@ -300,19 +358,45 @@ void AISettingsDialog::_on_models_request_completed(int p_result, int p_response
 	// Let the provider pick the strongest stable model.
 	String best = fetch_provider->select_best_model(models);
 
-	if (!best.is_empty()) {
-		// Only auto-update if user hasn't set a custom model.
-		String current = model_edit->get_text().strip_edges();
-		if (_is_known_default(current)) {
-			model_edit->set_text(best);
-		}
-
-		fetch_status_label->set_text("Latest: " + best + " (from " + itos(models.size()) + " models)");
-		fetch_status_label->add_theme_color_override("font_color", Color(0.5, 1.0, 0.5));
-	} else {
-		fetch_status_label->set_text(TR(STR_FETCH_DEFAULT));
-		fetch_status_label->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
+	// Remember what was selected before repopulating (may be a saved model).
+	String prev_selected;
+	if (model_option->get_item_count() > 0) {
+		prev_selected = model_option->get_item_text(model_option->get_selected());
 	}
+
+	// Repopulate dropdown with fetched models.
+	model_option->clear();
+	for (int i = 0; i < models.size(); i++) {
+		model_option->add_item(models[i]);
+	}
+
+	// Try to restore previously selected model.
+	bool found = false;
+	if (!prev_selected.is_empty()) {
+		for (int i = 0; i < model_option->get_item_count(); i++) {
+			if (model_option->get_item_text(i) == prev_selected) {
+				model_option->select(i);
+				found = true;
+				break;
+			}
+		}
+	}
+	// Fall back to best model if previous selection not in list.
+	if (!found && !best.is_empty()) {
+		for (int i = 0; i < model_option->get_item_count(); i++) {
+			if (model_option->get_item_text(i) == best) {
+				model_option->select(i);
+				found = true;
+				break;
+			}
+		}
+	}
+	if (!found && model_option->get_item_count() > 0) {
+		model_option->select(model_option->get_item_count() - 1);
+	}
+
+	fetch_status_label->set_text("Latest: " + best + " (" + itos(models.size()) + " models)");
+	fetch_status_label->add_theme_color_override("font_color", Color(0.5, 1.0, 0.5));
 }
 
 void AISettingsDialog::_on_confirmed() {
@@ -321,14 +405,28 @@ void AISettingsDialog::_on_confirmed() {
 		return;
 	}
 
-	String providers[] = { "anthropic", "openai", "deepseek", "gemini" };
+	String providers[] = { "anthropic", "openai", "gemini" };
 	int idx = provider_option->get_selected();
-	if (idx >= 0 && idx < 4) {
+	if (idx >= 0 && idx < 3) {
 		es->set_setting("ai_assistant/provider", providers[idx]);
 	}
 
-	es->set_setting("ai_assistant/api_key", api_key_edit->get_text());
-	es->set_setting("ai_assistant/model", model_edit->get_text().strip_edges());
+	// Save per-provider API keys.
+	{
+		const char *prov_names[] = { "anthropic", "openai", "gemini" };
+		for (int i = 0; i < 3; i++) {
+			es->set_setting("ai_assistant/api_key_" + String(prov_names[i]), provider_api_keys[i]);
+		}
+		// Also keep legacy single-key for backward compat (saves the active provider's key).
+		if (idx >= 0 && idx < 3) {
+			es->set_setting("ai_assistant/api_key", provider_api_keys[idx]);
+		}
+	}
+	String selected_model;
+	if (model_option->get_item_count() > 0) {
+		selected_model = model_option->get_item_text(model_option->get_selected()).strip_edges();
+	}
+	es->set_setting("ai_assistant/model", selected_model);
 	es->set_setting("ai_assistant/api_endpoint", endpoint_edit->get_text());
 	es->set_setting("ai_assistant/max_tokens", (int)max_tokens_spin->get_value());
 	es->set_setting("ai_assistant/temperature", (float)temperature_spin->get_value());
@@ -402,7 +500,6 @@ AISettingsDialog::AISettingsDialog() {
 		provider_option = memnew(OptionButton);
 		provider_option->add_item("Anthropic (Claude)");
 		provider_option->add_item("OpenAI (ChatGPT)");
-		provider_option->add_item("DeepSeek");
 		provider_option->add_item("Google (Gemini)");
 		provider_option->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		provider_option->connect("item_selected", callable_mp(this, &AISettingsDialog::_on_provider_changed));
@@ -422,6 +519,7 @@ AISettingsDialog::AISettingsDialog() {
 		api_key_edit->set_secret(true);
 		api_key_edit->set_placeholder(TR(STR_SETTINGS_API_KEY_PLACEHOLDER));
 		api_key_edit->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		api_key_edit->connect("text_changed", callable_mp(this, &AISettingsDialog::_on_api_key_changed));
 		hbox->add_child(api_key_edit);
 	}
 
@@ -434,10 +532,11 @@ AISettingsDialog::AISettingsDialog() {
 		label_model->set_custom_minimum_size(Size2(120, 0));
 		hbox->add_child(label_model);
 
-		model_edit = memnew(LineEdit);
-		model_edit->set_text("claude-opus-4-6");
-		model_edit->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		hbox->add_child(model_edit);
+		model_option = memnew(OptionButton);
+		model_option->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		model_option->add_item(_get_default_model_for(0)); // Anthropic default until fetch runs.
+		model_option->select(0);
+		hbox->add_child(model_option);
 	}
 
 	// Fetch status.
@@ -583,6 +682,16 @@ AISettingsDialog::AISettingsDialog() {
 		}
 		if (!es->has_setting("ai_assistant/api_key")) {
 			es->set_setting("ai_assistant/api_key", "");
+		}
+		// Per-provider API keys.
+		if (!es->has_setting("ai_assistant/api_key_anthropic")) {
+			es->set_setting("ai_assistant/api_key_anthropic", "");
+		}
+		if (!es->has_setting("ai_assistant/api_key_openai")) {
+			es->set_setting("ai_assistant/api_key_openai", "");
+		}
+		if (!es->has_setting("ai_assistant/api_key_gemini")) {
+			es->set_setting("ai_assistant/api_key_gemini", "");
 		}
 		if (!es->has_setting("ai_assistant/model")) {
 			es->set_setting("ai_assistant/model", "");

@@ -134,9 +134,8 @@ PackedStringArray AnthropicProvider::parse_models_list(const String &p_response_
 		}
 		String id = m["id"];
 
-		// Only keep current Claude model families (claude-3.5, claude-3, claude-4, claude-sonnet, claude-opus, claude-haiku).
-		// Skip very old models like claude-2, claude-instant.
-		if (id.begins_with("claude-2") || id.begins_with("claude-instant")) {
+		// Only keep claude-4.x and newer series. Skip legacy claude-2, claude-3, claude-instant.
+		if (id.begins_with("claude-2") || id.begins_with("claude-3") || id.begins_with("claude-instant")) {
 			continue;
 		}
 

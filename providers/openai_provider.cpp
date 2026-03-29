@@ -26,8 +26,6 @@ int OpenAIProvider::get_model_context_length() const {
 	if (m.find("gpt-4-turbo") >= 0) return 128000;
 	if (m.find("gpt-4") >= 0) return 8192;
 	if (m.find("gpt-3.5") >= 0) return 16384;
-	// DeepSeek models.
-	if (m.find("deepseek") >= 0) return 65536;
 	return 128000; // Default for unknown OpenAI-compatible models.
 }
 
@@ -40,7 +38,6 @@ int OpenAIProvider::get_recommended_max_tokens() const {
 	if (m.find("gpt-4-turbo") >= 0) return 4096;
 	if (m.find("gpt-4") >= 0) return 4096;
 	if (m.find("gpt-3.5") >= 0) return 4096;
-	if (m.find("deepseek") >= 0) return 8192;
 	return 8192;
 }
 
@@ -140,70 +137,39 @@ PackedStringArray OpenAIProvider::parse_models_list(const String &p_response_bod
 		return models;
 	}
 
-	// Blocklist: skip deprecated, non-chat, and utility models.
-	Vector<String> skip_prefixes;
-	skip_prefixes.push_back("dall-e");
-	skip_prefixes.push_back("tts");
-	skip_prefixes.push_back("whisper");
-	skip_prefixes.push_back("text-embedding");
-	skip_prefixes.push_back("text-moderation");
-	skip_prefixes.push_back("text-davinci");
-	skip_prefixes.push_back("text-curie");
-	skip_prefixes.push_back("text-babbage");
-	skip_prefixes.push_back("text-ada");
-	skip_prefixes.push_back("davinci");
-	skip_prefixes.push_back("curie");
-	skip_prefixes.push_back("babbage");
-	skip_prefixes.push_back("ada");
-	skip_prefixes.push_back("canary");
-	skip_prefixes.push_back("omni-moderation");
-	skip_prefixes.push_back("codex");
-	skip_prefixes.push_back("code-");
-
-	// Allowlist: only chat/reasoning models.
-	Vector<String> allow_prefixes;
-	allow_prefixes.push_back("gpt-");  // Covers all GPT versions (gpt-5.4, gpt-4o, etc.)
-	allow_prefixes.push_back("o1");
-	allow_prefixes.push_back("o3");
-	allow_prefixes.push_back("o4");
-	allow_prefixes.push_back("chatgpt");
-	allow_prefixes.push_back("deepseek");
-
 	Array model_list = data["data"];
 	for (int i = 0; i < model_list.size(); i++) {
 		Dictionary m = model_list[i];
 		if (!m.has("id")) {
 			continue;
 		}
-
 		String id = m["id"];
 
-		// Skip blocklisted.
-		bool blocked = false;
-		for (int j = 0; j < skip_prefixes.size(); j++) {
-			if (id.begins_with(skip_prefixes[j])) {
-				blocked = true;
-				break;
-			}
+		// Only current generation: gpt-5.x flagship or o3/o4 reasoning series.
+		bool current_gen = false;
+		if (id.begins_with("gpt-5")) {
+			current_gen = true;
+		} else if (id.begins_with("o3") || id.begins_with("o4")) {
+			current_gen = true;
 		}
-		if (blocked) {
+		if (!current_gen) {
 			continue;
 		}
 
-		// Only allow whitelisted prefixes.
-		bool allowed = false;
-		for (int j = 0; j < allow_prefixes.size(); j++) {
-			if (id.begins_with(allow_prefixes[j])) {
-				allowed = true;
-				break;
-			}
+		// Skip reduced-capability variants.
+		if (id.contains("mini") || id.contains("nano") || id.contains("lite")) {
+			continue;
+		}
+		// Skip non-chat capabilities.
+		if (id.contains("audio") || id.contains("realtime") || id.contains("search") || id.contains("transcribe")) {
+			continue;
+		}
+		// Skip dated snapshots (prefer canonical alias e.g. "gpt-5.4" over "gpt-5.4-2026-01-15").
+		if (id.find("-20") > 2) {
+			continue;
 		}
 
-		if (allowed) {
-			// Skip old snapshot versions (keep latest of each series).
-			// e.g. skip "gpt-4o-2024-05-13" if "gpt-4o" exists, but keep dated ones too for flexibility.
-			models.push_back(id);
-		}
+		models.push_back(id);
 	}
 
 	models.sort();
@@ -211,39 +177,32 @@ PackedStringArray OpenAIProvider::parse_models_list(const String &p_response_bod
 }
 
 String OpenAIProvider::select_best_model(const PackedStringArray &p_models) const {
-	// Pick the highest-version gpt-X.Y (not mini/nano, not dated snapshots).
-	String best;
-	float best_ver = 0.0f;
+	// Prefer highest-version gpt-5.x; fall back to highest o-series.
+	String best_gpt;
+	float best_gpt_ver = 0.0f;
+	String best_o;
 
 	for (int i = 0; i < p_models.size(); i++) {
 		const String &m = p_models[i];
-
-		// Skip mini/nano/lite variants — we want the full flagship.
-		if (m.contains("mini") || m.contains("nano") || m.contains("lite")) {
-			continue;
-		}
-		// Skip non-flagship: chatgpt aliases, audio, realtime, search.
-		if (m.contains("chatgpt") || m.contains("audio") || m.contains("realtime") || m.contains("search")) {
-			continue;
-		}
-		// Skip dated snapshots like "gpt-5.4-2026-03-05" — prefer the alias "gpt-5.4".
-		// A dated snapshot has a 4-digit year segment. Check if it matches pattern with "-20".
-		if (m.find("-20") > 3) {
-			continue;
-		}
-
-		// Parse version from "gpt-X.Y" (e.g. "gpt-5.4" → 5.4)
-		if (m.begins_with("gpt-")) {
-			String ver_str = m.substr(4); // "5.4" or "4o" or "4-turbo"
+		if (m.begins_with("gpt-5")) {
+			String ver_str = m.substr(4); // "5.4"
 			float ver = ver_str.to_float();
-			if (ver > best_ver) {
-				best_ver = ver;
-				best = m;
+			if (ver > best_gpt_ver) {
+				best_gpt_ver = ver;
+				best_gpt = m;
 			}
+		} else if ((m.begins_with("o3") || m.begins_with("o4")) && best_o.is_empty()) {
+			best_o = m;
 		}
 	}
 
-	return best.is_empty() ? get_default_model() : best;
+	if (!best_gpt.is_empty()) {
+		return best_gpt;
+	}
+	if (!best_o.is_empty()) {
+		return best_o;
+	}
+	return get_default_model();
 }
 
 // --- Streaming ---

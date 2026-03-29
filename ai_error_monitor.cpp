@@ -141,9 +141,56 @@ void AIErrorMonitor::clear_ai_errors() {
 	ai_errors.clear();
 }
 
+void AIErrorMonitor::receive_debugger_error(const String &p_message, const String &p_file, int p_line, bool p_is_warning) {
+	AIErrorMonitor *self = singleton;
+	if (!self) {
+		return;
+	}
+	DebuggerErrorEntry entry;
+	entry.message = p_message;
+	entry.file = p_file;
+	entry.line = p_line;
+	entry.is_warning = p_is_warning;
+	entry.timestamp = Time::get_singleton()->get_ticks_msec();
+
+	self->debugger_errors.push_back(entry);
+	while (self->debugger_errors.size() > self->max_debugger_buffer_size) {
+		self->debugger_errors.remove_at(0);
+	}
+}
+
+String AIErrorMonitor::get_recent_debugger_errors(int p_count) const {
+	if (debugger_errors.is_empty()) {
+		return "";
+	}
+	String result;
+	int start = MAX(0, debugger_errors.size() - p_count);
+	for (int i = start; i < debugger_errors.size(); i++) {
+		const DebuggerErrorEntry &e = debugger_errors[i];
+		if (!result.is_empty()) {
+			result += "\n";
+		}
+		result += (e.is_warning ? "[WARNING] " : "[ERROR] ");
+		result += e.message;
+		if (!e.file.is_empty()) {
+			result += " (at " + e.file + ":" + itos(e.line) + ")";
+		}
+	}
+	return result;
+}
+
+int AIErrorMonitor::get_debugger_error_count() const {
+	return debugger_errors.size();
+}
+
+void AIErrorMonitor::clear_debugger_errors() {
+	debugger_errors.clear();
+}
+
 void AIErrorMonitor::clear_all() {
 	ai_errors.clear();
 	all_errors.clear();
+	debugger_errors.clear();
 }
 
 AIErrorMonitor::AIErrorMonitor() {

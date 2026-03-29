@@ -13,26 +13,26 @@ String GeminiProvider::get_default_endpoint() const {
 }
 
 String GeminiProvider::get_default_model() const {
-	return "gemini-2.5-pro";
+	return "gemini-3.0-pro";
 }
 
 int GeminiProvider::get_model_context_length() const {
 	String m = model.is_empty() ? get_default_model() : model;
+	if (m.find("3.0-pro") >= 0) return 2097152;
+	if (m.find("3.0-flash") >= 0) return 1048576;
 	if (m.find("2.5-pro") >= 0) return 1048576;
 	if (m.find("2.5-flash") >= 0) return 1048576;
 	if (m.find("2.0-flash") >= 0) return 1048576;
-	if (m.find("1.5-pro") >= 0) return 2097152;
-	if (m.find("1.5-flash") >= 0) return 1048576;
 	return 1048576; // Default 1M for Gemini models.
 }
 
 int GeminiProvider::get_recommended_max_tokens() const {
 	String m = model.is_empty() ? get_default_model() : model;
+	if (m.find("3.0-pro") >= 0) return 65536;
+	if (m.find("3.0-flash") >= 0) return 16384;
 	if (m.find("2.5-pro") >= 0) return 65536;
 	if (m.find("2.5-flash") >= 0) return 8192;
 	if (m.find("2.0-flash") >= 0) return 8192;
-	if (m.find("1.5-pro") >= 0) return 8192;
-	if (m.find("1.5-flash") >= 0) return 8192;
 	return 8192;
 }
 
@@ -163,15 +163,6 @@ PackedStringArray GeminiProvider::parse_models_list(const String &p_response_bod
 		return models;
 	}
 
-	// Skip deprecated/legacy model prefixes.
-	Vector<String> skip_prefixes;
-	skip_prefixes.push_back("gemini-1.0");
-	skip_prefixes.push_back("gemini-pro");     // Old Gemini 1.0 Pro alias.
-	skip_prefixes.push_back("text-");
-	skip_prefixes.push_back("chat-");
-	skip_prefixes.push_back("embedding-");
-	skip_prefixes.push_back("aqa");
-
 	Array model_list = data["models"];
 	for (int i = 0; i < model_list.size(); i++) {
 		Dictionary m = model_list[i];
@@ -185,20 +176,13 @@ PackedStringArray GeminiProvider::parse_models_list(const String &p_response_bod
 			name = name.substr(7);
 		}
 
-		// Only keep gemini-1.5 and gemini-2.x series.
-		if (!name.begins_with("gemini-")) {
+		// Only keep gemini-2.5+ and gemini-3.x series. Skip older gen and non-gemini models.
+		if (!name.begins_with("gemini-2.5") && !name.begins_with("gemini-3")) {
 			continue;
 		}
 
-		// Skip deprecated.
-		bool blocked = false;
-		for (int j = 0; j < skip_prefixes.size(); j++) {
-			if (name.begins_with(skip_prefixes[j])) {
-				blocked = true;
-				break;
-			}
-		}
-		if (blocked) {
+		// Skip non-chat utility models.
+		if (name.contains("embedding") || name.contains("aqa") || name.contains("vision")) {
 			continue;
 		}
 
@@ -223,28 +207,23 @@ PackedStringArray GeminiProvider::parse_models_list(const String &p_response_bod
 }
 
 String GeminiProvider::select_best_model(const PackedStringArray &p_models) const {
-	// Pick the highest-version gemini-X.Y-pro that is NOT a preview.
-	// Stable > preview. Pro > flash > lite.
+	// Prefer highest-version stable pro model. gemini-3 > gemini-2.5.
+	// Stable > preview/exp. Pro > flash.
 	String best;
 	float best_ver = 0.0f;
 
 	for (int i = 0; i < p_models.size(); i++) {
 		const String &m = p_models[i];
-		// Skip preview/experimental models — only stable.
-		if (m.contains("preview") || m.contains("exp") || m.contains("thinking")) {
+		// Skip preview/experimental.
+		if (m.contains("preview") || m.contains("exp")) {
 			continue;
 		}
-		// Only consider pro models (strongest tier).
+		// Only pro tier for best selection.
 		if (!m.contains("pro")) {
 			continue;
 		}
-		// Skip lite/flash variants.
-		if (m.contains("lite") || m.contains("flash")) {
-			continue;
-		}
-		// Parse version from "gemini-X.Y-pro"
 		if (m.begins_with("gemini-")) {
-			String after = m.substr(7); // "2.5-pro" or "3.0-pro"
+			String after = m.substr(7); // "3.0-pro" or "2.5-pro"
 			int dash = after.find("-");
 			if (dash > 0) {
 				float ver = after.substr(0, dash).to_float();
