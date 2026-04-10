@@ -55,6 +55,9 @@ public:
 		STR_PERM_PROCEED,
 		STR_PERM_EXECUTE_CONFIRM,
 
+		// Auto-retry for missing code block.
+		STR_NO_CODE_BLOCK_RETRY,
+
 		// Preset buttons.
 		STR_PRESET_DESCRIBE,
 		STR_PRESET_ADD_PLAYER,
@@ -77,6 +80,8 @@ public:
 		STR_SETTINGS_SEND_ON_ENTER_DESC,
 		STR_SETTINGS_AUTO_EXECUTE,
 		STR_SETTINGS_AUTO_EXECUTE_DESC,
+		STR_SETTINGS_RESTORE_LAST_CHAT,
+		STR_SETTINGS_RESTORE_LAST_CHAT_DESC,
 		STR_SETTINGS_LANGUAGE,
 
 		// Permission settings.
@@ -112,6 +117,23 @@ public:
 		// Thinking display.
 		STR_THINKING_LABEL,
 		STR_THINKING_COLLAPSED,
+
+		// Runtime error auto-fix.
+		STR_BTN_WATCH,
+		STR_TIP_WATCH,
+		STR_WATCH_ENABLED,
+		STR_WATCH_DISABLED,
+		STR_WATCH_DETECTING,
+		STR_WATCH_FIXING,
+		STR_WATCH_RESTARTING,
+		STR_WATCH_SUCCESS,
+		STR_WATCH_FAILED,
+
+		// Screenshot.
+		STR_BTN_SCREENSHOT,
+		STR_TIP_SCREENSHOT,
+		STR_SCREENSHOT_SAVED,
+		STR_SCREENSHOT_FAILED,
 
 		STR_MAX
 	};
@@ -182,6 +204,7 @@ private:
 			case STR_PERM_DIALOG_TITLE: return "AI Code Execution";
 			case STR_PERM_PROCEED: return "\n\nProceed?";
 			case STR_PERM_EXECUTE_CONFIRM: return "Execute the generated code?\n\nAutorun is disabled. Click OK to proceed.";
+			case STR_NO_CODE_BLOCK_RETRY: return "No code block found — requesting code from AI";
 
 			// Preset buttons.
 			case STR_PRESET_DESCRIBE: return "Describe Scene";
@@ -205,6 +228,8 @@ private:
 			case STR_SETTINGS_SEND_ON_ENTER_DESC: return "Enter to send (Shift+Enter for newline)";
 			case STR_SETTINGS_AUTO_EXECUTE: return "Auto Execute:";
 			case STR_SETTINGS_AUTO_EXECUTE_DESC: return "Automatically execute AI-generated code";
+			case STR_SETTINGS_RESTORE_LAST_CHAT: return "Restore Chat:";
+			case STR_SETTINGS_RESTORE_LAST_CHAT_DESC: return "Restore last conversation on editor startup";
 			case STR_SETTINGS_LANGUAGE: return "Language:";
 
 			// Permission settings.
@@ -240,6 +265,23 @@ private:
 			// Thinking display.
 			case STR_THINKING_LABEL: return "Thinking";
 			case STR_THINKING_COLLAPSED: return "Thinking process (click to view)";
+
+			// Runtime error auto-fix.
+			case STR_BTN_WATCH: return "Watch";
+			case STR_TIP_WATCH: return "Auto-fix runtime errors while playing the scene";
+			case STR_WATCH_ENABLED: return "Runtime watch enabled — play your scene to auto-fix errors.";
+			case STR_WATCH_DISABLED: return "Runtime watch disabled.";
+			case STR_WATCH_DETECTING: return "Runtime error detected — collecting errors...";
+			case STR_WATCH_FIXING: return "Auto-fixing runtime errors...";
+			case STR_WATCH_RESTARTING: return "Fix applied — restarting scene...";
+			case STR_WATCH_SUCCESS: return "Runtime errors fixed! Scene ran without errors.";
+			case STR_WATCH_FAILED: return "Could not auto-fix runtime errors after max attempts. Please fix manually.";
+
+			// Screenshot.
+			case STR_BTN_SCREENSHOT: return "Screenshot";
+			case STR_TIP_SCREENSHOT: return "Capture editor viewport screenshot for AI context";
+			case STR_SCREENSHOT_SAVED: return "Screenshot captured and attached to next message.";
+			case STR_SCREENSHOT_FAILED: return "Failed to capture screenshot.";
 
 			default: return "";
 		}
@@ -290,6 +332,7 @@ private:
 			case STR_PERM_DIALOG_TITLE: return String::utf8("AI 代码执行");
 			case STR_PERM_PROCEED: return String::utf8("\n\n是否继续？");
 			case STR_PERM_EXECUTE_CONFIRM: return String::utf8("是否执行生成的代码？\n\n自动执行已禁用，点击确定继续。");
+			case STR_NO_CODE_BLOCK_RETRY: return String::utf8("响应中未找到代码块 — 正在向 AI 请求代码");
 
 			// Preset buttons.
 			case STR_PRESET_DESCRIBE: return String::utf8("描述场景");
@@ -313,6 +356,8 @@ private:
 			case STR_SETTINGS_SEND_ON_ENTER_DESC: return String::utf8("Enter 发送（Shift+Enter 换行）");
 			case STR_SETTINGS_AUTO_EXECUTE: return String::utf8("自动执行：");
 			case STR_SETTINGS_AUTO_EXECUTE_DESC: return String::utf8("自动执行 AI 生成的代码");
+			case STR_SETTINGS_RESTORE_LAST_CHAT: return String::utf8("恢复对话：");
+			case STR_SETTINGS_RESTORE_LAST_CHAT_DESC: return String::utf8("启动编辑器时自动恢复上次对话记录");
 			case STR_SETTINGS_LANGUAGE: return String::utf8("语言：");
 
 			// Permission settings.
@@ -348,6 +393,23 @@ private:
 			// Thinking display.
 			case STR_THINKING_LABEL: return String::utf8("思考中");
 			case STR_THINKING_COLLAPSED: return String::utf8("思考过程（点击查看）");
+
+			// Runtime error auto-fix.
+			case STR_BTN_WATCH: return String::utf8("监控");
+			case STR_TIP_WATCH: return String::utf8("运行场景时自动检测并修复运行时错误");
+			case STR_WATCH_ENABLED: return String::utf8("运行时监控已开启 — 运行场景后将自动修复错误。");
+			case STR_WATCH_DISABLED: return String::utf8("运行时监控已关闭。");
+			case STR_WATCH_DETECTING: return String::utf8("检测到运行时错误 — 正在收集错误信息...");
+			case STR_WATCH_FIXING: return String::utf8("正在自动修复运行时错误...");
+			case STR_WATCH_RESTARTING: return String::utf8("修复已应用 — 正在重新运行场景...");
+			case STR_WATCH_SUCCESS: return String::utf8("运行时错误已修复！场景运行正常。");
+			case STR_WATCH_FAILED: return String::utf8("已达最大尝试次数，无法自动修复运行时错误，请手动修复。");
+
+			// Screenshot.
+			case STR_BTN_SCREENSHOT: return String::utf8("截图");
+			case STR_TIP_SCREENSHOT: return String::utf8("截取编辑器视口画面作为 AI 上下文");
+			case STR_SCREENSHOT_SAVED: return String::utf8("截图已捕获，将附加到下次消息中。");
+			case STR_SCREENSHOT_FAILED: return String::utf8("截图失败。");
 
 			default: return _get_en(p_id);
 		}

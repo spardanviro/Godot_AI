@@ -2,9 +2,10 @@
 
 #include "../ai_provider.h"
 
-// Covers OpenAI, DeepSeek, and any OpenAI-compatible API.
-class OpenAIProvider : public AIProvider {
-	GDCLASS(OpenAIProvider, AIProvider);
+// DeepSeek API provider — OpenAI-compatible chat completions.
+// Default: streaming enabled.
+class DeepSeekProvider : public AIProvider {
+	GDCLASS(DeepSeekProvider, AIProvider);
 
 protected:
 	static void _bind_methods();
@@ -33,5 +34,5 @@ public:
 	virtual Dictionary parse_stream_delta_ex(const String &p_data) const override;
 	virtual bool is_stream_done_marker(const String &p_data) const override;
 
-	OpenAIProvider();
+	DeepSeekProvider();
 };

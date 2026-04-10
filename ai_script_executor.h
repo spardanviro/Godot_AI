@@ -29,5 +29,11 @@ public:
 	// Compile-only check (no execution). Returns error message or empty string.
 	String compile_check(const String &p_code) const;
 
+	// Auto-fix common GDScript issues that the AI repeatedly generates.
+	// Currently fixes: (1) set_owner before add_child reordering,
+	//                  (2) standalone lambdas (wraps in variable assignment).
+	// Returns the fixed code (unchanged if no fixes were needed).
+	String auto_fix_code(const String &p_code) const;
+
 	AIScriptExecutor();
 };

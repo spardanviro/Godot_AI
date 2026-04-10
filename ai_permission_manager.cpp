@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_permission_manager.h"
+#include "core/object/class_db.h"
 #include "editor/settings/editor_settings.h"
 
 void AIPermissionManager::_bind_methods() {
@@ -72,6 +73,66 @@ void AIPermissionManager::save_to_settings() {
 		}
 	}
 	es->save();
+}
+
+// Speculative risk classifier — fast path before per-category permission checks.
+// Mirrors Claude Code's bash_classifier: runs synchronously, classifies based
+// on known-safe and known-dangerous patterns, and returns a tier that lets the
+// caller skip the confirmation dialog for obviously low-risk operations.
+AIPermissionManager::RiskTier AIPermissionManager::classify_risk(const String &p_code) {
+	// ── Tier 3: BLOCKED — operations that are never allowed ──────────────────
+	static const char *blocked_patterns[] = {
+		"OS.execute", "OS.shell_open", "OS.kill", "OS.create_process",
+		"OS.create_process", "OS.set_environment",
+		"HTTPClient.new", // direct HTTP client (use HTTPRequest node instead)
+		nullptr
+	};
+	for (int i = 0; blocked_patterns[i]; i++) {
+		if (p_code.find(blocked_patterns[i]) != -1) {
+			return RISK_BLOCKED;
+		}
+	}
+
+	// ── Tier 2: DESTRUCTIVE — changes that can't be easily undone ────────────
+	static const char *destructive_patterns[] = {
+		"DirAccess.remove", "remove_absolute", "OS.move_to_trash",
+		"queue_free()", ".free()",
+		"remove_child(",
+		"ProjectSettings.set_setting", "ProjectSettings.save",
+		"InputMap.erase_action", "InputMap.action_erase_event",
+		nullptr
+	};
+	for (int i = 0; destructive_patterns[i]; i++) {
+		if (p_code.find(destructive_patterns[i]) != -1) {
+			return RISK_DESTRUCTIVE;
+		}
+	}
+
+	// ── Tier 0: READ-ONLY — pure inspection, no side effects ─────────────────
+	// Heuristic: code only calls getters, print(), or inspects the scene tree.
+	// We flag it as read-only ONLY when none of the write indicators are present.
+	static const char *write_indicators[] = {
+		"add_child", ".new()", "add_root_node",
+		"ResourceSaver", "FileAccess.open", "store_string", "store_line",
+		"set_script", "source_code",
+		"add_theme_", "set(", "add_do_",
+		".position =", ".rotation =", ".scale =", ".visible =",
+		"PackedScene", "pack(",
+		nullptr
+	};
+	bool has_write = false;
+	for (int i = 0; write_indicators[i]; i++) {
+		if (p_code.find(write_indicators[i]) != -1) {
+			has_write = true;
+			break;
+		}
+	}
+	if (!has_write) {
+		return RISK_READ_ONLY;
+	}
+
+	// Everything else that passed the blocked/destructive checks is additive.
+	return RISK_ADDITIVE;
 }
 
 Vector<AIPermissionManager::Category> AIPermissionManager::categorize_code(const String &p_code) const {

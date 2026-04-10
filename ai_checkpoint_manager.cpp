@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_checkpoint_manager.h"
+#include "core/object/class_db.h"
 #include "core/io/resource_saver.h"
 #include "core/os/time.h"
 #include "editor/editor_interface.h"

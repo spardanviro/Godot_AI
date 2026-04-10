@@ -1,4 +1,5 @@
 #include "ai_script_executor.h"
+#include "core/object/class_db.h"
 
 #include "core/config/engine.h"
 #include "core/error/error_list.h"
@@ -19,13 +20,52 @@
 static thread_local String _captured_errors;
 
 static void _ai_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type) {
-	if (p_type == ERR_HANDLER_ERROR || p_type == ERR_HANDLER_SCRIPT) {
+	if (p_type == ERR_HANDLER_ERROR || p_type == ERR_HANDLER_SCRIPT || p_type == ERR_HANDLER_WARNING) {
 		if (!_captured_errors.is_empty()) {
 			_captured_errors += "\n";
 		}
+
+		// Type prefix.
+		if (p_type == ERR_HANDLER_WARNING) {
+			_captured_errors += "[WARNING] ";
+		} else {
+			_captured_errors += "[ERROR] ";
+		}
+
+		// Error message and detail.
 		_captured_errors += String(p_error);
 		if (p_message && p_message[0]) {
 			_captured_errors += ": " + String(p_message);
+		}
+
+		// Location info.
+		String file_str = p_file ? String(p_file) : "";
+		String func_str = p_function ? String(p_function) : "";
+		if (!file_str.is_empty()) {
+			_captured_errors += " (at " + file_str + ":" + itos(p_line);
+			if (!func_str.is_empty()) {
+				_captured_errors += " in " + func_str;
+			}
+			_captured_errors += ")";
+		}
+
+		// Try to capture GDScript backtrace.
+		Vector<Ref<ScriptBacktrace>> backtraces = ScriptServer::capture_script_backtraces(false);
+		for (int bt = 0; bt < backtraces.size(); bt++) {
+			const Ref<ScriptBacktrace> &trace = backtraces[bt];
+			if (trace.is_null() || trace->is_empty()) {
+				continue;
+			}
+			String stack_line;
+			for (int f = 0; f < trace->get_frame_count(); f++) {
+				if (!stack_line.is_empty()) {
+					stack_line += String::utf8(" → ");
+				}
+				stack_line += trace->get_frame_file(f) + ":" + itos(trace->get_frame_line(f)) + " @ " + trace->get_frame_function(f) + "()";
+			}
+			if (!stack_line.is_empty()) {
+				_captured_errors += "\n  Stack: " + stack_line;
+			}
 		}
 	}
 }
@@ -52,6 +92,10 @@ String AIScriptExecutor::wrap_in_editor_script(const String &p_code, const Strin
 	String wrapped;
 	wrapped += "@tool\n";
 	wrapped += "extends EditorScript\n\n";
+	// Compatibility shim: get_editor_interface() is deprecated in Godot 4.7+.
+	// EditorInterface is now a global singleton; redirect calls transparently.
+	wrapped += "func get_editor_interface() -> EditorInterface:\n";
+	wrapped += "\treturn EditorInterface\n\n";
 	wrapped += "func _run():\n";
 
 	// Indent each line of the user code.
@@ -197,6 +241,133 @@ String AIScriptExecutor::compile_check(const String &p_code) const {
 	}
 
 	return errors;
+}
+
+String AIScriptExecutor::auto_fix_code(const String &p_code) const {
+	String code = p_code;
+
+	// ── Fix 1: set_owner() before add_child() ──────────────────────────
+	// Detect  X.set_owner(Y)  appearing BEFORE  Z.add_child(X)  and swap
+	// the two lines so add_child comes first.  This is a very common AI
+	// mistake that causes "Invalid owner. Owner must be an ancestor in the
+	// tree." at runtime.
+	{
+		Vector<String> lines = code.split("\n");
+		bool changed = true;
+		// Multiple passes: one swap may expose another pair.
+		for (int pass = 0; pass < 10 && changed; pass++) {
+			changed = false;
+			for (int i = 0; i < lines.size(); i++) {
+				String stripped = lines[i].strip_edges();
+				// Match  <node>.set_owner(...)
+				int so_pos = stripped.find(".set_owner(");
+				if (so_pos < 0) {
+					continue;
+				}
+				// Extract the node name before .set_owner(
+				String node_name = stripped.substr(0, so_pos).strip_edges();
+				if (node_name.is_empty()) {
+					continue;
+				}
+				// Look for a later line with  <something>.add_child(<node_name>)
+				String add_child_suffix = ".add_child(" + node_name + ")";
+				for (int j = i + 1; j < lines.size(); j++) {
+					if (lines[j].strip_edges().ends_with(add_child_suffix) ||
+							lines[j].strip_edges().find(".add_child(" + node_name + ")") >= 0) {
+						// Swap: move add_child line to just before set_owner line.
+						String add_line = lines[j];
+						lines.remove_at(j);
+						lines.insert(i, add_line);
+						changed = true;
+						break;
+					}
+				}
+			}
+		}
+		if (lines.size() > 0) {
+			code = String();
+			for (int j = 0; j < lines.size(); j++) {
+				if (j > 0) {
+					code += "\n";
+				}
+				code += lines[j];
+			}
+		}
+	}
+
+	// ── Fix 2: Standalone lambdas ──────────────────────────────────────
+	// Wrap → parse → look for "Standalone lambdas" errors → fix lines → return.
+	// The fix: insert  var _auto_cb_N =  before the  func  keyword on the
+	// offending line, turning a standalone lambda expression into an assignment
+	// statement which the parser accepts.
+	//
+	// We loop up to 5 times because one fix may unmask another on a later line
+	// (unlikely but safe).
+	// wrap_in_editor_script adds 7 header lines:
+	//   line 1: @tool
+	//   line 2: extends EditorScript
+	//   line 3: (blank)
+	//   line 4: func get_editor_interface() -> EditorInterface:  [compat shim]
+	//   line 5:     return EditorInterface
+	//   line 6: (blank)
+	//   line 7: func _run():
+	//   line 8+: user code (each line indented by one tab)
+	const int HEADER_LINES = 7;
+
+	for (int attempt = 0; attempt < 5; attempt++) {
+		String wrapped = wrap_in_editor_script(code);
+
+		GDScriptParser parser;
+		parser.parse(wrapped, "", false);
+
+		const List<GDScriptParser::ParserError> &errs = parser.get_errors();
+
+		// Collect user-code line indices (0-based) that have standalone lambda errors.
+		Vector<int> fix_lines;
+		for (const List<GDScriptParser::ParserError>::Element *e = errs.front(); e; e = e->next()) {
+			if (e->get().message.find("Standalone lambdas") >= 0) {
+				int user_line_0 = e->get().start_line - HEADER_LINES - 1; // 0-based (field renamed start_line in 4.7)
+				if (user_line_0 >= 0) {
+					fix_lines.push_back(user_line_0);
+				}
+			}
+		}
+
+		if (fix_lines.is_empty()) {
+			break; // nothing left to fix
+		}
+
+		Vector<String> lines = code.split("\n");
+		int fix_id = attempt * 100;
+
+		// Process from bottom to top so earlier fixes don't shift later indices.
+		fix_lines.sort();
+		for (int i = fix_lines.size() - 1; i >= 0; i--) {
+			int idx = fix_lines[i];
+			if (idx >= lines.size()) {
+				continue;
+			}
+			const String &line = lines[idx];
+			int func_pos = line.find("func");
+			if (func_pos < 0) {
+				continue;
+			}
+			String indent = line.substr(0, func_pos);
+			String rest = line.substr(func_pos);
+			lines.write[idx] = indent + "var _auto_cb_" + itos(fix_id++) + " = " + rest;
+		}
+
+		// Rejoin.
+		code = String();
+		for (int j = 0; j < lines.size(); j++) {
+			if (j > 0) {
+				code += "\n";
+			}
+			code += lines[j];
+		}
+	}
+
+	return code;
 }
 
 AIScriptExecutor::AIScriptExecutor() {

@@ -1,5 +1,7 @@
 #include "anthropic_provider.h"
+#include "core/object/class_db.h"
 #include "core/io/json.h"
+#include "../ai_system_prompt.h"
 
 void AnthropicProvider::_bind_methods() {
 }
@@ -18,10 +20,13 @@ String AnthropicProvider::get_default_model() const {
 
 int AnthropicProvider::get_model_context_length() const {
 	String m = model.is_empty() ? get_default_model() : model;
+	// Opus 4.6 and Sonnet 4.6 support 1M context at standard pricing.
+	if (m.find("opus-4-6") >= 0 || m.find("sonnet-4-6") >= 0) return 1000000;
+	// Sonnet 4.5/4 support 1M via beta header; default to 200K.
 	if (m.find("opus") >= 0) return 200000;
 	if (m.find("sonnet") >= 0) return 200000;
 	if (m.find("haiku") >= 0) return 200000;
-	return 200000; // All Claude 3+ models support 200K.
+	return 200000;
 }
 
 int AnthropicProvider::get_recommended_max_tokens() const {
@@ -184,8 +189,41 @@ String AnthropicProvider::build_stream_request_body(const String &p_system_promp
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_tokens"] = max_tokens;
-	body["system"] = p_system_prompt;
 	body["stream"] = true;
+
+	// Prompt caching: split system prompt at the CACHE_BOUNDARY marker.
+	// Content before the boundary is static (same every turn) — mark it with
+	// cache_control so Anthropic can cache it across requests, reducing both
+	// latency and input token cost.
+	// Content after the boundary is dynamic (editor context, performance data).
+	const String boundary = AISystemPrompt::CACHE_BOUNDARY;
+	int boundary_pos = p_system_prompt.find(boundary);
+	if (boundary_pos > 0) {
+		String static_part  = p_system_prompt.left(boundary_pos);
+		String dynamic_part = p_system_prompt.substr(boundary_pos + boundary.length());
+
+		Dictionary static_block;
+		static_block["type"] = "text";
+		static_block["text"] = static_part;
+		Dictionary cc;
+		cc["type"] = "ephemeral"; // Anthropic's cache_control type for prefix caching
+		static_block["cache_control"] = cc;
+
+		Array system_blocks;
+		system_blocks.push_back(static_block);
+
+		if (!dynamic_part.strip_edges().is_empty()) {
+			Dictionary dynamic_block;
+			dynamic_block["type"] = "text";
+			dynamic_block["text"] = dynamic_part;
+			system_blocks.push_back(dynamic_block);
+		}
+
+		body["system"] = system_blocks;
+	} else {
+		// No boundary found — send as plain string (backwards compatibility).
+		body["system"] = p_system_prompt;
+	}
 
 	Array messages;
 

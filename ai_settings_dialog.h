@@ -20,11 +20,13 @@ class AISettingsDialog : public AcceptDialog {
 	OptionButton *provider_option = nullptr;
 	LineEdit *api_key_edit = nullptr;
 	OptionButton *model_option = nullptr;
+	LineEdit *custom_model_edit = nullptr; // Visible only when "Custom..." is selected.
 	LineEdit *endpoint_edit = nullptr;
 	SpinBox *max_tokens_spin = nullptr;
 	SpinBox *temperature_spin = nullptr;
 	CheckBox *send_on_enter_check = nullptr;
 	CheckBox *autorun_check = nullptr;
+	CheckBox *restore_last_chat_check = nullptr;
 	OptionButton *language_option = nullptr;
 	Label *fetch_status_label = nullptr;
 
@@ -38,6 +40,7 @@ class AISettingsDialog : public AcceptDialog {
 	Label *label_temperature = nullptr;
 	Label *label_send_on_enter = nullptr;
 	Label *label_auto_execute = nullptr;
+	Label *label_restore_last_chat = nullptr;
 	Label *label_permissions = nullptr;
 	Label *perm_labels[AIPermissionManager::PERM_MAX] = {};
 
@@ -49,8 +52,8 @@ class AISettingsDialog : public AcceptDialog {
 	Ref<AIProvider> fetch_provider;
 	bool is_fetching = false;
 
-	// Per-provider API keys (index matches provider dropdown: 0=Anthropic, 1=OpenAI, 2=Gemini).
-	String provider_api_keys[3];
+	// Per-provider API keys (0=Anthropic, 1=OpenAI, 2=Gemini, 3=GLM, 4=DeepSeek).
+	String provider_api_keys[5];
 	int current_provider_idx = 0;
 
 	// Default model per provider (used to seed dropdown before fetch completes).
@@ -59,6 +62,12 @@ class AISettingsDialog : public AcceptDialog {
 	PackedStringArray _get_fallback_models_for(int p_provider_index) const;
 
 	void _on_provider_changed(int p_index);
+	void _on_model_changed(int p_index);
+	void _on_custom_model_changed(const String &p_text);
+	// Ensures "Custom..." always sits at the end of model_option.
+	void _append_custom_model_item();
+	// Select "Custom..." entry and pre-fill the edit with p_name.
+	void _select_custom_model(const String &p_name);
 	void _on_api_key_changed(const String &p_text);
 	void _on_language_changed(int p_index);
 	void _on_confirmed();

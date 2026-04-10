@@ -51,6 +51,26 @@ public:
 	void load_from_settings();
 	void save_to_settings();
 
+	// Speculative risk tier (inspired by Claude Code's bash safety classifier).
+	// Used to skip the confirmation dialog for obviously low-risk operations,
+	// reducing friction for the most common AI actions.
+	enum RiskTier {
+		// Tier 0 — read-only scene inspection. No dialog, always auto-run.
+		RISK_READ_ONLY,
+		// Tier 1 — additive-only changes (add nodes, set properties, write new files).
+		// Auto-run when the user has not set any category to LEVEL_ASK.
+		RISK_ADDITIVE,
+		// Tier 2 — destructive or broad changes (delete nodes, overwrite files,
+		// change ProjectSettings). Always show confirmation dialog.
+		RISK_DESTRUCTIVE,
+		// Tier 3 — blocked operations (OS.execute, shell commands, etc.).
+		RISK_BLOCKED,
+	};
+
+	// Classify code into a risk tier without consulting per-category settings.
+	// This is the fast path used to skip dialogs for safe operations.
+	static RiskTier classify_risk(const String &p_code);
+
 	// Analyze code and check permissions.
 	// Returns which categories the code touches.
 	Vector<Category> categorize_code(const String &p_code) const;

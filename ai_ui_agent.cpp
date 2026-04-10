@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_ui_agent.h"
+#include "core/object/class_db.h"
 
 void AIUIAgent::_bind_methods() {
 }

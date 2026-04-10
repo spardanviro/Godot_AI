@@ -2,6 +2,7 @@
 
 #ifdef TOOLS_ENABLED
 
+#include "editor/docks/editor_dock.h"
 #include "editor/plugins/editor_plugin.h"
 
 class AIAssistantPanel;
@@ -10,6 +11,9 @@ class AIAssistantPlugin : public EditorPlugin {
 	GDCLASS(AIAssistantPlugin, EditorPlugin);
 
 	AIAssistantPanel *panel = nullptr;
+	EditorDock *dock = nullptr;
+
+	void _focus_dock();
 
 	// Scene-tree right-click hook — adds "Mention in AI Assistant".
 	static const int AI_MENU_MENTION_ID = 9001;

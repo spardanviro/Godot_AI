@@ -13,6 +13,8 @@
 #include "ai_audio_generator.h"
 #include "ai_profiler_collector.h"
 #include "ai_ui_agent.h"
+#include "ai_domain_prompts.h"
+#include "ai_api_doc_loader.h"
 #include "ai_web_search.h"
 #include "ai_mention_highlighter.h"
 #include "ai_mention_text_edit.h"
@@ -21,6 +23,7 @@
 #include "scene/gui/item_list.h"
 #include "core/os/thread.h"
 #include "core/os/mutex.h"
+#include "core/error/error_macros.h"
 
 class RichTextLabel;
 class Button;
@@ -61,9 +64,13 @@ private:
 	Label *title_label = nullptr;
 	Button *new_chat_button = nullptr;
 	Button *history_button = nullptr;
+	Button *screenshot_button = nullptr;
 	Button *settings_button = nullptr;
 	OptionButton *mode_selector = nullptr;
 	Vector<Button *> preset_buttons;
+
+	// Screenshot state.
+	String pending_screenshot_path;
 
 	// History view (inline, replaces chat view when visible).
 	ScrollContainer *history_scroll = nullptr;
@@ -112,6 +119,16 @@ private:
 	Button *attach_button = nullptr;
 	EditorFileDialog *file_dialog = nullptr;
 
+	// Paste store: large attached file content is stored here by ID so it can be
+	// de-duplicated across turns. Keyed by file path to detect re-attachments.
+	// Within a session, re-attaching the same file just inserts a back-reference.
+	static const int PASTE_INLINE_LIMIT = 1500; // chars below which no dedup needed
+	HashMap<String, int> paste_path_to_id;  // file path → paste ID
+	HashMap<int, String> paste_id_to_content; // paste ID → full content
+	int paste_next_id = 1;
+	String _make_paste_ref(int p_id, const String &p_path, int p_char_count) const;
+	String _build_attachment_content(const String &p_path, const String &p_raw_content);
+
 	// N5: Saved code blocks for "Save" feature.
 	Vector<String> displayed_code_blocks;
 
@@ -123,7 +140,8 @@ private:
 	RichTextLabel *details_rtl = nullptr;
 
 	// State.
-	Array conversation_history;
+	Array conversation_history;      // Working copy sent to AI — may be compressed.
+	Array full_conversation_history; // Complete record — never trimmed, used for display & save.
 	String context_summary; // Compressed summary of older messages.
 	String pending_code;
 	bool is_waiting_response = false;
@@ -133,6 +151,19 @@ private:
 
 	// N1: Deferred error check timer.
 	Timer *deferred_error_timer = nullptr;
+
+	// --- Runtime Error Auto-Fix (always-on, passive) ---
+	bool runtime_was_playing = false;
+	bool runtime_fix_in_progress = false;   // AI response should be auto-executed
+	bool runtime_restart_after_fix = false; // Restart scene after successful execution
+	int runtime_fix_attempt = 0;
+	static const int RUNTIME_MAX_ATTEMPTS = 5;
+	String runtime_last_play_path;          // Scene path recorded when play started
+	Timer *runtime_poll_timer = nullptr;    // 200 ms — detects play start/stop
+	Timer *runtime_collect_timer = nullptr; // 2 s one-shot — stop scene after first error
+	bool runtime_eh_installed = false;
+	ErrorHandlerList runtime_eh;
+	static String s_runtime_errors; // Captured error text (main-thread only)
 
 	// --- Streaming state ---
 	struct StreamChunk {
@@ -173,6 +204,7 @@ private:
 	void _on_stop_pressed();
 	void _on_new_chat_pressed();
 	void _on_history_pressed();
+	void _on_screenshot_pressed();
 	void _on_settings_pressed();
 	void _on_preset_pressed(const String &p_prompt);
 	void _on_input_gui_input(const Ref<class InputEvent> &p_event);
@@ -203,7 +235,7 @@ private:
 	String _extract_code_summary(const String &p_code) const;
 
 	// Node mention system (chip-based via inline objects).
-	AIMentionHighlighter *mention_highlighter = nullptr; // Hides PUA placeholder chars.
+	Ref<AIMentionHighlighter> mention_highlighter; // Hides PUA placeholder chars.
 	Panel *autocomplete_panel = nullptr;
 	ItemList *autocomplete_list = nullptr;
 	int autocomplete_at_line = -1;
@@ -255,13 +287,29 @@ private:
 	AIMode _get_current_mode() const;
 	void _on_mode_changed(int p_index);
 
+	// Runtime error auto-fix.
+	static void _runtime_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
+	void _on_runtime_poll_timeout();
+	void _on_runtime_collect_timeout();
+	void _install_runtime_error_handler();
+	void _remove_runtime_error_handler();
+	void _trigger_runtime_fix();
+
 	// Web search.
 	void _handle_web_search(const String &p_query, const String &p_user_message);
 	void _handle_fetch_url(const String &p_url, const String &p_user_message);
 	void _on_web_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 
+	// Cross-session learning — appends a discovered quirk to res://godot_ai.md.
+	void _handle_write_memory(const String &p_content);
+
 	// Context compression.
 	void _compress_context_if_needed();
+	// Reactive compression: parses "context too long" API errors, extracts the
+	// exact token gap, drops the minimum number of message groups to cover it,
+	// then retries the request. Returns true if a retry was initiated.
+	bool _try_reactive_compress(const String &p_error_msg);
+	bool reactive_retry_pending = false; // Guard against recursive retries.
 	String _build_message_summary(const Dictionary &p_msg) const;
 	int _estimate_tokens(const String &p_text) const;
 

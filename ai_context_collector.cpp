@@ -1,7 +1,10 @@
 #include "ai_context_collector.h"
 
+#include "core/object/class_db.h"
 #include "scene/main/node.h"
 #include "core/io/resource_loader.h"
+#include "main/performance.h"
+#include "servers/rendering/rendering_server.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/editor_interface.h"
@@ -124,9 +127,29 @@ String AIContextCollector::get_selected_nodes_info() const {
 #endif
 }
 
+static void _collect_dir_recursive(EditorFileSystemDirectory *p_dir, const String &p_indent, String &r_result, int p_depth) {
+	// Cap depth to avoid massive output for deeply nested projects.
+	if (p_depth > 6) {
+		r_result += p_indent + "  ...\n";
+		return;
+	}
+
+	// Subdirectories first.
+	for (int i = 0; i < p_dir->get_subdir_count(); i++) {
+		EditorFileSystemDirectory *sub = p_dir->get_subdir(i);
+		r_result += p_indent + "[" + sub->get_name() + "/]\n";
+		_collect_dir_recursive(sub, p_indent + "  ", r_result, p_depth + 1);
+	}
+
+	// Then files.
+	for (int i = 0; i < p_dir->get_file_count(); i++) {
+		r_result += p_indent + p_dir->get_file(i) + "\n";
+	}
+}
+
 String AIContextCollector::get_project_structure() const {
 #ifdef TOOLS_ENABLED
-	EditorFileSystem *efs = EditorInterface::get_singleton()->get_resource_file_system();
+	EditorFileSystem *efs = EditorInterface::get_singleton()->get_resource_filesystem();
 	if (!efs) {
 		return "File system not available.";
 	}
@@ -138,19 +161,22 @@ String AIContextCollector::get_project_structure() const {
 		return result + "  (empty)\n";
 	}
 
-	for (int i = 0; i < root->get_subdir_count(); i++) {
-		EditorFileSystemDirectory *subdir = root->get_subdir(i);
-		result += "  [dir] " + subdir->get_name() + "/\n";
-	}
-
-	for (int i = 0; i < root->get_file_count(); i++) {
-		result += "  " + root->get_file(i) + "\n";
-	}
+	_collect_dir_recursive(root, "  ", result, 0);
 
 	return result;
 #else
 	return "Project structure not available outside editor.";
 #endif
+}
+
+// djb2-style hash for cheap content fingerprinting.
+uint32_t AIContextCollector::_hash_string(const String &p_s) {
+	uint32_t h = 5381;
+	int len = p_s.length();
+	for (int i = 0; i < len; i++) {
+		h = ((h << 5) + h) + (uint32_t)p_s[i];
+	}
+	return h;
 }
 
 String AIContextCollector::get_current_script_info() const {
@@ -177,15 +203,33 @@ String AIContextCollector::get_current_script_info() const {
 		if (i == 0) {
 			String source = scr->get_source_code();
 			if (!source.is_empty()) {
+				String cache_key = path.is_empty() ? "(unsaved)" : path;
+				uint32_t new_hash = _hash_string(source);
+
+				// Check cache: if the source hasn't changed, reuse the formatted output.
+				if (_script_cache.has(cache_key)) {
+					const ScriptCacheEntry &entry = _script_cache[cache_key];
+					if (entry.source_hash == new_hash) {
+						result += entry.formatted;
+						continue;
+					}
+				}
+
+				// Cache miss — format and store.
 				Vector<String> lines = source.split("\n");
 				int max_lines = MIN(lines.size(), 50);
-				result += "  Source (first " + itos(max_lines) + " lines):\n";
+				String formatted = "  Source (first " + itos(max_lines) + " lines):\n";
 				for (int j = 0; j < max_lines; j++) {
-					result += "    " + itos(j + 1) + ": " + lines[j] + "\n";
+					formatted += "    " + itos(j + 1) + ": " + lines[j] + "\n";
 				}
 				if (lines.size() > max_lines) {
-					result += "    ... (" + itos(lines.size() - max_lines) + " more lines)\n";
+					formatted += "    ... (" + itos(lines.size() - max_lines) + " more lines)\n";
 				}
+
+				ScriptCacheEntry &entry = _script_cache[cache_key];
+				entry.source_hash = new_hash;
+				entry.formatted    = formatted;
+				result += formatted;
 			}
 		}
 	}
@@ -328,6 +372,89 @@ String AIContextCollector::build_context_prompt() const {
 	context += get_project_structure();
 	context += "--- END CONTEXT ---\n";
 	return context;
+}
+
+String AIContextCollector::get_performance_snapshot() const {
+	Performance *perf = Performance::get_singleton();
+	if (!perf) {
+		return "";
+	}
+
+	String result = "Performance Snapshot:\n";
+	result += "  FPS: " + itos((int)perf->get_monitor(Performance::TIME_FPS)) + "\n";
+	result += "  Process Time: " + String::num(perf->get_monitor(Performance::TIME_PROCESS) * 1000.0, 2) + " ms\n";
+	result += "  Physics Time: " + String::num(perf->get_monitor(Performance::TIME_PHYSICS_PROCESS) * 1000.0, 2) + " ms\n";
+	result += "  Static Memory: " + String::humanize_size((uint64_t)perf->get_monitor(Performance::MEMORY_STATIC)) + "\n";
+	result += "  Object Count: " + itos((int)perf->get_monitor(Performance::OBJECT_COUNT)) + "\n";
+	result += "  Resource Count: " + itos((int)perf->get_monitor(Performance::OBJECT_RESOURCE_COUNT)) + "\n";
+	result += "  Node Count: " + itos((int)perf->get_monitor(Performance::OBJECT_NODE_COUNT)) + "\n";
+	result += "  Orphan Nodes: " + itos((int)perf->get_monitor(Performance::OBJECT_ORPHAN_NODE_COUNT)) + "\n";
+	return result;
+}
+
+String AIContextCollector::get_open_scripts_snapshot(int max_scripts, int max_chars_each) const {
+#ifdef TOOLS_ENABLED
+	ScriptEditor *se = ScriptEditor::get_singleton();
+	if (!se) {
+		return "";
+	}
+	Vector<Ref<Script>> scripts = se->get_open_scripts();
+	if (scripts.is_empty()) {
+		return "";
+	}
+
+	String result = "\n## Recently Open Scripts (restored after context compression)\n";
+	int included = 0;
+	for (int i = 0; i < scripts.size() && included < max_scripts; i++) {
+		Ref<Script> scr = scripts[i];
+		if (scr.is_null()) {
+			continue;
+		}
+		String source = scr->get_source_code();
+		if (source.is_empty()) {
+			continue;
+		}
+		String path = scr->get_path();
+		if (path.is_empty()) {
+			path = "(unsaved)";
+		}
+
+		// Use file-state cache to avoid re-formatting unchanged scripts.
+		String snapshot_key = "snapshot:" + path;
+		uint32_t new_hash = _hash_string(source);
+		if (_script_cache.has(snapshot_key)) {
+			const ScriptCacheEntry &entry = _script_cache[snapshot_key];
+			if (entry.source_hash == new_hash) {
+				result += entry.formatted;
+				included++;
+				continue;
+			}
+		}
+
+		String block = "\n### " + path + "\n```gdscript\n";
+		if (source.length() > max_chars_each) {
+			block += source.left(max_chars_each);
+			block += "\n# ... [truncated — " + itos(source.length() - max_chars_each) + " more chars]\n";
+		} else {
+			block += source;
+		}
+		block += "\n```\n";
+
+		ScriptCacheEntry &entry = _script_cache[snapshot_key];
+		entry.source_hash = new_hash;
+		entry.formatted    = block;
+
+		result += block;
+		included++;
+	}
+
+	if (included == 0) {
+		return "";
+	}
+	return result;
+#else
+	return "";
+#endif
 }
 
 AIContextCollector::AIContextCollector() {

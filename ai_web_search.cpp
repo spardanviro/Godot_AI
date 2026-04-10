@@ -1,4 +1,5 @@
 #include "ai_web_search.h"
+#include "core/object/class_db.h"
 
 void AIWebSearch::_bind_methods() {
 }

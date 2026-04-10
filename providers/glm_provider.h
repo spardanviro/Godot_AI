@@ -2,9 +2,9 @@
 
 #include "../ai_provider.h"
 
-// Covers OpenAI, DeepSeek, and any OpenAI-compatible API.
-class OpenAIProvider : public AIProvider {
-	GDCLASS(OpenAIProvider, AIProvider);
+// Zhipu AI GLM provider — OpenAI-compatible chat completions API.
+class GLMProvider : public AIProvider {
+	GDCLASS(GLMProvider, AIProvider);
 
 protected:
 	static void _bind_methods();
@@ -18,7 +18,6 @@ public:
 	virtual String parse_response(const String &p_response_body) const override;
 	virtual Vector<String> get_headers() const override;
 
-	virtual String get_stream_url() const override;
 	virtual String get_models_list_url() const override;
 	virtual Vector<String> get_models_list_headers() const override;
 	virtual PackedStringArray parse_models_list(const String &p_response_body) const override;
@@ -33,5 +32,5 @@ public:
 	virtual Dictionary parse_stream_delta_ex(const String &p_data) const override;
 	virtual bool is_stream_done_marker(const String &p_data) const override;
 
-	OpenAIProvider();
+	GLMProvider();
 };

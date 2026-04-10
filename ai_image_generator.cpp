@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_image_generator.h"
+#include "core/object/class_db.h"
 #include "core/io/json.h"
 #include "core/io/file_access.h"
 #include "core/crypto/crypto_core.h"
@@ -88,7 +89,7 @@ bool AIImageGenerator::save_base64_as_texture(const String &p_base64_data, const
 	f.unref();
 
 	// Trigger reimport.
-	EditorInterface::get_singleton()->get_resource_file_system()->scan();
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 
 	print_line("[Godot AI] Image saved: " + p_save_path);
 	return true;

@@ -20,6 +20,8 @@
 #include "providers/openai_provider.h"
 #include "providers/anthropic_provider.h"
 #include "providers/gemini_provider.h"
+#include "providers/glm_provider.h"
+#include "providers/deepseek_provider.h"
 
 #include "core/object/class_db.h"
 #include "editor/plugins/editor_plugin.h"
@@ -30,6 +32,8 @@ void initialize_ai_assistant_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(OpenAIProvider);
 		GDREGISTER_CLASS(AnthropicProvider);
 		GDREGISTER_CLASS(GeminiProvider);
+		GDREGISTER_CLASS(GLMProvider);
+		GDREGISTER_CLASS(DeepSeekProvider);
 		GDREGISTER_CLASS(AIResponseParser);
 		GDREGISTER_CLASS(AIScriptExecutor);
 		GDREGISTER_CLASS(AIContextCollector);

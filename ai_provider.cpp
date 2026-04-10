@@ -1,4 +1,6 @@
 #include "ai_provider.h"
+#include "core/object/class_db.h"
+#include "ai_system_prompt.h"
 
 void AIProvider::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_api_key", "key"), &AIProvider::set_api_key);
@@ -105,6 +107,21 @@ bool AIProvider::is_stream_done_marker(const String &p_data) const {
 
 String AIProvider::get_stream_url() const {
 	return api_endpoint.is_empty() ? get_default_endpoint() : api_endpoint;
+}
+
+String AIProvider::strip_cache_boundary(const String &p_prompt) {
+	String boundary = AISystemPrompt::CACHE_BOUNDARY;
+	int idx = p_prompt.find(boundary);
+	if (idx == -1) {
+		return p_prompt;
+	}
+	// Return everything before + everything after the marker (no blank line left behind).
+	String before = p_prompt.substr(0, idx).rstrip("\n");
+	String after = p_prompt.substr(idx + boundary.length()).lstrip("\n");
+	if (after.is_empty()) {
+		return before;
+	}
+	return before + "\n" + after;
 }
 
 AIProvider::AIProvider() {}

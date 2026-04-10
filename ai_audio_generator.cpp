@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_audio_generator.h"
+#include "core/object/class_db.h"
 #include "core/io/json.h"
 #include "core/io/file_access.h"
 #include "editor/editor_interface.h"
@@ -42,7 +43,7 @@ bool AIAudioGenerator::save_audio_bytes(const PackedByteArray &p_data, const Str
 	f.unref();
 
 	// Trigger reimport.
-	EditorInterface::get_singleton()->get_resource_file_system()->scan();
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 
 	print_line("[Godot AI] Audio saved: " + p_save_path);
 	return true;

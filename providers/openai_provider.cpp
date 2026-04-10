@@ -1,4 +1,5 @@
 #include "openai_provider.h"
+#include "core/object/class_db.h"
 #include "core/io/json.h"
 
 void OpenAIProvider::_bind_methods() {
@@ -18,20 +19,30 @@ String OpenAIProvider::get_default_model() const {
 
 int OpenAIProvider::get_model_context_length() const {
 	String m = model.is_empty() ? get_default_model() : model;
-	// OpenAI / compatible model context lengths.
 	if (m.find("o3") >= 0 || m.find("o4") >= 0) return 200000;
+	if (m.find("gpt-5.4") >= 0) return 128000;
+	// Codex series (gpt-5.3-codex, gpt-5.2-codex, gpt-5.1-codex, gpt-5-codex).
+	if (m.find("codex") >= 0) return 128000;
+	if (m.find("gpt-5.2") >= 0) return 128000;
+	if (m.find("gpt-5.1") >= 0) return 128000;
 	if (m.find("gpt-5") >= 0) return 128000;
 	if (m.find("gpt-4.1") >= 0) return 1048576;
 	if (m.find("gpt-4o") >= 0) return 128000;
 	if (m.find("gpt-4-turbo") >= 0) return 128000;
 	if (m.find("gpt-4") >= 0) return 8192;
 	if (m.find("gpt-3.5") >= 0) return 16384;
-	return 128000; // Default for unknown OpenAI-compatible models.
+	return 128000;
 }
 
 int OpenAIProvider::get_recommended_max_tokens() const {
 	String m = model.is_empty() ? get_default_model() : model;
+	if (m.find("o3-pro") >= 0) return 32768;
 	if (m.find("o3") >= 0 || m.find("o4") >= 0) return 16384;
+	if (m.find("gpt-5.4") >= 0) return 16384;
+	// Codex reasoning models — allow more tokens for reasoning output.
+	if (m.find("codex") >= 0) return 32768;
+	if (m.find("gpt-5.2") >= 0) return 16384;
+	if (m.find("gpt-5.1") >= 0) return 16384;
 	if (m.find("gpt-5") >= 0) return 16384;
 	if (m.find("gpt-4.1") >= 0) return 32768;
 	if (m.find("gpt-4o") >= 0) return 16384;
@@ -49,10 +60,10 @@ String OpenAIProvider::build_request_body(const String &p_system_prompt, const A
 
 	Array messages;
 
-	// System message.
+	// System message — strip the cache boundary marker (OpenAI caches automatically).
 	Dictionary sys_msg;
 	sys_msg["role"] = "system";
-	sys_msg["content"] = p_system_prompt;
+	sys_msg["content"] = strip_cache_boundary(p_system_prompt);
 	messages.push_back(sys_msg);
 
 	// History messages.
@@ -102,18 +113,48 @@ String OpenAIProvider::parse_response(const String &p_response_body) const {
 Vector<String> OpenAIProvider::get_headers() const {
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");
+	headers.push_back("Accept: text/event-stream");
 	headers.push_back("Authorization: Bearer " + api_key);
 	return headers;
 }
 
-String OpenAIProvider::get_models_list_url() const {
-	// Use custom endpoint base or default OpenAI.
-	String endpoint = api_endpoint.is_empty() ? "https://api.openai.com/v1" : api_endpoint;
-	// Remove trailing /chat/completions if present.
-	if (endpoint.ends_with("/chat/completions")) {
-		endpoint = endpoint.substr(0, endpoint.length() - String("/chat/completions").length());
+// Normalize a user-supplied endpoint to just the /v1 base.
+// Accepts any of:   http://host:port
+//                   http://host:port/v1
+//                   http://host:port/v1/chat/completions
+// Always returns:   http://host:port/v1   (no trailing slash)
+static String _openai_base_url(const String &p_endpoint) {
+	String ep = p_endpoint;
+	// Strip trailing slash(es).
+	while (ep.ends_with("/")) {
+		ep = ep.substr(0, ep.length() - 1);
 	}
-	return endpoint + "/models";
+	// Strip known suffixes so we always end up with the base.
+	if (ep.ends_with("/chat/completions")) {
+		ep = ep.substr(0, ep.length() - (int)String("/chat/completions").length());
+	} else if (ep.ends_with("/models")) {
+		ep = ep.substr(0, ep.length() - (int)String("/models").length());
+	}
+	// If the remaining URL has no /v1 suffix at all, the user supplied a bare
+	// host:port — append /v1 so downstream path construction works correctly.
+	if (!ep.ends_with("/v1")) {
+		ep += "/v1";
+	}
+	return ep;
+}
+
+String OpenAIProvider::get_stream_url() const {
+	if (api_endpoint.is_empty()) {
+		return get_default_endpoint(); // https://api.openai.com/v1/chat/completions
+	}
+	return _openai_base_url(api_endpoint) + "/chat/completions";
+}
+
+String OpenAIProvider::get_models_list_url() const {
+	if (api_endpoint.is_empty()) {
+		return "https://api.openai.com/v1/models";
+	}
+	return _openai_base_url(api_endpoint) + "/models";
 }
 
 Vector<String> OpenAIProvider::get_models_list_headers() const {
@@ -145,27 +186,8 @@ PackedStringArray OpenAIProvider::parse_models_list(const String &p_response_bod
 		}
 		String id = m["id"];
 
-		// Only current generation: gpt-5.x flagship or o3/o4 reasoning series.
-		bool current_gen = false;
-		if (id.begins_with("gpt-5")) {
-			current_gen = true;
-		} else if (id.begins_with("o3") || id.begins_with("o4")) {
-			current_gen = true;
-		}
-		if (!current_gen) {
-			continue;
-		}
-
-		// Skip reduced-capability variants.
-		if (id.contains("mini") || id.contains("nano") || id.contains("lite")) {
-			continue;
-		}
-		// Skip non-chat capabilities.
-		if (id.contains("audio") || id.contains("realtime") || id.contains("search") || id.contains("transcribe")) {
-			continue;
-		}
-		// Skip dated snapshots (prefer canonical alias e.g. "gpt-5.4" over "gpt-5.4-2026-01-15").
-		if (id.find("-20") > 2) {
+		// Accept all gpt-5.x models (flagship + codex series).
+		if (!id.begins_with("gpt-5")) {
 			continue;
 		}
 
@@ -177,30 +199,16 @@ PackedStringArray OpenAIProvider::parse_models_list(const String &p_response_bod
 }
 
 String OpenAIProvider::select_best_model(const PackedStringArray &p_models) const {
-	// Prefer highest-version gpt-5.x; fall back to highest o-series.
-	String best_gpt;
-	float best_gpt_ver = 0.0f;
-	String best_o;
-
-	for (int i = 0; i < p_models.size(); i++) {
-		const String &m = p_models[i];
-		if (m.begins_with("gpt-5")) {
-			String ver_str = m.substr(4); // "5.4"
-			float ver = ver_str.to_float();
-			if (ver > best_gpt_ver) {
-				best_gpt_ver = ver;
-				best_gpt = m;
+	// Priority: gpt-5.4 > gpt-5.3-codex > gpt-5.4-mini > gpt-5.4-pro > gpt-5.4-nano.
+	static const char *preferred[] = {
+		"gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4-nano", nullptr
+	};
+	for (int p = 0; preferred[p] != nullptr; p++) {
+		for (int i = 0; i < p_models.size(); i++) {
+			if (p_models[i] == String(preferred[p])) {
+				return p_models[i];
 			}
-		} else if ((m.begins_with("o3") || m.begins_with("o4")) && best_o.is_empty()) {
-			best_o = m;
 		}
-	}
-
-	if (!best_gpt.is_empty()) {
-		return best_gpt;
-	}
-	if (!best_o.is_empty()) {
-		return best_o;
 	}
 	return get_default_model();
 }
@@ -218,7 +226,7 @@ String OpenAIProvider::build_stream_request_body(const String &p_system_prompt, 
 
 	Dictionary sys_msg;
 	sys_msg["role"] = "system";
-	sys_msg["content"] = p_system_prompt;
+	sys_msg["content"] = strip_cache_boundary(p_system_prompt);
 	messages.push_back(sys_msg);
 
 	for (int i = 0; i < p_messages.size(); i++) {

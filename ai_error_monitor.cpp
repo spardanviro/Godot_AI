@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_error_monitor.h"
+#include "core/object/class_db.h"
 
 AIErrorMonitor *AIErrorMonitor::singleton = nullptr;
 
@@ -83,14 +84,49 @@ String AIErrorMonitor::get_ai_execution_errors_text() const {
 		return "";
 	}
 
-	String result;
+	// Build deduplicated output: track each unique formatted line and its count.
+	Vector<String> unique_lines;
+	Vector<int> counts;
+
 	for (int i = 0; i < ai_errors.size(); i++) {
 		const ErrorEntry &e = ai_errors[i];
+
+		String line;
+		line += (e.is_warning ? "[WARNING] " : "[ERROR] ");
+		line += e.message;
+		if (!e.file.is_empty()) {
+			line += " (at " + e.file + ":" + itos(e.line);
+			if (!e.function.is_empty()) {
+				line += " in " + e.function;
+			}
+			line += ")";
+		}
+
+		// Check for duplicate.
+		int found = -1;
+		for (int j = 0; j < unique_lines.size(); j++) {
+			if (unique_lines[j] == line) {
+				found = j;
+				break;
+			}
+		}
+		if (found >= 0) {
+			counts.write[found]++;
+		} else {
+			unique_lines.push_back(line);
+			counts.push_back(1);
+		}
+	}
+
+	String result;
+	for (int i = 0; i < unique_lines.size(); i++) {
 		if (!result.is_empty()) {
 			result += "\n";
 		}
-		result += (e.is_warning ? "[WARNING] " : "[ERROR] ");
-		result += e.message;
+		result += unique_lines[i];
+		if (counts[i] > 1) {
+			result += " (x" + itos(counts[i]) + ")";
+		}
 	}
 	return result;
 }

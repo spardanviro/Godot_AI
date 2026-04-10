@@ -3,45 +3,31 @@
 #include "ai_assistant_plugin.h"
 #include "ai_assistant_panel.h"
 
+#include "core/object/callable_mp.h"
+#include "core/object/class_db.h"
+#include "editor/docks/editor_dock_manager.h"
 #include "editor/docks/scene_tree_dock.h"
 #include "scene/gui/popup_menu.h"
 
 void AIAssistantPlugin::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_hook_scene_tree_menu"), &AIAssistantPlugin::_hook_scene_tree_menu);
+	ClassDB::bind_method(D_METHOD("_focus_dock"), &AIAssistantPlugin::_focus_dock);
+}
+
+void AIAssistantPlugin::_focus_dock() {
+	if (dock) {
+		EditorDockManager::get_singleton()->focus_dock(dock);
+	}
 }
 
 // Called deferred once the editor is fully set up so SceneTreeDock::singleton
 // is guaranteed to be valid.
 void AIAssistantPlugin::_hook_scene_tree_menu() {
-	SceneTreeDock *dock = SceneTreeDock::get_singleton();
-	if (!dock) {
-		return;
-	}
-	PopupMenu *ctx_menu = dock->get_context_menu();
-	if (!ctx_menu) {
-		return;
-	}
-	// about_to_popup fires every time the menu is shown, AFTER SceneTreeDock
-	// has already filled it.  We append our item there so it always appears last.
-	ctx_menu->connect("about_to_popup",
-			callable_mp(this, &AIAssistantPlugin::_on_scene_menu_about_to_popup));
-	ctx_menu->connect("id_pressed",
-			callable_mp(this, &AIAssistantPlugin::_on_scene_menu_id_pressed));
+	// get_context_menu() was removed in Godot 4.7; scene tree menu hooking is disabled.
 }
 
 void AIAssistantPlugin::_on_scene_menu_about_to_popup() {
-	SceneTreeDock *dock = SceneTreeDock::get_singleton();
-	if (!dock) {
-		return;
-	}
-	PopupMenu *menu = dock->get_context_menu();
-	if (!menu) {
-		return;
-	}
-	// SceneTreeDock calls menu->clear() at the start of _tree_rmb, so our
-	// previously-added item is already gone – just append fresh.
-	menu->add_separator();
-	menu->add_item(TTR("Mention in AI Assistant"), AI_MENU_MENTION_ID);
+	// get_context_menu() was removed in Godot 4.7; no-op.
 }
 
 void AIAssistantPlugin::_on_scene_menu_id_pressed(int p_id) {
@@ -55,12 +41,27 @@ void AIAssistantPlugin::_on_scene_menu_id_pressed(int p_id) {
 
 AIAssistantPlugin::AIAssistantPlugin() {
 	panel = memnew(AIAssistantPanel);
-	add_control_to_dock(DOCK_SLOT_RIGHT_UL, panel);
+
+	// Build our own EditorDock wrapper so we can call focus_dock() on it.
+	dock = memnew(EditorDock);
+	dock->set_title("Godot AI");
+	dock->set_default_slot(EditorDock::DOCK_SLOT_RIGHT_UL);
+	dock->add_child(panel);
+	add_dock(dock);
+
+	// Defer focusing so the editor layout finishes loading first.
+	call_deferred("_focus_dock");
 
 	// Defer the scene-tree hook until the editor is fully initialised.
 	call_deferred("_hook_scene_tree_menu");
 }
 
-AIAssistantPlugin::~AIAssistantPlugin() {}
+AIAssistantPlugin::~AIAssistantPlugin() {
+	if (dock) {
+		remove_dock(dock);
+		memdelete(dock);
+		dock = nullptr;
+	}
+}
 
 #endif // TOOLS_ENABLED

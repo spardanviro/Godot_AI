@@ -1,4 +1,5 @@
 #include "gemini_provider.h"
+#include "core/object/class_db.h"
 #include "core/io/json.h"
 
 void GeminiProvider::_bind_methods() {
@@ -13,13 +14,15 @@ String GeminiProvider::get_default_endpoint() const {
 }
 
 String GeminiProvider::get_default_model() const {
-	return "gemini-3.0-pro";
+	return "gemini-3.1-pro-preview";
 }
 
 int GeminiProvider::get_model_context_length() const {
 	String m = model.is_empty() ? get_default_model() : model;
-	if (m.find("3.0-pro") >= 0) return 2097152;
-	if (m.find("3.0-flash") >= 0) return 1048576;
+	// Gemini 3.x series — all 1M context.
+	if (m.find("3.1-pro") >= 0) return 1048576;
+	if (m.find("3-flash") >= 0 || m.find("3.1-flash") >= 0) return 1048576;
+	// Older models kept for compatibility.
 	if (m.find("2.5-pro") >= 0) return 1048576;
 	if (m.find("2.5-flash") >= 0) return 1048576;
 	if (m.find("2.0-flash") >= 0) return 1048576;
@@ -28,8 +31,10 @@ int GeminiProvider::get_model_context_length() const {
 
 int GeminiProvider::get_recommended_max_tokens() const {
 	String m = model.is_empty() ? get_default_model() : model;
-	if (m.find("3.0-pro") >= 0) return 65536;
-	if (m.find("3.0-flash") >= 0) return 16384;
+	// Gemini 3.x series — all support 65K output.
+	if (m.find("3.1-pro") >= 0) return 65536;
+	if (m.find("3-flash") >= 0 || m.find("3.1-flash") >= 0) return 65536;
+	// Older models.
 	if (m.find("2.5-pro") >= 0) return 65536;
 	if (m.find("2.5-flash") >= 0) return 8192;
 	if (m.find("2.0-flash") >= 0) return 8192;
@@ -48,7 +53,7 @@ String GeminiProvider::build_request_body(const String &p_system_prompt, const A
 	// System instruction.
 	Dictionary sys_instruction;
 	Dictionary sys_part;
-	sys_part["text"] = p_system_prompt;
+	sys_part["text"] = strip_cache_boundary(p_system_prompt);
 	Array sys_parts;
 	sys_parts.push_back(sys_part);
 	sys_instruction["parts"] = sys_parts;

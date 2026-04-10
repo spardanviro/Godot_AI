@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_profiler_collector.h"
+#include "core/object/class_db.h"
 #include "main/performance.h"
 
 void AIProfilerCollector::_bind_methods() {

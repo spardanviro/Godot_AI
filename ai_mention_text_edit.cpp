@@ -2,6 +2,7 @@
 
 #include "ai_mention_text_edit.h"
 
+#include "core/object/callable_mp.h"
 #include "editor/editor_node.h"
 #include "editor/editor_interface.h"
 #include "scene/main/node.h"

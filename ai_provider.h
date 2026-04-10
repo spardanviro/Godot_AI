@@ -68,6 +68,11 @@ public:
 	virtual PackedStringArray parse_models_list(const String &p_response_body) const;
 	virtual String select_best_model(const PackedStringArray &p_models) const;
 
+	// Strip the cache boundary marker from a system prompt.
+	// Call this in every provider that doesn't implement native prompt caching
+	// so the HTML comment never leaks into the API payload.
+	static String strip_cache_boundary(const String &p_prompt);
+
 	AIProvider();
 	virtual ~AIProvider();
 };
