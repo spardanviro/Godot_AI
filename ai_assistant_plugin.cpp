@@ -2,9 +2,13 @@
 
 #include "ai_assistant_plugin.h"
 #include "ai_assistant_panel.h"
+#include "ai_error_monitor.h"
 
+#include "core/debugger/debugger_marshalls.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_editor_debugger.h"
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/docks/scene_tree_dock.h"
 #include "scene/gui/popup_menu.h"
@@ -12,6 +16,7 @@
 void AIAssistantPlugin::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_hook_scene_tree_menu"), &AIAssistantPlugin::_hook_scene_tree_menu);
 	ClassDB::bind_method(D_METHOD("_focus_dock"), &AIAssistantPlugin::_focus_dock);
+	ClassDB::bind_method(D_METHOD("_connect_debugger_signal"), &AIAssistantPlugin::_connect_debugger_signal);
 }
 
 void AIAssistantPlugin::_focus_dock() {
@@ -39,6 +44,78 @@ void AIAssistantPlugin::_on_scene_menu_id_pressed(int p_id) {
 	}
 }
 
+// Connect to the ScriptEditorDebugger's debug_data signal so we can intercept
+// runtime errors from the game subprocess (sent via the remote debugger protocol)
+// and forward them to AIErrorMonitor for the Watch auto-fix feature.
+// This is deferred because EditorDebuggerNode initializes after the plugin.
+void AIAssistantPlugin::_connect_debugger_signal() {
+	EditorDebuggerNode *dnode = EditorDebuggerNode::get_singleton();
+	if (!dnode) {
+		return;
+	}
+	// get_default_debugger() is always the first (index 0) debugger — the one used
+	// for normal in-editor play. We connect here; for multiple-debugger setups this
+	// is sufficient since the default one receives all standard game errors.
+	ScriptEditorDebugger *dbg = dnode->get_default_debugger();
+	if (!dbg) {
+		return;
+	}
+	Callable cb = callable_mp(this, &AIAssistantPlugin::_on_debug_data);
+	if (!dbg->is_connected("debug_data", cb)) {
+		dbg->connect("debug_data", cb);
+	}
+}
+
+// Receives every raw debugger message. We only care about "error" messages here.
+// When an "error" arrives, we deserialize it and forward to AIErrorMonitor so the
+// Watch auto-fix feature (_trigger_runtime_fix) can detect and act on it.
+void AIAssistantPlugin::_on_debug_data(const String &p_msg, const Array &p_data) {
+	if (p_msg != "error") {
+		return;
+	}
+	if (!AIErrorMonitor::get_singleton()) {
+		return;
+	}
+
+	DebuggerMarshalls::OutputError oe;
+	if (!oe.deserialize(p_data)) {
+		return;
+	}
+
+	// Build a human-readable error title — mirrors ScriptEditorDebugger::_msg_error logic.
+	bool source_is_project_file = oe.source_file.begins_with("res://");
+	String msg;
+	if (!oe.source_func.is_empty() && source_is_project_file) {
+		msg = oe.source_func + ": ";
+	} else if (!oe.callstack.is_empty()) {
+		const ScriptLanguage::StackInfo &frame = oe.callstack[0];
+		String frame_txt = frame.file.get_file() + ":" + itos(frame.line) + " @ " + frame.func;
+		if (!frame_txt.ends_with(")")) {
+			frame_txt += "()";
+		}
+		msg = frame_txt + ": ";
+	} else if (!oe.source_func.is_empty()) {
+		msg = oe.source_func + ": ";
+	}
+	msg += oe.error_descr.is_empty() ? oe.error : oe.error_descr;
+
+	// Extract the best res:// file+line from the callstack, falling back to source_file.
+	String res_file;
+	int res_line = oe.source_line;
+	for (int i = 0; i < oe.callstack.size(); i++) {
+		if (oe.callstack[i].file.begins_with("res://")) {
+			res_file = oe.callstack[i].file;
+			res_line = oe.callstack[i].line;
+			break;
+		}
+	}
+	if (res_file.is_empty() && oe.source_file.begins_with("res://")) {
+		res_file = oe.source_file;
+	}
+
+	AIErrorMonitor::receive_debugger_error(msg, res_file, res_line, oe.warning);
+}
+
 AIAssistantPlugin::AIAssistantPlugin() {
 	panel = memnew(AIAssistantPanel);
 
@@ -54,6 +131,9 @@ AIAssistantPlugin::AIAssistantPlugin() {
 
 	// Defer the scene-tree hook until the editor is fully initialised.
 	call_deferred("_hook_scene_tree_menu");
+
+	// Defer debugger signal connection — EditorDebuggerNode may not exist yet.
+	call_deferred("_connect_debugger_signal");
 }
 
 AIAssistantPlugin::~AIAssistantPlugin() {

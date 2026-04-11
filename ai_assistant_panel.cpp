@@ -1714,7 +1714,8 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 		// In ASK mode, or when the user pressed Stop (partial/truncated response),
 		// don't execute code blocks — a truncated script would likely be broken
 		// and we must never let a Stop trigger a new API request via auto-retry.
-		if (_get_current_mode() == MODE_ASK || p_is_stopped_partial) {
+		// Exception: runtime_fix_in_progress must always execute regardless of mode.
+		if ((_get_current_mode() == MODE_ASK || p_is_stopped_partial) && !runtime_fix_in_progress) {
 			if (p_is_stopped_partial) {
 				AI_LOG("  Stopped partial response: skipping code execution and auto-retry.");
 			} else {
@@ -1764,7 +1765,8 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 			// In PLAN mode the AI returns numbered plan text followed by the code block.
 			// Instead of auto-executing, surface the plan in the chat and wait for the
 			// user to click "▶ Execute Plan" before we run anything.
-			if (_get_current_mode() == MODE_PLAN) {
+			// Exception: runtime_fix_in_progress bypasses PLAN mode — auto-fix must execute immediately.
+			if (_get_current_mode() == MODE_PLAN && !runtime_fix_in_progress) {
 				// Show plan text (text_segments) in the chat display.
 				if (!text_segments.is_empty()) {
 					chat_display->push_color(Color(0.75, 0.92, 0.78));

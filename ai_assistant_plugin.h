@@ -21,6 +21,10 @@ class AIAssistantPlugin : public EditorPlugin {
 	void _on_scene_menu_about_to_popup();
 	void _on_scene_menu_id_pressed(int p_id);
 
+	// Debugger integration — forward runtime errors to AIErrorMonitor via debug_data signal.
+	void _connect_debugger_signal();
+	void _on_debug_data(const String &p_msg, const Array &p_data);
+
 protected:
 	static void _bind_methods();
 
