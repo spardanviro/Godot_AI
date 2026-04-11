@@ -340,6 +340,9 @@ void AIAssistantPanel::_on_send_pressed() {
 	// Send to AI with mentions expanded to full node-info context.
 	const String expanded = input_field->get_text_with_expanded_mentions();
 
+	// Record the raw user input for use in conversational-intent detection.
+	last_user_input = text;
+
 	input_field->set_text("");
 	input_field->clear_mentions();
 	input_field->set_custom_minimum_size(Size2(0, 60)); // Reset to minimum after send.
@@ -357,6 +360,7 @@ void AIAssistantPanel::_on_new_chat_pressed() {
 	full_conversation_history.clear();
 	context_summary = "";
 	pending_code = "";
+	pending_plan_code = "";
 	current_chat_id = "";
 	pending_attachments.clear();
 	displayed_code_blocks.clear();
@@ -857,20 +861,52 @@ void AIAssistantPanel::_on_meta_clicked(const Variant &p_meta) {
 			String code = displayed_code_blocks[idx];
 			String filename = "ai_generated_" + itos(idx) + ".gd";
 
-			// Try to derive a better filename from code content.
+			// Detect if the code is already a complete GDScript file (has @tool /
+			// extends / class_name / func at the top level) or is raw EditorScript
+			// body code (starts with statements like DirAccess, var, etc.).
+			// Raw body code must be wrapped before saving or it will cause parse errors.
+			bool is_complete_script = false;
 			Vector<String> lines = code.split("\n");
 			for (int i = 0; i < lines.size(); i++) {
-				if (lines[i].strip_edges().begins_with("extends ")) {
-					String base = lines[i].strip_edges().substr(8).strip_edges();
-					filename = base.to_lower() + "_script.gd";
-					break;
+				String stripped = lines[i].strip_edges();
+				if (stripped.is_empty() || stripped.begins_with("#")) {
+					continue; // skip blank lines and comments
 				}
+				// If the first real line starts one of these, it's already a full script.
+				if (stripped.begins_with("@tool") || stripped.begins_with("extends ") ||
+						stripped.begins_with("class_name ") || stripped.begins_with("func ") ||
+						stripped.begins_with("var ") || stripped.begins_with("const ") ||
+						stripped.begins_with("signal ") || stripped.begins_with("enum ") ||
+						stripped.begins_with("class ") || stripped.begins_with("static ") ||
+						stripped.begins_with("@export") || stripped.begins_with("@onready")) {
+					// Check extends specifically for a better filename.
+					if (stripped.begins_with("extends ")) {
+						String base = stripped.substr(8).strip_edges();
+						filename = base.to_lower() + "_script.gd";
+					}
+					is_complete_script = true;
+				}
+				break; // only look at the first real line
+			}
+
+			String content_to_save;
+			if (is_complete_script) {
+				// Code already has proper GDScript structure — save as-is.
+				content_to_save = code;
+			} else {
+				// Raw EditorScript body: wrap in a runnable EditorScript so the
+				// file is valid and can be executed via File > Run in ScriptEditor.
+				content_to_save = "@tool\nextends EditorScript\n\nfunc _run():\n";
+				for (int i = 0; i < lines.size(); i++) {
+					content_to_save += "\t" + lines[i] + "\n";
+				}
+				filename = "ai_editor_script_" + itos(idx) + ".gd";
 			}
 
 			String save_path = "res://" + filename;
 			Ref<FileAccess> f = FileAccess::open(save_path, FileAccess::WRITE);
 			if (f.is_valid()) {
-				f->store_string(code);
+				f->store_string(content_to_save);
 				_append_message("System", "Code saved to: " + save_path, Color(0.5, 1.0, 0.5));
 				AI_LOG("Code saved to: " + save_path);
 
@@ -933,6 +969,15 @@ void AIAssistantPanel::_on_meta_clicked(const Variant &p_meta) {
 		}
 
 		details_dialog->popup_centered(Size2(700, 500));
+	} else if (meta == "execute_plan") {
+		// User clicked "▶ Execute Plan" in PLAN mode — run the stored plan code.
+		if (!pending_plan_code.is_empty()) {
+			String code_to_run = pending_plan_code;
+			pending_plan_code = "";
+			_execute_code_with_monitoring(code_to_run);
+		} else {
+			_append_message("System", "No pending plan code to execute.", Color(1.0, 0.7, 0.3));
+		}
 	} else if (meta.begins_with("revert:")) {
 		int idx = meta.substr(7).to_int();
 		if (checkpoint_manager->restore_checkpoint(idx)) {
@@ -1715,6 +1760,48 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 			}
 			// ── END COMPILE CHECK ─────────────────────────────────────────────────
 
+			// ── PLAN MODE: show plan + Execute button ──────────────────────────────
+			// In PLAN mode the AI returns numbered plan text followed by the code block.
+			// Instead of auto-executing, surface the plan in the chat and wait for the
+			// user to click "▶ Execute Plan" before we run anything.
+			if (_get_current_mode() == MODE_PLAN) {
+				// Show plan text (text_segments) in the chat display.
+				if (!text_segments.is_empty()) {
+					chat_display->push_color(Color(0.75, 0.92, 0.78));
+					chat_display->push_bold();
+					chat_display->add_text(U"📋 Plan:");
+					chat_display->pop();
+					chat_display->pop();
+					chat_display->add_newline();
+					for (int i = 0; i < text_segments.size(); i++) {
+						chat_display->push_color(Color(0.85, 0.92, 0.88));
+						chat_display->add_text(text_segments[i]);
+						chat_display->pop();
+					}
+					chat_display->add_newline();
+				}
+
+				// Show a clickable "Execute Plan" link.
+				chat_display->add_newline();
+				chat_display->push_bgcolor(Color(0.12, 0.38, 0.18, 0.6));
+				chat_display->push_color(Color(0.3, 1.0, 0.55));
+				chat_display->push_bold();
+				chat_display->push_meta("execute_plan");
+				chat_display->add_text(U"  ▶  Execute Plan  ");
+				chat_display->pop(); // meta
+				chat_display->pop(); // bold
+				chat_display->pop(); // color
+				chat_display->pop(); // bgcolor
+				chat_display->add_newline();
+				chat_display->add_newline();
+
+				pending_plan_code = pending_code;
+				pending_code = "";
+				auto_retry_count = 0;
+				return;
+			}
+			// ── END PLAN MODE ──────────────────────────────────────────────────────
+
 			AI_LOG("Step 8: Safety check...");
 			String safety_error = script_executor->check_safety(pending_code);
 			if (!safety_error.is_empty()) {
@@ -1748,12 +1835,13 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 					pending_code = "";
 
 				} else if (tier == AIPermissionManager::RISK_DESTRUCTIVE) {
-					// Destructive operations always require explicit confirmation,
-					// regardless of autorun or per-category settings.
-					if (runtime_fix_in_progress) {
-						// Runtime watch auto-confirms even destructive fixes.
+					// Destructive operations: auto-confirm if autorun is enabled
+					// (user has explicitly opted in) or if this is a runtime fix.
+					// Otherwise show the confirmation dialog.
+					if (runtime_fix_in_progress || _get_autorun()) {
+						bool is_runtime_fix = runtime_fix_in_progress;
 						runtime_fix_in_progress = false;
-						runtime_restart_after_fix = true;
+						runtime_restart_after_fix = is_runtime_fix;
 						_execute_code_with_monitoring(pending_code);
 						pending_code = "";
 					} else {
@@ -1777,32 +1865,20 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 						AI_WARN("Permission DENIED: " + perm.description);
 						_append_message("System", perm.description, Color(1.0, 0.4, 0.4));
 						pending_code = "";
-					} else if (perm.needs_confirmation) {
-						if (runtime_fix_in_progress) {
-							runtime_fix_in_progress = false;
-							runtime_restart_after_fix = true;
-							_execute_code_with_monitoring(pending_code);
-							pending_code = "";
-						} else {
-							pending_permission_code = pending_code;
-							pending_code = "";
-							permission_dialog->set_text(perm.description + TR(STR_PERM_PROCEED));
-							permission_dialog->popup_centered();
-						}
+					} else if (perm.needs_confirmation && !runtime_fix_in_progress && !_get_autorun()) {
+						// needs_confirmation is only enforced when autorun is OFF.
+						// When autorun is ON the user has explicitly opted in to silent execution.
+						pending_permission_code = pending_code;
+						pending_code = "";
+						permission_dialog->set_text(perm.description + TR(STR_PERM_PROCEED));
+						permission_dialog->popup_centered();
 					} else {
-						// All categories allowed — auto-run if autorun enabled.
-						if (runtime_fix_in_progress || _get_autorun()) {
-							bool is_runtime_fix = runtime_fix_in_progress;
-							runtime_fix_in_progress = false;
-							runtime_restart_after_fix = is_runtime_fix;
-							_execute_code_with_monitoring(pending_code);
-							pending_code = "";
-						} else {
-							pending_permission_code = pending_code;
-							pending_code = "";
-							permission_dialog->set_text(TR(STR_PERM_EXECUTE_CONFIRM));
-							permission_dialog->popup_centered();
-						}
+						// Auto-run: autorun enabled, runtime fix, or no confirmation needed.
+						bool is_runtime_fix = runtime_fix_in_progress;
+						runtime_fix_in_progress = false;
+						runtime_restart_after_fix = is_runtime_fix;
+						_execute_code_with_monitoring(pending_code);
+						pending_code = "";
 					}
 				}
 			}
@@ -1813,9 +1889,43 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 		// In AGENT/PLAN mode: if the model returned text but no code block, it
 		// described what it wants to do instead of doing it.  Auto-retry by
 		// asking it to produce only the code block now.
-		// Do NOT display the planning text — it is noise the user doesn't need.
+		// Skip retry when the user's original message looks conversational (greeting,
+		// question, short chitchat) — in those cases a text-only reply is correct.
+		// Check whether the user's original message looks conversational (greeting /
+		// acknowledgement) so we don't annoy the user with a spurious retry when
+		// they just said hello.  We test the RAW user input, not the AI response.
+		String user_lower = last_user_input.to_lower().strip_edges();
+		bool is_conversational = false;
+
+		// ① Exact or near-exact greeting words (full message is just a greeting).
+		// We compare against the stripped, lowercased input directly.
+		static const char *EXACT_GREETINGS[] = {
+			"你好", "嗨", "hi", "hello", "hey", "yo",
+			"thanks", "thank you", "谢谢", "感谢", "thx",
+			"ok", "okay", "好的", "好", "是", "是的", "明白", "了解",
+			"太好了", "很好", "nice", "great", "cool",
+			nullptr
+		};
+		for (int ki = 0; EXACT_GREETINGS[ki] != nullptr; ki++) {
+			String kw = String::utf8(EXACT_GREETINGS[ki]);
+			// Match if the entire input IS the keyword, or input starts with it
+			// followed only by punctuation/whitespace.
+			if (user_lower == kw || user_lower.begins_with(kw + " ") ||
+					user_lower.begins_with(kw + "!") || user_lower.begins_with(kw + "！") ||
+					user_lower.begins_with(kw + "~") || user_lower.begins_with(kw + "，") ||
+					user_lower.begins_with(kw + ",") || user_lower.begins_with(kw + "。")) {
+				is_conversational = true;
+				break;
+			}
+		}
+
+		// ② Very short input (≤ 3 chars) that didn't match keywords is still
+		//    almost certainly not a task request — treat as conversational.
+		if (!is_conversational && user_lower.length() <= 3) {
+			is_conversational = true;
+		}
 		if (compact && !p_is_stopped_partial && !p_response.strip_edges().is_empty() &&
-				auto_retry_count < MAX_AUTO_RETRIES) {
+				!is_conversational && auto_retry_count < MAX_AUTO_RETRIES) {
 			auto_retry_count++;
 			String retry_num = itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES);
 			AI_WARN("No code block in response — auto-retrying for code (" + retry_num + ")");
@@ -2018,7 +2128,11 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 	bool compact = _get_current_mode() != MODE_ASK;
 
 	// N3: Create checkpoint before execution.
+	// Also record whether a scene was open before execution so we can create a
+	// "scene-open" checkpoint if the code opens a new scene from scratch.
 	String first_line = p_code.get_slice("\n", 0).strip_edges().left(50);
+	Node *pre_exec_root = EditorInterface::get_singleton()->get_edited_scene_root();
+	bool had_scene_before = (pre_exec_root != nullptr);
 	bool checkpoint_created = checkpoint_manager->create_checkpoint("Before: " + first_line);
 	int cp_idx = checkpoint_created ? (checkpoint_manager->get_checkpoint_count() - 1) : -1;
 
@@ -2049,6 +2163,17 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 
 	if (success) {
 		AI_LOG("Execution SUCCESS: " + output);
+
+		// N3 (post-exec): if no scene was open before but code opened a new scene,
+		// create a "scene-open" checkpoint so the user can still revert (close the scene).
+		if (!had_scene_before && cp_idx < 0) {
+			Node *post_root = EditorInterface::get_singleton()->get_edited_scene_root();
+			if (post_root) {
+				String new_scene_path = post_root->get_scene_file_path();
+				cp_idx = checkpoint_manager->create_scene_open_checkpoint(
+						new_scene_path, "Opened: " + new_scene_path.get_file());
+			}
+		}
 
 		if (compact) {
 			// Store detail response for popup.
@@ -3038,6 +3163,7 @@ void AIAssistantPanel::_on_history_item_deleted(const String &p_file_path) {
 		conversation_history.clear();
 		full_conversation_history.clear();
 		pending_code = "";
+		pending_plan_code = "";
 		current_chat_id = "";
 		_append_message("System", TR(STR_SYS_CHAT_DELETED), Color(0.6, 0.8, 1.0));
 	}

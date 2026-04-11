@@ -92,10 +92,6 @@ String AIScriptExecutor::wrap_in_editor_script(const String &p_code, const Strin
 	String wrapped;
 	wrapped += "@tool\n";
 	wrapped += "extends EditorScript\n\n";
-	// Compatibility shim: get_editor_interface() is deprecated in Godot 4.7+.
-	// EditorInterface is now a global singleton; redirect calls transparently.
-	wrapped += "func get_editor_interface() -> EditorInterface:\n";
-	wrapped += "\treturn EditorInterface\n\n";
 	wrapped += "func _run():\n";
 
 	// Indent each line of the user code.
@@ -303,16 +299,13 @@ String AIScriptExecutor::auto_fix_code(const String &p_code) const {
 	//
 	// We loop up to 5 times because one fix may unmask another on a later line
 	// (unlikely but safe).
-	// wrap_in_editor_script adds 7 header lines:
+	// wrap_in_editor_script adds 4 header lines:
 	//   line 1: @tool
 	//   line 2: extends EditorScript
 	//   line 3: (blank)
-	//   line 4: func get_editor_interface() -> EditorInterface:  [compat shim]
-	//   line 5:     return EditorInterface
-	//   line 6: (blank)
-	//   line 7: func _run():
-	//   line 8+: user code (each line indented by one tab)
-	const int HEADER_LINES = 7;
+	//   line 4: func _run():
+	//   line 5+: user code (each line indented by one tab)
+	const int HEADER_LINES = 4;
 
 	for (int attempt = 0; attempt < 5; attempt++) {
 		String wrapped = wrap_in_editor_script(code);
@@ -364,6 +357,47 @@ String AIScriptExecutor::auto_fix_code(const String &p_code) const {
 				code += "\n";
 			}
 			code += lines[j];
+		}
+	}
+
+	// ── Fix 3: Deprecated EditorScript bare methods ────────────────────────
+	// Replace `get_scene()` with `EditorInterface.get_edited_scene_root()` and
+	// bare `add_root_node(` with `EditorInterface.add_root_node(` when not already
+	// prefixed.  These deprecated methods cause hard runtime errors in Godot 4.7.
+	{
+		// get_scene() → EditorInterface.get_edited_scene_root()
+		code = code.replace("get_scene()", "EditorInterface.get_edited_scene_root()");
+
+		// Bare add_root_node( (not preceded by a dot) → EditorInterface.add_root_node(
+		// We process line by line to avoid replacing inside string literals or comments.
+		Vector<String> lines = code.split("\n");
+		for (int i = 0; i < lines.size(); i++) {
+			String &line = lines.write[i];
+			// Skip comment lines.
+			String stripped = line.strip_edges();
+			if (stripped.begins_with("#")) {
+				continue;
+			}
+			// Replace bare add_root_node( that is NOT preceded by a dot or word char.
+			int pos = 0;
+			while ((pos = line.find("add_root_node(", pos)) >= 0) {
+				bool already_prefixed = (pos > 0 && (line[pos - 1] == '.' ||
+						is_unicode_identifier_continue(line[pos - 1])));
+				if (!already_prefixed) {
+					line = line.substr(0, pos) + "EditorInterface.add_root_node(" +
+							line.substr(pos + 14); // len("add_root_node(") == 14
+					pos += 30; // skip past the replacement
+				} else {
+					pos++;
+				}
+			}
+		}
+		code = String();
+		for (int i = 0; i < lines.size(); i++) {
+			if (i > 0) {
+				code += "\n";
+			}
+			code += lines[i];
 		}
 	}
 

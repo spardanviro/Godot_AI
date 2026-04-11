@@ -144,8 +144,10 @@ private:
 	Array full_conversation_history; // Complete record — never trimmed, used for display & save.
 	String context_summary; // Compressed summary of older messages.
 	String pending_code;
+	String pending_plan_code; // Code from PLAN mode response, waiting for user to click Execute.
 	bool is_waiting_response = false;
 	String current_chat_id;
+	String last_user_input; // Raw text of the most recent user-originated message (not auto-retry prompts).
 	int auto_retry_count = 0;
 	static const int MAX_AUTO_RETRIES = 3; // Increased from 2 to 3.
 

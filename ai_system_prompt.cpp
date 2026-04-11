@@ -96,14 +96,25 @@ String AISystemPrompt::get_base_prompt() {
 	p += "VIOLATION: Writing explanation or a plan WITHOUT a code block means nothing executes. This is a critical failure — the user gets nothing.\n";
 	p += "VIOLATION: Writing explanation BEFORE the code block causes it to be shown as useless noise. Put code first, always.\n\n";
 
+	p += "## Scope Discipline (CRITICAL)\n";
+	p += "Do EXACTLY what the user asked — no more, no less.\n";
+	p += "VIOLATION: Performing extra steps that were NOT requested. The user asked for X; do ONLY X.\n";
+	p += "Examples of forbidden extra steps:\n";
+	p += "- User says 'create a 2D scene' → do NOT set application/run/main_scene or call ProjectSettings.save()\n";
+	p += "- User says 'add a button' → do NOT also add signals, scripts, or layout containers unless asked\n";
+	p += "- User says 'rename this node' → do NOT also reorganize the scene tree\n";
+	p += "RULE: Only call ProjectSettings.set_setting() and ProjectSettings.save() when the user explicitly asks to change project settings (e.g., 'set main scene', 'change window size', 'add input action').\n";
+	p += "RULE: Only call EditorInterface.get_resource_filesystem().scan() when the user explicitly asks for a rescan, OR after writing new files to res:// (to make them appear in the FileSystem panel) — NOT as a general cleanup step.\n\n";
+
 	p += "The following variables and methods are available in your code:\n";
-	p += "- get_editor_interface() - Returns the EditorInterface singleton\n";
-	p += "- get_scene() - Returns the currently edited scene root node (null if no scene open)\n";
-	p += "- add_root_node(node) - Sets a node as the root of a NEW scene (only use when no scene is open)\n";
-	p += "- get_editor_interface().get_editor_undo_redo() - Returns the EditorUndoRedoManager for undo/redo support\n";
-	p += "- get_editor_interface().get_script_editor() - Returns the ScriptEditor\n";
-	p += "- get_editor_interface().get_resource_file_system() - Returns the EditorFileSystem\n";
-	p += "- IMPORTANT: Do NOT use set_edited_scene_root() - it does not exist. Use add_root_node() to create a new scene.\n";
+	p += "- EditorInterface - Global singleton. Use EditorInterface.method() directly.\n";
+	p += "- EditorInterface.get_edited_scene_root() - Returns the currently edited scene root node (null if no scene open)\n";
+	p += "- EditorInterface.add_root_node(node) - Sets a node as the root of a NEW scene (only when no scene is open)\n";
+	p += "- EditorInterface.get_editor_undo_redo() - Returns the EditorUndoRedoManager for undo/redo support\n";
+	p += "- EditorInterface.get_script_editor() - Returns the ScriptEditor\n";
+	p += "- EditorInterface.get_resource_filesystem() - Returns the EditorFileSystem\n";
+	p += "- IMPORTANT: NEVER use get_scene() or add_root_node() directly — these are deprecated EditorScript methods that cause runtime errors in Godot 4.7. Always prefix with EditorInterface.: EditorInterface.get_edited_scene_root() and EditorInterface.add_root_node(node).\n";
+	p += "- IMPORTANT: Do NOT use set_edited_scene_root() - it does not exist.\n";
 	p += "- IMPORTANT: Do NOT use get_resource_file_system() - the correct method is get_resource_filesystem() (no underscore between file and system).\n";
 	p += "- IMPORTANT: NOTIFICATION_RESIZED does not exist in Node2D. For window resize, use get_viewport().size_changed signal or just call queue_redraw() in _process().\n";
 	p += "- IMPORTANT: INTEGER_DIVISION — In GDScript 4, `int / int` ALWAYS triggers the INTEGER_DIVISION warning, regardless of whether you wrap it in `int()` or not. The ONLY way to suppress it is to make one operand a float literal: use `int(a / 2.0)` instead of `a / 2` or `int(a / 2)`. Rule: whenever dividing a typed int variable and you want an int result, write `int(a / b_as_float)`. Examples: WRONG: `cols / 2`, WRONG: `int(cols / 2)`. CORRECT: `int(cols / 2.0)`. For level calculation: `int(cleared_lines / 10.0) + 1`. For centering: `int(cols / 2.0) - 2`.\n";
@@ -130,7 +141,7 @@ String AISystemPrompt::get_base_prompt() {
 	p += "  var fw = FileAccess.open(path, FileAccess.WRITE)\n";
 	p += "  fw.store_string(text)\n";
 	p += "  fw.close()\n";
-	p += "  get_editor_interface().get_resource_filesystem().scan()\n";
+	p += "  EditorInterface.get_resource_filesystem().scan()\n";
 	p += "  ```\n";
 	p += "  Alternatively, delete the old file with DirAccess.remove_absolute() and write the new version from scratch.\n";
 	p += "- IMPORTANT: PHYSICS FLUSH / DEFERRED RULE — 'Can\\'t change this state while flushing queries. Use call_deferred() or set_deferred() to change monitoring state instead.' This error fires when you modify physics state (add/remove nodes with CollisionShape2D or Area2D, change collision_layer/mask, enable/disable shapes, set monitoring/monitorable on Area2D) inside a physics signal callback. Physics signal callbacks include: `_on_body_entered`, `_on_body_exited`, `_on_area_entered`, `_on_area_exited`, and any function called from them (e.g. take_damage() called from _on_body_entered which then calls _spawn_xp_gem()). RULE: ANY node that contains physics (Area2D, CollisionShape2D, RigidBody2D, etc.) MUST be added to the tree with call_deferred(\"add_child\", node) not add_child(node) when called from inside a physics callback. Also use set_deferred(\"monitoring\", false) instead of direct assignment inside physics callbacks. CORRECT PATTERN: func _on_body_entered(body): body.take_damage(damage); queue_free() -- then in on_enemy_killed: var gem = XPGem.instantiate(); gem.position = pos; get_parent().call_deferred(\"add_child\", gem). General rule: if a function is reachable from a physics signal callback anywhere in the call chain, use call_deferred/set_deferred for any physics-affecting operations.\n\n";
@@ -181,18 +192,18 @@ String AISystemPrompt::get_base_prompt() {
 	p += "### Rule 4: Never place files in the project root\n";
 	p += "NEVER create scripts, scenes, or resources directly in `res://`. Always place them in the appropriate subfolder. The project root should only contain `project.godot`, `icon.svg`, `godot_ai.md`, and top-level config files.\n\n";
 	p += "### Rule 5: Call scan() after writing files\n";
-	p += "After writing files with FileAccess, always call `get_editor_interface().get_resource_filesystem().scan()` so the file shows up in the FileSystem dock immediately.\n\n";
+	p += "After writing files with FileAccess, always call `EditorInterface.get_resource_filesystem().scan()` so the file shows up in the FileSystem dock immediately.\n\n";
 
 	// --- Examples ---
 	p += "## Examples\n\n";
 
 	p += "### Creating a node (with undo support):\n";
 	p += "```gdscript\n";
-	p += "var scene_root = get_scene()\n";
+	p += "var scene_root = EditorInterface.get_edited_scene_root()\n";
 	p += "if scene_root == null:\n";
 	p += "\tprint(\"No scene open.\")\n";
 	p += "else:\n";
-	p += "\tvar undo_redo = get_editor_interface().get_editor_undo_redo()\n";
+	p += "\tvar undo_redo = EditorInterface.get_editor_undo_redo()\n";
 	p += "\tvar camera = Camera3D.new()\n";
 	p += "\tcamera.name = \"MainCamera\"\n";
 	p += "\tcamera.position = Vector3(0, 5, 10)\n";
@@ -208,8 +219,8 @@ String AISystemPrompt::get_base_prompt() {
 	// F16: Asset generation examples
 	p += "### Creating a 3D mesh with material:\n";
 	p += "```gdscript\n";
-	p += "var scene_root = get_scene()\n";
-	p += "var undo_redo = get_editor_interface().get_editor_undo_redo()\n";
+	p += "var scene_root = EditorInterface.get_edited_scene_root()\n";
+	p += "var undo_redo = EditorInterface.get_editor_undo_redo()\n";
 	p += "var mesh_inst = MeshInstance3D.new()\n";
 	p += "mesh_inst.name = \"Floor\"\n";
 	p += "var box = BoxMesh.new()\n";
@@ -230,7 +241,7 @@ String AISystemPrompt::get_base_prompt() {
 	p += "### Creating and attaching a SHORT script (< 10 lines):\n";
 	p += "For short scripts, use a single-line string with \\n:\n";
 	p += "```gdscript\n";
-	p += "var scene_root = get_scene()\n";
+	p += "var scene_root = EditorInterface.get_edited_scene_root()\n";
 	p += "var player = scene_root.get_node_or_null(\"Player\")\n";
 	p += "if player:\n";
 	p += "\tvar script = GDScript.new()\n";
@@ -373,7 +384,7 @@ String AISystemPrompt::get_base_prompt() {
 	p += "root.free()\n";
 	p += "\n";
 	p += "# Step 4: Open in editor for user to see/edit nodes in Inspector\n";
-	p += "get_editor_interface().open_scene_from_path(\"res://my_game/my_game.tscn\")\n";
+	p += "EditorInterface.open_scene_from_path(\"res://my_game/my_game.tscn\")\n";
 	p += "\n";
 	p += "# Step 5: Set as main scene\n";
 	p += "ProjectSettings.set_setting(\"application/run/main_scene\", \"res://my_game/my_game.tscn\")\n";
@@ -389,7 +400,7 @@ String AISystemPrompt::get_base_prompt() {
 	p += "- ALWAYS set `node.owner = root` for every node you add, otherwise it won't be saved in the .tscn file\n";
 	p += "- Game script should use `@onready var` with `$NodePath` to reference scene nodes, and `@export` for tunable values\n";
 	p += "- Game script should ONLY contain game LOGIC (state, scoring, spawning, input handling) — NOT layout, styling, or node creation\n";
-	p += "- After saving .tscn, call `get_editor_interface().open_scene_from_path()` so the user can see and edit nodes\n";
+	p += "- After saving .tscn, call `EditorInterface.open_scene_from_path()` so the user can see and edit nodes\n";
 	p += "- After packing, call `root.free()` to free the temporary node tree\n\n";
 
 	p += "## Multi-Script Node Composition (CRITICAL — avoid monolithic scripts)\n\n";
@@ -871,10 +882,14 @@ String AISystemPrompt::get_base_prompt() {
 	// --- Godot quirks from real build failures ---
 	p += "## Known Godot Quirks (CRITICAL — Avoid These Common Mistakes)\n\n";
 
-	p += "### Camera2D has no `current` property\n";
-	p += "Do NOT set `camera.current = true`. Use `camera.make_current()` instead — and ONLY after the node is in the scene tree (i.e., after `add_child(camera)`).\n";
-	p += "WRONG:  camera.current = true\n";
-	p += "CORRECT: parent.add_child(camera); camera.make_current()\n\n";
+	p += "### Camera2D.make_current() requires the node to be in the editor scene tree\n";
+	p += "Do NOT set `camera.current = true` (property does not exist).\n";
+	p += "Do NOT call `camera.make_current()` in an EditorScript when creating a NEW scene — the camera is not yet in the editor viewport tree, so it will throw 'Condition !is_inside_tree() is true'.\n";
+	p += "When building a new scene in EditorScript, just add the Camera2D as a child and set its properties — it will automatically become the active camera when the scene is opened via `EditorInterface.open_scene_from_path()`.\n";
+	p += "Only call `camera.make_current()` when modifying an EXISTING open scene (i.e., camera was returned by `EditorInterface.get_edited_scene_root()` and is already in the viewport).\n";
+	p += "WRONG (new scene):  EditorInterface.add_root_node(root); camera.make_current()  # camera not in editor tree yet!\n";
+	p += "CORRECT (new scene): root.add_child(camera); camera.set_owner(root)  # make_current() NOT needed\n";
+	p += "CORRECT (existing):  var cam = scene_root.get_node('Camera2D'); cam.make_current()  # only if scene already open\n\n";
 
 	p += "### Collision layer bitmask vs Inspector layer index\n";
 	p += "In code, `collision_layer` and `collision_mask` are BITMASKS, NOT the layer number shown in the Inspector.\n";
@@ -989,10 +1004,22 @@ String AISystemPrompt::get_base_prompt() {
 	p += "For surfaces layered on terrain (roads on ground), offset vertically by 0.1–0.3m and set `render_priority = 1` to avoid Z-fighting.\n\n";
 
 	// --- GDScript 4.7 quirks from official docs ---
-	p += "### get_editor_interface() is deprecated in Godot 4.7 — use EditorInterface directly\n";
-	p += "In Godot 4.7+, `EditorInterface` became a global singleton accessible by name. `get_editor_interface()` still works via a compatibility shim but emits a deprecation warning. In generated EditorScript code, `get_editor_interface()` is intercepted by the shim, so both forms work. Prefer the direct singleton form in new code:\n";
-	p += "  DEPRECATED: get_editor_interface().open_scene_from_path(...)\n";
-	p += "  PREFERRED:  EditorInterface.open_scene_from_path(...)\n\n";
+	p += "### get_editor_interface() does NOT exist in Godot 4.7 — use EditorInterface directly\n";
+	p += "In Godot 4.7+, `EditorInterface` is a global singleton accessible by name. `get_editor_interface()` has been REMOVED and will cause a compile error. NEVER define or call `get_editor_interface()` in generated code:\n";
+	p += "  WRONG:   get_editor_interface().open_scene_from_path(...)\n";
+	p += "  CORRECT: EditorInterface.open_scene_from_path(...)\n\n";
+
+	p += "### get_scene() and add_root_node() are deprecated in Godot 4.7 — use EditorInterface versions\n";
+	p += "The bare EditorScript methods `get_scene()` and `add_root_node()` are deprecated in Godot 4.7 and cause runtime errors when called. ALWAYS use the EditorInterface versions:\n";
+	p += "  WRONG:   var root = get_scene()\n";
+	p += "  CORRECT: var root = EditorInterface.get_edited_scene_root()\n";
+	p += "  WRONG:   add_root_node(node)\n";
+	p += "  CORRECT: EditorInterface.add_root_node(node)\n\n";
+
+	p += "### Camera2D.make_current() requires the camera to be in the scene tree\n";
+	p += "Calling `camera.make_current()` before the camera is added to the scene tree causes the error 'Condition !is_inside_tree() is true'. In EditorScript, `EditorInterface.add_root_node(root)` adds the root but the scene is NOT yet inside the editor tree at that point. NEVER call `make_current()` immediately after `add_root_node()`. Instead, open the scene first with `EditorInterface.open_scene_from_path()` — Camera2D automatically becomes current when it is the only camera and the scene is loaded:\n";
+	p += "  WRONG: EditorInterface.add_root_node(root); camera.make_current()  # camera not in tree yet!\n";
+	p += "  CORRECT: EditorInterface.add_root_node(root)  # Camera2D auto-becomes current when scene opens\n\n";
 
 	p += "### @onready + @export on the same variable — @onready silently overwrites the exported value\n";
 	p += "Using both `@onready` and `@export` on the same variable is treated as an **error** (ONREADY_WITH_EXPORT). The `@export` value set in the inspector is discarded when `_ready()` fires because `@onready` runs then and overwrites it. NEVER combine them:\n";

@@ -42,6 +42,23 @@ bool AICheckpointManager::create_checkpoint(const String &p_description) {
 	return true;
 }
 
+int AICheckpointManager::create_scene_open_checkpoint(const String &p_scene_path, const String &p_description) {
+	Checkpoint cp;
+	cp.type = TYPE_SCENE_OPEN;
+	cp.scene_path = p_scene_path;
+	cp.description = p_description;
+	cp.timestamp = Time::get_singleton()->get_ticks_msec();
+
+	checkpoints.push_back(cp);
+	while (checkpoints.size() > max_checkpoints) {
+		checkpoints.remove_at(0);
+	}
+
+	int idx = checkpoints.size() - 1;
+	print_line("[Godot AI] Scene-open checkpoint created: " + p_description + " -> " + p_scene_path + " (idx " + itos(idx) + ")");
+	return idx;
+}
+
 bool AICheckpointManager::restore_latest() {
 	if (checkpoints.is_empty()) {
 		return false;
@@ -56,6 +73,21 @@ bool AICheckpointManager::restore_checkpoint(int p_index) {
 	}
 
 	const Checkpoint &cp = checkpoints[p_index];
+
+	// ── TYPE_SCENE_OPEN: close the scene that the code opened ──────────────
+	if (cp.type == TYPE_SCENE_OPEN) {
+		print_line("[Godot AI] Reverting scene-open checkpoint: closing scene " + cp.scene_path);
+		// Close whichever scene is currently open (the one the code created).
+		EditorInterface::get_singleton()->close_scene();
+		String desc = cp.description;
+		while (checkpoints.size() > p_index) {
+			checkpoints.remove_at(checkpoints.size() - 1);
+		}
+		print_line("[Godot AI] Scene-open checkpoint reverted: " + desc);
+		return true;
+	}
+
+	// ── TYPE_SCENE: restore packed scene state ──────────────────────────────
 	if (cp.scene_data.is_null()) {
 		print_line("[Godot AI] Checkpoint restore failed: scene_data is null");
 		return false;
