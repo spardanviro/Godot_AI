@@ -23,6 +23,7 @@ public:
 		DOMAIN_3D_SCENE,     // Mesh, Camera, Light, Environment, GridMap
 		DOMAIN_SCREENSHOT,       // Viewport capture
 		DOMAIN_COMPLEX_PROJECT,  // Risk-first decomposition for full games
+		DOMAIN_GAME_UI,          // HUD, health bars, skill bar, inventory, dialog, CanvasLayer
 		DOMAIN_MAX,
 	};
 

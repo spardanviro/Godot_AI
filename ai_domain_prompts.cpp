@@ -90,6 +90,38 @@ static const char *kw_screenshot[] = {
 	nullptr
 };
 
+static const char *kw_game_ui[] = {
+	// HUD / overlay
+	"hud", "health bar", "healthbar", "hp bar", "hpbar", "mana bar", "manabar",
+	"stamina bar", "staminabar", "resource bar",
+	// Skill / cooldown
+	"skill bar", "skillbar", "cooldown", "skill slot",
+	// Inventory
+	"inventory", "item slot", "itemslot", "item grid",
+	// Dialog / conversation
+	"dialog box", "dialogue box", "dialog system", "typewriter",
+	// Minimap
+	"minimap", "mini map",
+	// Game UI general
+	"game ui", "game hud", "overlay ui", "floating text", "damage number",
+	"buff icon", "status effect", "canvaslayer", "canvas layer",
+	// Chinese
+	"\xe8\xa1\x80\xe9\x87\x8f\xe6\xa1\x86",   // 血量框
+	"\xe8\xa1\x80\xe6\xa1\xa5",                // 血槽
+	"\xe8\xa1\x80\xe9\x87\x8f\xe6\x9d\xa1",   // 血量条
+	"\xe6\x8a\x80\xe8\x83\xbd\xe6\xa0\x8f",   // 技能栏
+	"\xe6\x8a\x80\xe8\x83\xbd\xe5\x86\xb7\xe5\x8d\xb4", // 技能冷却
+	"\xe8\x83\x8c\xe5\x8c\x85",               // 背包
+	"\xe7\x89\xa9\xe5\x93\x81\xe6\xa0\xbc",   // 物品格
+	"\xe5\xaf\xb9\xe8\xaf\x9d\xe6\xa1\xa5",   // 对话框
+	"\xe6\xb5\xae\xe5\x8a\xa8\xe6\x96\x87\xe5\xad\x97", // 浮动文字
+	"\xe4\xbc\xa4\xe5\xae\xb3\xe6\x95\xb0\xe5\xad\x97", // 伤害数字
+	"\xe5\xb0\x8f\xe5\x9c\xb0\xe5\x9b\xbe",  // 小地图
+	"\xe6\xb8\xb8\xe6\x88\x8f\xe7\x95\x8c\xe9\x9d\xa2", // 游戏界面
+	"\xe6\x8a\xac\xe5\xa4\xb4\xe6\x98\xbe\xe7\xa4\xba", // 抬头显示
+	nullptr
+};
+
 static const char *kw_complex_project[] = {
 	"complete game", "full game", "whole game", "entire game",
 	"make a game", "build a game", "create a game",
@@ -135,9 +167,10 @@ Vector<AIDomainPrompts::Domain> AIDomainPrompts::detect_domains(const String &p_
 		{ kw_3d_scene,        DOMAIN_3D_SCENE },
 		{ kw_screenshot,      DOMAIN_SCREENSHOT },
 		{ kw_complex_project, DOMAIN_COMPLEX_PROJECT },
+		{ kw_game_ui,         DOMAIN_GAME_UI },
 	};
 
-	for (int i = 0; i < 11; i++) {
+	for (int i = 0; i < 12; i++) {
 		if (_matches_keywords(lower, table[i].keywords)) {
 			result.push_back(table[i].domain);
 		}
@@ -742,6 +775,142 @@ static String _prompt_complex_project() {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Game UI Domain prompt
+// ---------------------------------------------------------------------------
+
+static String _prompt_game_ui() {
+	String p;
+	p += "\n## Game UI Specialization (Godot 4 Control System)\n\n";
+
+	p += "### Unity vs Godot UI mapping\n";
+	p += "- Canvas (Overlay) → CanvasLayer (layer = 5 for HUD, 10 for menus, 100 for effects)\n";
+	p += "- Canvas (World Space) → Label3D with billboard = BILLBOARD_ENABLED\n";
+	p += "- RectTransform anchors → set_anchors_preset() or anchor_left/right/top/bottom\n";
+	p += "- Image → ColorRect (solid color) / TextureRect (texture) / Panel (styled)\n";
+	p += "- TextMeshPro → Label / RichTextLabel (bbcode_enabled = true for formatting)\n";
+	p += "- VerticalLayoutGroup → VBoxContainer\n";
+	p += "- HorizontalLayoutGroup → HBoxContainer\n";
+	p += "- GridLayoutGroup → GridContainer (set .columns)\n";
+	p += "- ScrollRect → ScrollContainer\n";
+	p += "- CanvasScaler → Project Settings > Display > Window > Stretch\n\n";
+
+	p += "### Anchor presets — always use these instead of manual anchor values\n";
+	p += "```gdscript\n";
+	p += "control.set_anchors_preset(Control.PRESET_TOP_LEFT)      # HP bar\n";
+	p += "control.set_anchors_preset(Control.PRESET_TOP_RIGHT)     # minimap\n";
+	p += "control.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)   # chat log\n";
+	p += "control.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)  # action buttons\n";
+	p += "control.set_anchors_preset(Control.PRESET_CENTER_BOTTOM) # skill bar\n";
+	p += "control.set_anchors_preset(Control.PRESET_CENTER)        # crosshair, dialog\n";
+	p += "control.set_anchors_preset(Control.PRESET_FULL_RECT)     # fullscreen bg/effect\n";
+	p += "# After preset, set pixel offsets:\n";
+	p += "control.offset_left = 20; control.offset_top = 20  # margin from anchor\n";
+	p += "```\n\n";
+
+	p += "### CanvasLayer layering\n";
+	p += "```gdscript\n";
+	p += "var hud_layer = CanvasLayer.new()\n";
+	p += "hud_layer.layer = 5    # game HUD\n";
+	p += "var menu_layer = CanvasLayer.new()\n";
+	p += "menu_layer.layer = 10  # pause / main menu\n";
+	p += "var fx_layer = CanvasLayer.new()\n";
+	p += "fx_layer.layer = 100   # damage flash, vignette\n";
+	p += "```\n\n";
+
+	p += "### Health bar — correct pattern\n";
+	p += "Use ColorRect for fill bars (NOT ProgressBar unless you need dragging).\n";
+	p += "The fill ColorRect width = parent.size.x * (current / max).\n";
+	p += "```gdscript\n";
+	p += "# Scene structure: HBoxContainer > [HpLabel, BarContainer > [BG, DelayedFill, Fill], ValueLabel]\n";
+	p += "var bar_container = Control.new()\n";
+	p += "bar_container.custom_minimum_size = Vector2(180, 20)\n";
+	p += "bar_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL\n";
+	p += "var bg = ColorRect.new(); bg.set_anchors_preset(Control.PRESET_FULL_RECT)\n";
+	p += "bg.color = Color(0.1, 0.1, 0.1, 0.85)\n";
+	p += "var delayed = ColorRect.new(); delayed.set_anchors_preset(Control.PRESET_FULL_RECT)\n";
+	p += "delayed.color = Color(0.8, 0.2, 0.2)  # red, lags behind\n";
+	p += "var fill = ColorRect.new(); fill.set_anchors_preset(Control.PRESET_FULL_RECT)\n";
+	p += "fill.color = Color(0.2, 0.8, 0.2)     # green, current HP\n";
+	p += "# In runtime script: fill.size.x = bar_container.size.x * ratio\n";
+	p += "```\n\n";
+
+	p += "### Skill slot with radial cooldown\n";
+	p += "```gdscript\n";
+	p += "# Panel (64x64) > [TextureRect icon, TextureProgressBar overlay, Label cd_label, Label key_hint]\n";
+	p += "var slot = Panel.new(); slot.custom_minimum_size = Vector2(64, 64)\n";
+	p += "var icon = TextureRect.new()\n";
+	p += "icon.set_anchors_preset(Control.PRESET_FULL_RECT)\n";
+	p += "icon.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL\n";
+	p += "var overlay = TextureProgressBar.new()\n";
+	p += "overlay.set_anchors_preset(Control.PRESET_FULL_RECT)\n";
+	p += "overlay.fill_mode = TextureProgressBar.FILL_CLOCKWISE\n";
+	p += "overlay.tint_progress = Color(0, 0, 0, 0.75)\n";
+	p += "overlay.value = 0.0; overlay.max_value = 1.0\n";
+	p += "overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE\n";
+	p += "# Runtime: overlay.value = cooldown_remaining / cooldown_duration\n";
+	p += "```\n\n";
+
+	p += "### Inventory grid\n";
+	p += "```gdscript\n";
+	p += "# ScrollContainer > GridContainer (columns=6)\n";
+	p += "var scroll = ScrollContainer.new()\n";
+	p += "scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED\n";
+	p += "var grid = GridContainer.new(); grid.columns = 6\n";
+	p += "grid.add_theme_constant_override(\"h_separation\", 4)\n";
+	p += "grid.add_theme_constant_override(\"v_separation\", 4)\n";
+	p += "# Each item slot: Panel (64x64) > [ColorRect bg, TextureRect icon, Label stack_count]\n";
+	p += "# Rarity colors: common=gray, uncommon=green, rare=blue, epic=purple, legendary=orange\n";
+	p += "```\n\n";
+
+	p += "### Floating damage numbers — use Tween, NOT _process\n";
+	p += "```gdscript\n";
+	p += "# In a damage_number.gd script attached to a Node2D with a Label child:\n";
+	p += "func setup(damage: int, is_crit: bool = false) -> void:\n";
+	p += "\t$Label.text = str(damage)\n";
+	p += "\tif is_crit: $Label.add_theme_font_size_override(\"font_size\", 36)\n";
+	p += "\tvar tween: Tween = create_tween().set_parallel()\n";
+	p += "\ttween.tween_property(self, \"position\", position + Vector2(randf_range(-20,20), -80), 1.2).set_ease(Tween.EASE_OUT)\n";
+	p += "\ttween.tween_property($Label, \"modulate:a\", 0.0, 1.2).set_delay(0.5)\n";
+	p += "\ttween.chain().tween_callback(queue_free)\n";
+	p += "```\n\n";
+
+	p += "### Dialog typewriter effect — use Timer/Signal, NOT yield\n";
+	p += "```gdscript\n";
+	p += "# RichTextLabel with bbcode_enabled = true supports [color], [b], [wave] etc.\n";
+	p += "# Use visible_characters property for typewriter effect:\n";
+	p += "func show_dialog(text: String) -> void:\n";
+	p += "\t$RichTextLabel.text = text\n";
+	p += "\t$RichTextLabel.visible_characters = 0\n";
+	p += "\tvar tween = create_tween()\n";
+	p += "\ttween.tween_property($RichTextLabel, \"visible_characters\", len(text), len(text) / 30.0)\n";
+	p += "```\n\n";
+
+	p += "### StyleBox — for panel/button styling\n";
+	p += "```gdscript\n";
+	p += "var style = StyleBoxFlat.new()\n";
+	p += "style.bg_color = Color(0.05, 0.05, 0.1, 0.92)\n";
+	p += "style.corner_radius_top_left    = 8\n";
+	p += "style.corner_radius_top_right   = 8\n";
+	p += "style.corner_radius_bottom_left = 8\n";
+	p += "style.corner_radius_bottom_right = 8\n";
+	p += "style.border_color = Color(0.4, 0.4, 0.6)\n";
+	p += "style.set_border_width_all(1)\n";
+	p += "panel.add_theme_stylebox_override(\"panel\", style)\n";
+	p += "```\n\n";
+
+	p += "### Common mistakes to avoid\n";
+	p += "- NEVER set control.size in _ready() — use custom_minimum_size or set_deferred(\"size\", ...)\n";
+	p += "- NEVER add UI nodes directly to game world nodes — always use CanvasLayer\n";
+	p += "- NEVER use control.position for responsive layout — use anchors_preset + offsets\n";
+	p += "- RichTextLabel: always set bbcode_enabled = true before using BBCode tags\n";
+	p += "- TextureProgressBar FILL_CLOCKWISE: value 0 = empty, 1 = full (invert for cooldown)\n";
+	p += "- Safe area (notch): use DisplayServer.get_display_safe_area() to get margins\n";
+
+	return p;
+}
+
+// ---------------------------------------------------------------------------
 // get_domain_prompt
 // ---------------------------------------------------------------------------
 
@@ -758,6 +927,7 @@ String AIDomainPrompts::get_domain_prompt(Domain p_domain) {
 		case DOMAIN_3D_SCENE:        return _prompt_3d_scene();
 		case DOMAIN_SCREENSHOT:      return _prompt_screenshot();
 		case DOMAIN_COMPLEX_PROJECT: return _prompt_complex_project();
+		case DOMAIN_GAME_UI:         return _prompt_game_ui();
 		default:                     return "";
 	}
 }
