@@ -361,6 +361,8 @@ void AIAssistantPanel::_on_new_chat_pressed() {
 	context_summary = "";
 	pending_code = "";
 	pending_plan_code = "";
+	pending_plan_md_path = "";
+	active_plan_md_path = "";
 	current_chat_id = "";
 	pending_attachments.clear();
 	displayed_code_blocks.clear();
@@ -974,6 +976,10 @@ void AIAssistantPanel::_on_meta_clicked(const Variant &p_meta) {
 		if (!pending_plan_code.is_empty()) {
 			String code_to_run = pending_plan_code;
 			pending_plan_code = "";
+			// Transfer the pending plan MD path so _execute_code_with_monitoring can
+			// mark steps done after successful execution.
+			active_plan_md_path = pending_plan_md_path;
+			pending_plan_md_path = "";
 			_execute_code_with_monitoring(code_to_run);
 		} else {
 			_append_message("System", "No pending plan code to execute.", Color(1.0, 0.7, 0.3));
@@ -1767,7 +1773,33 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 			// user to click "▶ Execute Plan" before we run anything.
 			// Exception: runtime_fix_in_progress bypasses PLAN mode — auto-fix must execute immediately.
 			if (_get_current_mode() == MODE_PLAN && !runtime_fix_in_progress) {
-				// Show plan text (text_segments) in the chat display.
+				// ── Collect full plan text from all segments ──────────────────────
+				String full_plan_text;
+				for (int i = 0; i < text_segments.size(); i++) {
+					full_plan_text += String(text_segments[i]);
+				}
+
+				// ── Parse numbered steps (lines starting with "N." or "N)") ───────
+				Vector<String> plan_steps;
+				{
+					Vector<String> plines = full_plan_text.split("\n");
+					for (int i = 0; i < plines.size(); i++) {
+						String line = plines[i].strip_edges();
+						if (line.is_empty()) {
+							continue;
+						}
+						// Match "1.", "2.", "10." etc. at the start of line.
+						int j = 0;
+						while (j < (int)line.length() && line[j] >= '0' && line[j] <= '9') {
+							j++;
+						}
+						if (j > 0 && j < (int)line.length() && (line[j] == '.' || line[j] == ')')) {
+							plan_steps.push_back(line);
+						}
+					}
+				}
+
+				// ── Show plan text in the chat display ────────────────────
 				if (!text_segments.is_empty()) {
 					chat_display->push_color(Color(0.75, 0.92, 0.78));
 					chat_display->push_bold();
@@ -1783,7 +1815,25 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 					chat_display->add_newline();
 				}
 
-				// Show a clickable "Execute Plan" link.
+				// ── Save plan to MD file ─────────────────────────────────────
+				pending_plan_md_path = "";
+				if (!plan_steps.is_empty()) {
+					pending_plan_md_path = _save_plan_to_md(plan_steps, full_plan_text);
+					if (!pending_plan_md_path.is_empty()) {
+						// Show the MD file path below the plan.
+						String rel = pending_plan_md_path;
+						String res_root = ProjectSettings::get_singleton()->get_resource_path();
+						if (rel.begins_with(res_root)) {
+							rel = "res://" + rel.substr(res_root.length()).lstrip("/\\");
+						}
+						chat_display->add_newline();
+						chat_display->push_color(Color(0.55, 0.75, 0.55));
+						chat_display->add_text(String(U"📄 ") + rel);
+						chat_display->pop();
+					}
+				}
+
+				// ── Show a clickable "Execute Plan" link ──────────────────
 				chat_display->add_newline();
 				chat_display->push_bgcolor(Color(0.12, 0.38, 0.18, 0.6));
 				chat_display->push_color(Color(0.3, 1.0, 0.55));
@@ -2166,6 +2216,12 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 	if (success) {
 		AI_LOG("Execution SUCCESS: " + output);
 
+		// Mark plan steps done if this was a PLAN mode execution.
+		if (!active_plan_md_path.is_empty()) {
+			_mark_plan_steps_done(active_plan_md_path);
+			active_plan_md_path = "";
+		}
+
 		// N3 (post-exec): if no scene was open before but code opened a new scene,
 		// create a "scene-open" checkpoint so the user can still revert (close the scene).
 		if (!had_scene_before && cp_idx < 0) {
@@ -2245,6 +2301,8 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 	} else {
 		error_monitor->end_ai_execution();
 		AI_ERR("Execution FAILED: " + error_str);
+		// Clear active plan MD path on failure (steps are not done).
+		active_plan_md_path = "";
 
 		if (compact) {
 			// Store detail response for toggle.
@@ -2336,6 +2394,112 @@ void AIAssistantPanel::_on_deferred_error_check() {
 }
 
 // =============================================================================
+// Plan MD helpers
+// =============================================================================
+
+// Save plan steps as a Markdown checklist inside the project at
+// res://ai_plans/plan_TIMESTAMP.md (created alongside the source tree so it
+// can be committed with the project). Returns the absolute OS path on success,
+// empty string on failure.
+String AIAssistantPanel::_save_plan_to_md(const Vector<String> &p_steps, const String &p_full_plan_text) {
+	// Resolve the project directory (absolute OS path, no trailing slash).
+	String res_root = ProjectSettings::get_singleton()->get_resource_path();
+	if (res_root.is_empty()) {
+		AI_WARN("[Plan] Project resource path is empty — cannot save plan MD.");
+		return "";
+	}
+
+	// Create res://ai_plans/ directory.
+	String plans_dir = res_root.path_join("ai_plans");
+	{
+		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		if (dir.is_valid() && !dir->dir_exists(plans_dir)) {
+			Error err = dir->make_dir_recursive(plans_dir);
+			if (err != OK) {
+				AI_WARN("[Plan] Failed to create ai_plans directory: " + itos(err));
+				return "";
+			}
+		}
+	}
+
+	// Build filename: plan_YYYYMMDD_HHMMSS.md
+	Dictionary dt = Time::get_singleton()->get_datetime_dict_from_system();
+	String ts = String::num_int64((int64_t)dt["year"]).pad_zeros(4)
+			+ String::num_int64((int64_t)dt["month"]).pad_zeros(2)
+			+ String::num_int64((int64_t)dt["day"]).pad_zeros(2)
+			+ "_"
+			+ String::num_int64((int64_t)dt["hour"]).pad_zeros(2)
+			+ String::num_int64((int64_t)dt["minute"]).pad_zeros(2)
+			+ String::num_int64((int64_t)dt["second"]).pad_zeros(2);
+	String file_path = plans_dir.path_join("plan_" + ts + ".md");
+
+	// Write MD.
+	Ref<FileAccess> f = FileAccess::open(file_path, FileAccess::WRITE);
+	if (!f.is_valid()) {
+		AI_WARN("[Plan] Cannot open plan MD for writing: " + file_path);
+		return "";
+	}
+	f->store_string("# AI Plan\n\n");
+	f->store_string("Generated: " + Time::get_singleton()->get_datetime_string_from_system() + "\n\n");
+	f->store_string("## Steps\n\n");
+	for (int i = 0; i < p_steps.size(); i++) {
+		f->store_string("- [ ] " + p_steps[i] + "\n");
+	}
+	f.unref();
+
+	// Ask the editor FS to pick up the new file.
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+
+	AI_LOG("[Plan] Plan saved to: " + file_path);
+	return file_path;
+}
+
+// Rewrite the plan MD so that all unchecked `- [ ]` boxes become `- [x]`
+// and an "Executed" timestamp line is added below the Steps heading.
+void AIAssistantPanel::_mark_plan_steps_done(const String &p_md_path) {
+	if (p_md_path.is_empty()) {
+		return;
+	}
+
+	Ref<FileAccess> fr = FileAccess::open(p_md_path, FileAccess::READ);
+	if (!fr.is_valid()) {
+		AI_WARN("[Plan] Cannot open plan MD for reading: " + p_md_path);
+		return;
+	}
+	String content = fr->get_as_text();
+	fr.unref();
+
+	// Insert "Executed:" timestamp above the Steps list.
+	String exec_line = "\n✅ Executed: " + Time::get_singleton()->get_datetime_string_from_system() + "\n";
+	content = content.replace("\n## Steps\n", "\n## Steps\n" + exec_line);
+
+	// Mark every unchecked box as done.
+	content = content.replace("- [ ] ", "- [x] ");
+
+	Ref<FileAccess> fw = FileAccess::open(p_md_path, FileAccess::WRITE);
+	if (!fw.is_valid()) {
+		AI_WARN("[Plan] Cannot open plan MD for writing: " + p_md_path);
+		return;
+	}
+	fw->store_string(content);
+	fw.unref();
+
+	// Refresh the editor FS so the file shows as modified.
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+
+	AI_LOG("[Plan] Plan steps marked done: " + p_md_path);
+
+	// Show the path (res://-relative) in the chat.
+	String rel = p_md_path;
+	String res_root = ProjectSettings::get_singleton()->get_resource_path();
+	if (rel.begins_with(res_root)) {
+		rel = "res://" + rel.substr(res_root.length()).lstrip("/\\");
+	}
+	_append_message("System",
+			String(U"✅ Plan complete — ") + rel,
+			Color(0.4f, 1.0f, 0.4f));
+}
+
 // Runtime Error Auto-Fix ("Watch" mode)
 // =============================================================================
 

@@ -144,7 +144,9 @@ private:
 	Array full_conversation_history; // Complete record — never trimmed, used for display & save.
 	String context_summary; // Compressed summary of older messages.
 	String pending_code;
-	String pending_plan_code; // Code from PLAN mode response, waiting for user to click Execute.
+	String pending_plan_code;    // Code from PLAN mode response, waiting for user to click Execute.
+	String pending_plan_md_path; // Path of plan MD file saved when plan was generated.
+	String active_plan_md_path;  // Plan MD being executed right now (copied from pending at click time).
 	bool is_waiting_response = false;
 	String current_chat_id;
 	String last_user_input; // Raw text of the most recent user-originated message (not auto-retry prompts).
@@ -293,6 +295,8 @@ private:
 	static void _runtime_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
 	void _on_runtime_poll_timeout();
 	void _on_runtime_collect_timeout();
+	String _save_plan_to_md(const Vector<String> &p_steps, const String &p_full_plan_text);
+	void _mark_plan_steps_done(const String &p_md_path);
 
 public:
 	// Called by AIAssistantPlugin when the debugger session starts (game connected).
