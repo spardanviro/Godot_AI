@@ -24,6 +24,7 @@ class AIAssistantPlugin : public EditorPlugin {
 	// Debugger integration — forward runtime errors to AIErrorMonitor via debug_data signal.
 	void _connect_debugger_signal();
 	void _on_debug_data(const String &p_msg, const Array &p_data);
+	void _on_debugger_started();
 
 protected:
 	static void _bind_methods();

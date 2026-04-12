@@ -293,6 +293,13 @@ private:
 	static void _runtime_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
 	void _on_runtime_poll_timeout();
 	void _on_runtime_collect_timeout();
+
+public:
+	// Called by AIAssistantPlugin when the debugger session starts (game connected).
+	// Clears stale error buffers before any new-run errors can arrive, eliminating
+	// the race condition where _ready() errors arrive before the 200 ms poll fires.
+	void on_game_session_started();
+private:
 	void _install_runtime_error_handler();
 	void _remove_runtime_error_handler();
 	void _trigger_runtime_fix();

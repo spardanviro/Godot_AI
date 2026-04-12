@@ -17,6 +17,7 @@ void AIAssistantPlugin::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_hook_scene_tree_menu"), &AIAssistantPlugin::_hook_scene_tree_menu);
 	ClassDB::bind_method(D_METHOD("_focus_dock"), &AIAssistantPlugin::_focus_dock);
 	ClassDB::bind_method(D_METHOD("_connect_debugger_signal"), &AIAssistantPlugin::_connect_debugger_signal);
+	ClassDB::bind_method(D_METHOD("_on_debugger_started"), &AIAssistantPlugin::_on_debugger_started);
 }
 
 void AIAssistantPlugin::_focus_dock() {
@@ -44,9 +45,10 @@ void AIAssistantPlugin::_on_scene_menu_id_pressed(int p_id) {
 	}
 }
 
-// Connect to the ScriptEditorDebugger's debug_data signal so we can intercept
-// runtime errors from the game subprocess (sent via the remote debugger protocol)
-// and forward them to AIErrorMonitor for the Watch auto-fix feature.
+// Connect to the ScriptEditorDebugger's debug_data and started signals.
+// - debug_data: intercept runtime errors from the game subprocess.
+// - started: clear stale error buffers the moment the game connects, before
+//   any _ready() errors can arrive (fixes the 200 ms poll race condition).
 // This is deferred because EditorDebuggerNode initializes after the plugin.
 void AIAssistantPlugin::_connect_debugger_signal() {
 	EditorDebuggerNode *dnode = EditorDebuggerNode::get_singleton();
@@ -60,9 +62,21 @@ void AIAssistantPlugin::_connect_debugger_signal() {
 	if (!dbg) {
 		return;
 	}
-	Callable cb = callable_mp(this, &AIAssistantPlugin::_on_debug_data);
-	if (!dbg->is_connected("debug_data", cb)) {
-		dbg->connect("debug_data", cb);
+	Callable cb_data = callable_mp(this, &AIAssistantPlugin::_on_debug_data);
+	if (!dbg->is_connected("debug_data", cb_data)) {
+		dbg->connect("debug_data", cb_data);
+	}
+	Callable cb_started = callable_mp(this, &AIAssistantPlugin::_on_debugger_started);
+	if (!dbg->is_connected("started", cb_started)) {
+		dbg->connect("started", cb_started);
+	}
+}
+
+// Fired when the game process connects (before any _ready() errors arrive).
+// Clears stale error buffers so Watch auto-fix only reacts to this run.
+void AIAssistantPlugin::_on_debugger_started() {
+	if (panel) {
+		panel->on_game_session_started();
 	}
 }
 

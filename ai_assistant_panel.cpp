@@ -2339,6 +2339,21 @@ void AIAssistantPanel::_on_deferred_error_check() {
 // Runtime Error Auto-Fix ("Watch" mode)
 // =============================================================================
 
+// Called by AIAssistantPlugin when the debugger "started" signal fires (game connected).
+// This runs before any _ready() errors arrive over the debugger protocol, so it is
+// the safe place to clear stale error buffers from previous runs.
+void AIAssistantPanel::on_game_session_started() {
+	s_runtime_errors = "";
+	runtime_collect_timer->stop();
+	if (error_monitor.is_valid()) {
+		error_monitor->clear_debugger_errors();
+	}
+	// Record the scene path for re-run after auto-fix.
+	Node *scene_root = EditorInterface::get_singleton()->get_edited_scene_root();
+	runtime_last_play_path = scene_root ? scene_root->get_scene_file_path() : String();
+	AI_LOG("[Watch] Debugger session started — error buffers cleared. Scene: " + runtime_last_play_path);
+}
+
 // Static error handler — installed while the scene is playing.
 // Captures GDScript runtime errors into s_runtime_errors.
 void AIAssistantPanel::_runtime_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type) {
@@ -2426,19 +2441,13 @@ void AIAssistantPanel::_on_runtime_poll_timeout() {
 
 	if (currently_playing && !runtime_was_playing) {
 		// ── Play just started ─────────────────────────────────────────────
-		s_runtime_errors = "";
-		runtime_collect_timer->stop();
-		// Clear debugger error buffer so we only capture errors from this run.
-		if (error_monitor.is_valid()) {
-			error_monitor->clear_debugger_errors();
-		}
+		// Note: error buffer clearing and scene path recording are done in
+		// on_game_session_started() (triggered by the debugger "started" signal),
+		// which fires before any _ready() errors arrive. We only install the
+		// in-process error handler here.
 		_install_runtime_error_handler();
 
-		// Record the scene path so we can re-run the exact same scene after fix.
-		Node *scene_root = EditorInterface::get_singleton()->get_edited_scene_root();
-		runtime_last_play_path = scene_root ? scene_root->get_scene_file_path() : String();
-
-		AI_LOG("[Watch] Scene play started — monitoring for runtime errors. Scene: " + runtime_last_play_path);
+		AI_LOG("[Watch] Scene play detected by poll — in-process handler installed. Scene: " + runtime_last_play_path);
 
 	} else if (!currently_playing && runtime_was_playing) {
 		// ── Play just stopped ─────────────────────────────────────────────
