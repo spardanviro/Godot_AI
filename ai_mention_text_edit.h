@@ -20,9 +20,10 @@ class AIMentionTextEdit : public TextEdit {
 
 public:
 	struct MentionData {
-		String node_name;
-		String node_path;
-		String node_type; // Class name, e.g. "Node3D", "Camera3D"
+		String node_name;  // Display name: node name or filename.
+		String node_path;  // Full path: NodePath string for nodes, res:// path for files.
+		String node_type;  // Class name for nodes (e.g. "Node3D"); empty for files.
+		bool   is_file = false; // True when this mention refers to a filesystem file.
 	};
 
 private:
@@ -48,9 +49,12 @@ protected:
 	static void _bind_methods();
 
 public:
-	// Insert a mention chip at the current caret position.
-	// Returns the PUA character used (for reference).
+	// Insert a scene-node mention chip at the current caret position.
 	char32_t insert_mention(const String &p_node_name, const String &p_node_path, const String &p_node_type);
+
+	// Insert a filesystem-file mention chip at the current caret position.
+	// p_file_path should be a res:// path.
+	char32_t insert_file_mention(const String &p_filename, const String &p_file_path);
 
 	// Get the text with mention characters expanded to "[Node:Name path=... type=...]" for AI.
 	String get_text_with_expanded_mentions() const;

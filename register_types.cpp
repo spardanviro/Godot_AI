@@ -52,6 +52,7 @@ void initialize_ai_assistant_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(AIMentionTextEdit);
 		GDREGISTER_CLASS(AISettingsDialog);
 		GDREGISTER_CLASS(AIAssistantPanel);
+		GDREGISTER_CLASS(AIContextMenuPlugin);
 		GDREGISTER_CLASS(AIAssistantPlugin);
 		EditorPlugins::add_by_type<AIAssistantPlugin>();
 	}

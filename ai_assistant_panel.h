@@ -49,6 +49,12 @@ public:
 		String type;
 	};
 
+	// Filesystem file entry for @file autocomplete.
+	struct FileInfo {
+		String name; // Filename only (e.g. "player.gd").
+		String path; // Full res:// path (e.g. "res://scripts/player.gd").
+	};
+
 private:
 	enum AIMode { MODE_ASK, MODE_AGENT, MODE_PLAN };
 
@@ -144,9 +150,12 @@ private:
 	Array full_conversation_history; // Complete record — never trimmed, used for display & save.
 	String context_summary; // Compressed summary of older messages.
 	String pending_code;
-	String pending_plan_code;    // Code from PLAN mode response, waiting for user to click Execute.
-	String pending_plan_md_path; // Path of plan MD file saved when plan was generated.
+	String pending_plan_md_path; // Path of plan MD file saved when plan was generated (set before user clicks Execute).
 	String active_plan_md_path;  // Plan MD being executed right now (copied from pending at click time).
+	// Step-by-step plan execution state.
+	Vector<String> plan_execution_steps;    // Parsed numbered steps from last plan.
+	int plan_execution_step_idx = 0;        // Current step index during execution.
+	bool plan_step_execution_mode = false;  // True while iterating steps (bypasses plan intercept).
 	bool is_waiting_response = false;
 	String current_chat_id;
 	String last_user_input; // Raw text of the most recent user-originated message (not auto-retry prompts).
@@ -258,6 +267,10 @@ private:
 	Vector<NodeInfo> _get_all_scene_node_infos() const;
 	Vector<NodeInfo> autocomplete_node_infos; // Cached during autocomplete show.
 
+	// File autocomplete — populated alongside node items when @ is typed.
+	Vector<FileInfo> _get_file_infos(const String &p_partial) const;
+	Vector<FileInfo> autocomplete_file_infos; // Cached during autocomplete show.
+
 	// N4: Attachment methods.
 	void _on_attach_pressed();
 	void _on_file_attach_selected(const String &p_path);
@@ -297,6 +310,8 @@ private:
 	void _on_runtime_collect_timeout();
 	String _save_plan_to_md(const Vector<String> &p_steps, const String &p_full_plan_text);
 	void _mark_plan_steps_done(const String &p_md_path);
+	void _mark_one_plan_step_done(const String &p_md_path, int p_step_idx);
+	void _execute_plan_next_step();
 
 public:
 	// Called by AIAssistantPlugin when the debugger session starts (game connected).
@@ -334,6 +349,12 @@ public:
 	// Called by AIAssistantPlugin when "Mention in AI Assistant" is picked
 	// from the scene-tree right-click menu.
 	void insert_mention_of_selected_node();
+
+	// Context-menu callbacks — invoked by AIContextMenuPlugin instances.
+	// p_arg for scene tree: Array of Node* (TypedArray<Node>).
+	// p_arg for filesystem: PackedStringArray of file paths.
+	void mention_nodes_from_context(const Variant &p_arg);
+	void mention_files_from_context(const Variant &p_arg);
 
 	AIAssistantPanel();
 	~AIAssistantPanel();

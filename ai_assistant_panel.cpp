@@ -360,9 +360,11 @@ void AIAssistantPanel::_on_new_chat_pressed() {
 	full_conversation_history.clear();
 	context_summary = "";
 	pending_code = "";
-	pending_plan_code = "";
 	pending_plan_md_path = "";
 	active_plan_md_path = "";
+	plan_execution_steps.clear();
+	plan_execution_step_idx = 0;
+	plan_step_execution_mode = false;
 	current_chat_id = "";
 	pending_attachments.clear();
 	displayed_code_blocks.clear();
@@ -508,8 +510,10 @@ void AIAssistantPanel::_on_input_gui_input(const Ref<InputEvent> &p_event) {
 // --- Node mention helpers (file-scope statics) ---
 
 static bool _is_mention_word_char(char32_t c) {
+	// Allow letters, digits, underscore, hyphen, and dot so filenames like
+	// "player.gd" or "my-script" can be typed as @-partial matches.
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_';
+			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
 }
 
 static Node *_find_node_by_name_r(Node *p_node, const String &p_name) {
@@ -601,23 +605,42 @@ void AIAssistantPanel::_show_mention_autocomplete(int p_line, int p_col, const S
 	autocomplete_at_line = p_line;
 	autocomplete_at_col = p_col;
 
-	// Collect all scene node info (name + type + path).
+	const String partial_lower = p_partial.to_lower();
+
+	// Collect scene nodes.
 	autocomplete_node_infos = _get_all_scene_node_infos();
 
+	// Collect filesystem files (only when the user has typed at least one char,
+	// to avoid flooding the list on bare "@").
+	autocomplete_file_infos.clear();
+	if (!partial_lower.is_empty()) {
+		autocomplete_file_infos = _get_file_infos(partial_lower);
+	}
+
 	autocomplete_list->clear();
-	const String partial_lower = p_partial.to_lower();
+
+	// Add node items. Metadata: non-negative index into autocomplete_node_infos.
 	for (int i = 0; i < autocomplete_node_infos.size(); i++) {
 		const NodeInfo &ni = autocomplete_node_infos[i];
 		if (partial_lower.is_empty() || ni.name.to_lower().contains(partial_lower)) {
-			// Show node type icon alongside the name in the autocomplete list.
 			Ref<Texture2D> icon;
 			if (EditorNode::get_singleton()) {
 				icon = EditorNode::get_singleton()->get_class_icon(ni.type, "Node");
 			}
 			autocomplete_list->add_item(ni.name, icon);
-			// Store the index into autocomplete_node_infos as metadata.
 			autocomplete_list->set_item_metadata(autocomplete_list->get_item_count() - 1, i);
 		}
+	}
+
+	// Add file items. Metadata: -(file_index + 1) to distinguish from node indices.
+	Ref<Texture2D> file_icon = get_theme_icon(SNAME("File"), SNAME("EditorIcons"));
+	for (int i = 0; i < autocomplete_file_infos.size(); i++) {
+		const FileInfo &fi = autocomplete_file_infos[i];
+		autocomplete_list->add_item(fi.name, file_icon);
+		// Store path as tooltip so the user can see the full path.
+		int item_idx = autocomplete_list->get_item_count() - 1;
+		autocomplete_list->set_item_tooltip(item_idx, fi.path);
+		autocomplete_list->set_item_metadata(item_idx, -(i + 1));
 	}
 
 	if (autocomplete_list->get_item_count() == 0) {
@@ -667,12 +690,8 @@ void AIAssistantPanel::_commit_mention_autocomplete(int p_item_idx) {
 		return;
 	}
 
-	// Look up the full node info from our cached data.
-	const int info_idx = autocomplete_list->get_item_metadata(p_item_idx);
-	if (info_idx < 0 || info_idx >= autocomplete_node_infos.size()) {
-		return;
-	}
-	const NodeInfo &ni = autocomplete_node_infos[info_idx];
+	// Metadata: >= 0 is a node index, < 0 is -(file_index+1).
+	const int raw_meta = (int)autocomplete_list->get_item_metadata(p_item_idx);
 	const int current_col = input_field->get_caret_column();
 
 	// Suppress _on_input_text_changed during the edit so the freshly-inserted
@@ -684,8 +703,24 @@ void AIAssistantPanel::_commit_mention_autocomplete(int p_item_idx) {
 			autocomplete_at_line, current_col);
 	input_field->delete_selection();
 
-	// Insert the mention chip (a single PUA character that renders as a chip).
-	input_field->insert_mention(ni.name, ni.path, ni.type);
+	if (raw_meta >= 0) {
+		// Node mention.
+		if (raw_meta >= autocomplete_node_infos.size()) {
+			_suppress_autocomplete = false;
+			return;
+		}
+		const NodeInfo &ni = autocomplete_node_infos[raw_meta];
+		input_field->insert_mention(ni.name, ni.path, ni.type);
+	} else {
+		// File mention.
+		const int file_idx = -(raw_meta + 1);
+		if (file_idx < 0 || file_idx >= autocomplete_file_infos.size()) {
+			_suppress_autocomplete = false;
+			return;
+		}
+		const FileInfo &fi = autocomplete_file_infos[file_idx];
+		input_field->insert_file_mention(fi.name, fi.path);
+	}
 
 	_suppress_autocomplete = false;
 	_hide_mention_autocomplete();
@@ -719,6 +754,53 @@ void AIAssistantPanel::insert_mention_of_selected_node() {
 				n->get_class());
 	}
 	input_field->grab_focus();
+#endif
+}
+
+// --- Context-menu callbacks (from right-click "在GodotAI中提及") ---
+
+void AIAssistantPanel::mention_nodes_from_context(const Variant &p_arg) {
+#ifdef TOOLS_ENABLED
+	// p_arg is a TypedArray<Node> passed by SceneTreeDock::_get_selection_array().
+	Array nodes = p_arg;
+	for (int i = 0; i < nodes.size(); i++) {
+		Node *n = Object::cast_to<Node>(nodes[i]);
+		if (!n) {
+			continue;
+		}
+		input_field->insert_mention(
+				String(n->get_name()),
+				String(n->get_path()),
+				n->get_class());
+	}
+	if (nodes.size() > 0) {
+		input_field->grab_focus();
+	}
+#endif
+}
+
+void AIAssistantPanel::mention_files_from_context(const Variant &p_arg) {
+#ifdef TOOLS_ENABLED
+	// p_arg is a PackedStringArray of res:// file/directory paths.
+	// Directory paths often end with '/' so get_file() returns ""; strip it first.
+	PackedStringArray paths = p_arg;
+	for (int i = 0; i < paths.size(); i++) {
+		const String &path = paths[i];
+		if (path.is_empty()) {
+			continue;
+		}
+		String fname = path.get_file();
+		if (fname.is_empty()) {
+			// Directory — strip trailing slash and take the last path component.
+			fname = path.rstrip("/").get_file();
+		}
+		if (!fname.is_empty()) {
+			input_field->insert_file_mention(fname, path);
+		}
+	}
+	if (paths.size() > 0) {
+		input_field->grab_focus();
+	}
 #endif
 }
 
@@ -767,6 +849,93 @@ Vector<AIAssistantPanel::NodeInfo> AIAssistantPanel::_get_all_scene_node_infos()
 // Note: _expand_mentions and _render_mentions_bbcode are now handled by
 // AIMentionTextEdit::get_text_with_expanded_mentions() and
 // AIMentionTextEdit::get_text_with_mention_bbcode() respectively.
+
+// --- File info for @-mention autocomplete ---
+
+// Recursively walks the project directory and collects files whose extension
+// matches common text/script types.  Results are filtered by p_partial and
+// limited to MAX_FILE_RESULTS to keep the autocomplete popup snappy.
+static void _collect_files_r(const String &p_dir, Vector<AIAssistantPanel::FileInfo> &r_files,
+		const String &p_partial_lower, int p_max) {
+	if (r_files.size() >= p_max) {
+		return;
+	}
+	Ref<DirAccess> da = DirAccess::open(p_dir);
+	if (!da.is_valid()) {
+		return;
+	}
+
+	// Collect entries first to allow alphabetic ordering.
+	Vector<String> subdirs, files;
+	da->list_dir_begin();
+	String entry = da->get_next();
+	while (!entry.is_empty()) {
+		if (entry == "." || entry == "..") {
+			entry = da->get_next();
+			continue;
+		}
+		if (da->current_is_dir()) {
+			// Skip hidden dirs and the .godot import cache.
+			if (!entry.begins_with(".") && entry != ".godot") {
+				subdirs.push_back(entry);
+			}
+		} else {
+			files.push_back(entry);
+		}
+		entry = da->get_next();
+	}
+	da->list_dir_end();
+
+	// Process files in this directory.
+	static const char *ALLOWED_EXT[] = {
+		"gd", "cs", "md", "txt", "json", "yaml", "yml",
+		"cfg", "ini", "tscn", "tres", "res", "toml", nullptr
+	};
+	for (int i = 0; i < files.size(); i++) {
+		if (r_files.size() >= p_max) {
+			return;
+		}
+		const String &fname = files[i];
+		const String ext = fname.get_extension().to_lower();
+		bool allowed = false;
+		for (int e = 0; ALLOWED_EXT[e] != nullptr; e++) {
+			if (ext == ALLOWED_EXT[e]) {
+				allowed = true;
+				break;
+			}
+		}
+		if (!allowed) {
+			continue;
+		}
+		// Filter by partial (empty partial shows all).
+		if (!p_partial_lower.is_empty() && !fname.to_lower().contains(p_partial_lower)) {
+			continue;
+		}
+		AIAssistantPanel::FileInfo fi;
+		fi.name = fname;
+		fi.path = p_dir.path_join(fname);
+		r_files.push_back(fi);
+	}
+
+	// Recurse into subdirs.
+	for (int i = 0; i < subdirs.size(); i++) {
+		_collect_files_r(p_dir.path_join(subdirs[i]), r_files, p_partial_lower, p_max);
+	}
+}
+
+Vector<AIAssistantPanel::FileInfo> AIAssistantPanel::_get_file_infos(const String &p_partial) const {
+	Vector<FileInfo> results;
+#ifdef TOOLS_ENABLED
+	const String res_root = ProjectSettings::get_singleton()->get_resource_path();
+	if (res_root.is_empty()) {
+		return results;
+	}
+	const int MAX_FILE_RESULTS = 30;
+	const String partial_lower = p_partial.to_lower();
+	_collect_files_r(res_root, results, partial_lower, MAX_FILE_RESULTS);
+#endif
+	return results;
+}
 
 // --- N4: File Attachment ---
 
@@ -972,17 +1141,18 @@ void AIAssistantPanel::_on_meta_clicked(const Variant &p_meta) {
 
 		details_dialog->popup_centered(Size2(700, 500));
 	} else if (meta == "execute_plan") {
-		// User clicked "▶ Execute Plan" in PLAN mode — run the stored plan code.
-		if (!pending_plan_code.is_empty()) {
-			String code_to_run = pending_plan_code;
-			pending_plan_code = "";
-			// Transfer the pending plan MD path so _execute_code_with_monitoring can
-			// mark steps done after successful execution.
+		// User clicked "▶ Execute Plan" — begin step-by-step execution.
+		if (!plan_execution_steps.is_empty()) {
 			active_plan_md_path = pending_plan_md_path;
 			pending_plan_md_path = "";
-			_execute_code_with_monitoring(code_to_run);
+			plan_execution_step_idx = 0;
+			plan_step_execution_mode = true;
+			_append_message("System",
+					String(U"▶ Starting plan execution — ") + itos(plan_execution_steps.size()) + " steps.",
+					Color(0.3, 1.0, 0.55));
+			_execute_plan_next_step();
 		} else {
-			_append_message("System", "No pending plan code to execute.", Color(1.0, 0.7, 0.3));
+			_append_message("System", "No plan steps to execute. Please generate a plan first.", Color(1.0, 0.7, 0.3));
 		}
 	} else if (meta.begins_with("revert:")) {
 		int idx = meta.substr(7).to_int();
@@ -1767,92 +1937,10 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 			}
 			// ── END COMPILE CHECK ─────────────────────────────────────────────────
 
-			// ── PLAN MODE: show plan + Execute button ──────────────────────────────
-			// In PLAN mode the AI returns numbered plan text followed by the code block.
-			// Instead of auto-executing, surface the plan in the chat and wait for the
-			// user to click "▶ Execute Plan" before we run anything.
-			// Exception: runtime_fix_in_progress bypasses PLAN mode — auto-fix must execute immediately.
-			if (_get_current_mode() == MODE_PLAN && !runtime_fix_in_progress) {
-				// ── Collect full plan text from all segments ──────────────────────
-				String full_plan_text;
-				for (int i = 0; i < text_segments.size(); i++) {
-					full_plan_text += String(text_segments[i]);
-				}
-
-				// ── Parse numbered steps (lines starting with "N." or "N)") ───────
-				Vector<String> plan_steps;
-				{
-					Vector<String> plines = full_plan_text.split("\n");
-					for (int i = 0; i < plines.size(); i++) {
-						String line = plines[i].strip_edges();
-						if (line.is_empty()) {
-							continue;
-						}
-						// Match "1.", "2.", "10." etc. at the start of line.
-						int j = 0;
-						while (j < (int)line.length() && line[j] >= '0' && line[j] <= '9') {
-							j++;
-						}
-						if (j > 0 && j < (int)line.length() && (line[j] == '.' || line[j] == ')')) {
-							plan_steps.push_back(line);
-						}
-					}
-				}
-
-				// ── Show plan text in the chat display ────────────────────
-				if (!text_segments.is_empty()) {
-					chat_display->push_color(Color(0.75, 0.92, 0.78));
-					chat_display->push_bold();
-					chat_display->add_text(U"📋 Plan:");
-					chat_display->pop();
-					chat_display->pop();
-					chat_display->add_newline();
-					for (int i = 0; i < text_segments.size(); i++) {
-						chat_display->push_color(Color(0.85, 0.92, 0.88));
-						chat_display->add_text(text_segments[i]);
-						chat_display->pop();
-					}
-					chat_display->add_newline();
-				}
-
-				// ── Save plan to MD file ─────────────────────────────────────
-				pending_plan_md_path = "";
-				if (!plan_steps.is_empty()) {
-					pending_plan_md_path = _save_plan_to_md(plan_steps, full_plan_text);
-					if (!pending_plan_md_path.is_empty()) {
-						// Show the MD file path below the plan.
-						String rel = pending_plan_md_path;
-						String res_root = ProjectSettings::get_singleton()->get_resource_path();
-						if (rel.begins_with(res_root)) {
-							rel = "res://" + rel.substr(res_root.length()).lstrip("/\\");
-						}
-						chat_display->add_newline();
-						chat_display->push_color(Color(0.55, 0.75, 0.55));
-						chat_display->add_text(String(U"📄 ") + rel);
-						chat_display->pop();
-					}
-				}
-
-				// ── Show a clickable "Execute Plan" link ──────────────────
-				chat_display->add_newline();
-				chat_display->push_bgcolor(Color(0.12, 0.38, 0.18, 0.6));
-				chat_display->push_color(Color(0.3, 1.0, 0.55));
-				chat_display->push_bold();
-				chat_display->push_meta("execute_plan");
-				chat_display->add_text(U"  ▶  Execute Plan  ");
-				chat_display->pop(); // meta
-				chat_display->pop(); // bold
-				chat_display->pop(); // color
-				chat_display->pop(); // bgcolor
-				chat_display->add_newline();
-				chat_display->add_newline();
-
-				pending_plan_code = pending_code;
-				pending_code = "";
-				auto_retry_count = 0;
-				return;
-			}
-			// ── END PLAN MODE ──────────────────────────────────────────────────────
+			// ── PLAN STEP EXECUTION MODE ─────────────────────────────────────────
+			// When iterating plan steps, each AI response is expected to contain a
+			// code block for one step.  Let execution proceed normally (fall through).
+			// ── END PLAN STEP EXECUTION MODE ─────────────────────────────────────
 
 			AI_LOG("Step 8: Safety check...");
 			String safety_error = script_executor->check_safety(pending_code);
@@ -1976,6 +2064,90 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 		if (!is_conversational && user_lower.length() <= 3) {
 			is_conversational = true;
 		}
+		// ── PLAN MODE: text-only response = the plan itself ──────────────────
+		// When in PLAN mode (not step-execution sub-mode) a text-only response is
+		// the expected outcome — the AI generated the numbered plan.
+		// Parse steps, save to MD, show "Execute Plan" button.  Never auto-retry.
+		bool is_plan_response = (_get_current_mode() == MODE_PLAN && !plan_step_execution_mode
+				&& !runtime_fix_in_progress);
+		if (is_plan_response) {
+			// Collect full plan text.
+			String full_plan_text;
+			for (int i = 0; i < text_segments.size(); i++) {
+				full_plan_text += String(text_segments[i]);
+			}
+
+			// Parse numbered steps (lines starting with "N." or "N)").
+			Vector<String> plan_steps;
+			{
+				Vector<String> plines = full_plan_text.split("\n");
+				for (int i = 0; i < plines.size(); i++) {
+					String line = plines[i].strip_edges();
+					if (line.is_empty()) {
+						continue;
+					}
+					int j = 0;
+					while (j < (int)line.length() && line[j] >= '0' && line[j] <= '9') {
+						j++;
+					}
+					if (j > 0 && j < (int)line.length() && (line[j] == '.' || line[j] == ')')) {
+						plan_steps.push_back(line);
+					}
+				}
+			}
+
+			// Show plan header + text.
+			chat_display->push_color(Color(0.75, 0.92, 0.78));
+			chat_display->push_bold();
+			chat_display->add_text(U"📋 Plan:");
+			chat_display->pop();
+			chat_display->pop();
+			chat_display->add_newline();
+			for (int i = 0; i < text_segments.size(); i++) {
+				chat_display->push_color(Color(0.85, 0.92, 0.88));
+				chat_display->add_text(text_segments[i]);
+				chat_display->pop();
+			}
+			chat_display->add_newline();
+
+			// Save plan to MD and show file path.
+			pending_plan_md_path = "";
+			plan_execution_steps.clear();
+			if (!plan_steps.is_empty()) {
+				pending_plan_md_path = _save_plan_to_md(plan_steps, full_plan_text);
+				plan_execution_steps = plan_steps;
+				if (!pending_plan_md_path.is_empty()) {
+					String rel = pending_plan_md_path;
+					String res_root = ProjectSettings::get_singleton()->get_resource_path();
+					if (rel.begins_with(res_root)) {
+						rel = "res://" + rel.substr(res_root.length()).lstrip("/\\");
+					}
+					chat_display->add_newline();
+					chat_display->push_color(Color(0.55, 0.75, 0.55));
+					chat_display->add_text(String(U"📄 ") + rel);
+					chat_display->pop();
+				}
+			}
+
+			// Show "Execute Plan" button.
+			chat_display->add_newline();
+			chat_display->push_bgcolor(Color(0.12, 0.38, 0.18, 0.6));
+			chat_display->push_color(Color(0.3, 1.0, 0.55));
+			chat_display->push_bold();
+			chat_display->push_meta("execute_plan");
+			chat_display->add_text(U"  ▶  Execute Plan  ");
+			chat_display->pop(); // meta
+			chat_display->pop(); // bold
+			chat_display->pop(); // color
+			chat_display->pop(); // bgcolor
+			chat_display->add_newline();
+			chat_display->add_newline();
+
+			auto_retry_count = 0;
+			return;
+		}
+		// ── END PLAN MODE TEXT-ONLY HANDLING ──────────────────────────────────
+
 		if (compact && !p_is_stopped_partial && !p_response.strip_edges().is_empty() &&
 				!is_conversational && auto_retry_count < MAX_AUTO_RETRIES) {
 			auto_retry_count++;
@@ -2216,10 +2388,15 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 	if (success) {
 		AI_LOG("Execution SUCCESS: " + output);
 
-		// Mark plan steps done if this was a PLAN mode execution.
-		if (!active_plan_md_path.is_empty()) {
-			_mark_plan_steps_done(active_plan_md_path);
-			active_plan_md_path = "";
+		// Mark current plan step done in the MD file.
+		if (plan_step_execution_mode) {
+			if (!active_plan_md_path.is_empty()) {
+				_mark_one_plan_step_done(active_plan_md_path, plan_execution_step_idx);
+			} else {
+				// MD path is empty — plan was generated without a detectable step list
+				// (e.g. AI used bullet points instead of "1. …" numbering).
+				AI_WARN("[Plan] Cannot mark step done: active_plan_md_path is empty.");
+			}
 		}
 
 		// N3 (post-exec): if no scene was open before but code opened a new scene,
@@ -2298,10 +2475,33 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 
 		// N1: Start deferred error check (500ms) to catch async errors/warnings.
 		deferred_error_timer->start(0.5);
+
+		// Advance plan execution to the next step (if step-execution mode is active).
+		if (plan_step_execution_mode) {
+			plan_execution_step_idx++;
+			if (plan_execution_step_idx < plan_execution_steps.size()) {
+				// Delay next step slightly so UI updates are visible first.
+				// We call _execute_plan_next_step() via a one-shot timer-like deferred call.
+				callable_mp(this, &AIAssistantPanel::_execute_plan_next_step).call_deferred();
+			} else {
+				// All steps done.
+				plan_step_execution_mode = false;
+				active_plan_md_path = "";
+				_append_message("System",
+						String(U"✅ All plan steps completed!"),
+						Color(0.3, 1.0, 0.55));
+			}
+		}
 	} else {
 		error_monitor->end_ai_execution();
 		AI_ERR("Execution FAILED: " + error_str);
-		// Clear active plan MD path on failure (steps are not done).
+		// Stop plan execution on failure.
+		if (plan_step_execution_mode) {
+			plan_step_execution_mode = false;
+			_append_message("System",
+					String(U"⛔ Plan execution stopped at step ") + itos(plan_execution_step_idx + 1) + " due to failure.",
+					Color(1.0, 0.4, 0.4));
+		}
 		active_plan_md_path = "";
 
 		if (compact) {
@@ -2498,6 +2698,102 @@ void AIAssistantPanel::_mark_plan_steps_done(const String &p_md_path) {
 	_append_message("System",
 			String(U"✅ Plan complete — ") + rel,
 			Color(0.4f, 1.0f, 0.4f));
+}
+
+// Mark a single numbered step as done in the plan MD (by step index, 0-based).
+// The MD was written with `- [ ] N. step text` lines — flip the matching one.
+void AIAssistantPanel::_mark_one_plan_step_done(const String &p_md_path, int p_step_idx) {
+	if (p_md_path.is_empty()) {
+		AI_WARN("[Plan] _mark_one_plan_step_done called with empty path — step " + itos(p_step_idx) + " not marked.");
+		return;
+	}
+
+	Ref<FileAccess> fr = FileAccess::open(p_md_path, FileAccess::READ);
+	if (!fr.is_valid()) {
+		AI_WARN("[Plan] Cannot open plan MD for reading: " + p_md_path);
+		return;
+	}
+	String content = fr->get_as_text();
+	fr.unref();
+
+	// Steps are executed sequentially — the first remaining unchecked box is always
+	// the current step. We do NOT count by p_step_idx across unchecked boxes because
+	// previously-checked boxes have been removed from the `- [ ]` count, which would
+	// shift every subsequent index by the number of already-completed steps.
+	Vector<String> lines = content.split("\n");
+	bool marked = false;
+	String step_label;
+	for (int i = 0; i < lines.size(); i++) {
+		if (lines[i].begins_with("- [ ] ")) {
+			step_label = lines[i].substr(6).strip_edges(); // Text after "- [ ] "
+			lines.write[i] = "- [x] " + lines[i].substr(6);
+			marked = true;
+			break;
+		}
+	}
+
+	if (!marked) {
+		AI_WARN("[Plan] No unchecked step found to mark in: " + p_md_path);
+		return;
+	}
+
+	// Rebuild content.
+	String new_content;
+	for (int i = 0; i < lines.size(); i++) {
+		new_content += lines[i];
+		if (i < lines.size() - 1) {
+			new_content += "\n";
+		}
+	}
+
+	Ref<FileAccess> fw = FileAccess::open(p_md_path, FileAccess::WRITE);
+	if (!fw.is_valid()) {
+		AI_WARN("[Plan] Cannot open plan MD for writing: " + p_md_path);
+		return;
+	}
+	fw->store_string(new_content);
+	fw.unref();
+
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+	AI_LOG("[Plan] Marked step " + itos(p_step_idx) + " done in: " + p_md_path);
+
+	// Show brief confirmation in the chat.
+	String short_label = step_label.left(60);
+	if (step_label.length() > 60) {
+		short_label += "...";
+	}
+	_append_message("System",
+			String(U"✅ Step ") + itos(p_step_idx + 1) + " done: " + short_label,
+			Color(0.4f, 1.0f, 0.55f));
+}
+
+// Send a prompt to the AI to implement the current plan step.
+void AIAssistantPanel::_execute_plan_next_step() {
+	if (!plan_step_execution_mode) {
+		return;
+	}
+	if (plan_execution_step_idx >= plan_execution_steps.size()) {
+		plan_step_execution_mode = false;
+		return;
+	}
+
+	String step_text = plan_execution_steps[plan_execution_step_idx];
+	int step_num = plan_execution_step_idx + 1;
+	int total_steps = plan_execution_steps.size();
+
+	_append_message("System",
+			String(U"🔧 Executing step ") + itos(step_num) + "/" + itos(total_steps) + ": " + step_text,
+			Color(0.7, 0.9, 1.0));
+
+	// Build the step prompt.
+	String step_prompt =
+			"Implement step " + itos(step_num) + " of " + itos(total_steps) + " from the plan:\n\n" +
+			step_text + "\n\n" +
+			"Generate ONLY the GDScript code block for this specific step. "
+			"Start with ```gdscript and end with ```. "
+			"Do NOT include any other steps or unrelated code.";
+
+	_send_to_api(step_prompt);
 }
 
 // Runtime Error Auto-Fix ("Watch" mode)
@@ -2906,8 +3202,16 @@ String AIAssistantPanel::_get_system_prompt(const String &p_current_message) con
 	AIMode mode = _get_current_mode();
 	if (mode == MODE_ASK) {
 		prompt = "You are in ASK mode. Only answer questions with text explanations. Do NOT generate code blocks.\n\n" + prompt;
-	} else if (mode == MODE_PLAN) {
-		prompt = "You are in PLAN mode. First create a numbered step-by-step plan, then generate code to implement ALL steps in a single code block.\n\n" + prompt;
+	} else if (mode == MODE_PLAN && !plan_step_execution_mode) {
+		// Pure planning request: AI must output ONLY the numbered plan, no code.
+		prompt = "You are in PLAN mode. Create a numbered step-by-step implementation plan ONLY.\n"
+				 "DO NOT write any code or code blocks.\n"
+				 "Write only the plan text with clearly numbered steps (e.g. 1. ... 2. ... 3. ...).\n"
+				 "Each step should be a concise description of one concrete implementation action.\n\n" +
+				prompt;
+	} else if (mode == MODE_PLAN && plan_step_execution_mode) {
+		// Step execution sub-request: behave like AGENT mode — generate code.
+		prompt = "You are executing one step of a multi-step plan. Generate the GDScript code block for this specific step ONLY.\n\n" + prompt;
 	}
 
 	// N10: Detect UI request from current user message and add UI-specialized prompt.
@@ -3338,7 +3642,11 @@ void AIAssistantPanel::_on_history_item_deleted(const String &p_file_path) {
 		conversation_history.clear();
 		full_conversation_history.clear();
 		pending_code = "";
-		pending_plan_code = "";
+		plan_execution_steps.clear();
+		plan_execution_step_idx = 0;
+		plan_step_execution_mode = false;
+		pending_plan_md_path = "";
+		active_plan_md_path = "";
 		current_chat_id = "";
 		_append_message("System", TR(STR_SYS_CHAT_DELETED), Color(0.6, 0.8, 1.0));
 	}

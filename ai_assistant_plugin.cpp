@@ -140,6 +140,19 @@ AIAssistantPlugin::AIAssistantPlugin() {
 	dock->add_child(panel);
 	add_dock(dock);
 
+	// Register "在GodotAI中提及" in the scene-tree and filesystem right-click menus.
+	scene_ctx_plugin.instantiate();
+	scene_ctx_plugin->setup(
+			U"在GodotAI中提及",
+			callable_mp(panel, &AIAssistantPanel::mention_nodes_from_context));
+	add_context_menu_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_SCENE_TREE, scene_ctx_plugin);
+
+	fs_ctx_plugin.instantiate();
+	fs_ctx_plugin->setup(
+			U"在GodotAI中提及",
+			callable_mp(panel, &AIAssistantPanel::mention_files_from_context));
+	add_context_menu_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, fs_ctx_plugin);
+
 	// Defer focusing so the editor layout finishes loading first.
 	call_deferred("_focus_dock");
 
@@ -151,6 +164,14 @@ AIAssistantPlugin::AIAssistantPlugin() {
 }
 
 AIAssistantPlugin::~AIAssistantPlugin() {
+	if (scene_ctx_plugin.is_valid()) {
+		remove_context_menu_plugin(scene_ctx_plugin);
+		scene_ctx_plugin.unref();
+	}
+	if (fs_ctx_plugin.is_valid()) {
+		remove_context_menu_plugin(fs_ctx_plugin);
+		fs_ctx_plugin.unref();
+	}
 	if (dock) {
 		remove_dock(dock);
 		memdelete(dock);
