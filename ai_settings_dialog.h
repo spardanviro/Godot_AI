@@ -30,6 +30,11 @@ class AISettingsDialog : public AcceptDialog {
 	OptionButton *language_option = nullptr;
 	Label *fetch_status_label = nullptr;
 
+	// Context compression controls.
+	SpinBox *compression_keep_recent_spin = nullptr;  // How many recent msgs to keep (2-20).
+	SpinBox *compression_threshold_spin = nullptr;    // Compress when history > N% of window (30-95).
+	CheckBox *compression_ai_summary_check = nullptr; // Use AI to summarise old messages.
+
 	// Labels that need dynamic language update.
 	Label *label_language = nullptr;
 	Label *label_provider = nullptr;
@@ -41,6 +46,10 @@ class AISettingsDialog : public AcceptDialog {
 	Label *label_send_on_enter = nullptr;
 	Label *label_auto_execute = nullptr;
 	Label *label_restore_last_chat = nullptr;
+	Label *label_compression = nullptr;
+	Label *label_compression_keep_recent = nullptr;
+	Label *label_compression_threshold = nullptr;
+	Label *label_compression_ai_summary = nullptr;
 	Label *label_permissions = nullptr;
 	Label *perm_labels[AIPermissionManager::PERM_MAX] = {};
 

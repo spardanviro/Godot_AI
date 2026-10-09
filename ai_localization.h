@@ -84,6 +84,13 @@ public:
 		STR_SETTINGS_RESTORE_LAST_CHAT_DESC,
 		STR_SETTINGS_LANGUAGE,
 
+		// Context compression settings.
+		STR_SETTINGS_COMPRESSION,
+		STR_SETTINGS_COMPRESSION_KEEP_RECENT,
+		STR_SETTINGS_COMPRESSION_THRESHOLD,
+		STR_SETTINGS_COMPRESSION_AI_SUMMARY,
+		STR_SETTINGS_COMPRESSION_AI_SUMMARY_DESC,
+
 		// Permission settings.
 		STR_SETTINGS_PERMISSIONS,
 		STR_PERM_CREATE_NODES,
@@ -232,6 +239,13 @@ private:
 			case STR_SETTINGS_RESTORE_LAST_CHAT_DESC: return "Restore last conversation on editor startup";
 			case STR_SETTINGS_LANGUAGE: return "Language:";
 
+			// Context compression settings.
+			case STR_SETTINGS_COMPRESSION: return "--- Context Compression ---";
+			case STR_SETTINGS_COMPRESSION_KEEP_RECENT: return "Keep Recent Msgs:";
+			case STR_SETTINGS_COMPRESSION_THRESHOLD: return "Compress At (%):";
+			case STR_SETTINGS_COMPRESSION_AI_SUMMARY: return "AI Summary:";
+			case STR_SETTINGS_COMPRESSION_AI_SUMMARY_DESC: return "Summarize old messages with the AI (costs tokens)";
+
 			// Permission settings.
 			case STR_SETTINGS_PERMISSIONS: return "--- Permissions ---";
 			case STR_PERM_CREATE_NODES: return "Create Nodes:";
@@ -359,6 +373,13 @@ private:
 			case STR_SETTINGS_RESTORE_LAST_CHAT: return String::utf8("恢复对话：");
 			case STR_SETTINGS_RESTORE_LAST_CHAT_DESC: return String::utf8("启动编辑器时自动恢复上次对话记录");
 			case STR_SETTINGS_LANGUAGE: return String::utf8("语言：");
+
+			// Context compression settings.
+			case STR_SETTINGS_COMPRESSION: return String::utf8("--- 上下文压缩 ---");
+			case STR_SETTINGS_COMPRESSION_KEEP_RECENT: return String::utf8("保留最近消息数：");
+			case STR_SETTINGS_COMPRESSION_THRESHOLD: return String::utf8("压缩阈值 (%)：");
+			case STR_SETTINGS_COMPRESSION_AI_SUMMARY: return String::utf8("AI 摘要：");
+			case STR_SETTINGS_COMPRESSION_AI_SUMMARY_DESC: return String::utf8("用 AI 总结旧消息（消耗 token）");
 
 			// Permission settings.
 			case STR_SETTINGS_PERMISSIONS: return String::utf8("--- 权限设置 ---");

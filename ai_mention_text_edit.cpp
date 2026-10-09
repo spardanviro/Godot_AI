@@ -2,6 +2,7 @@
 
 #include "ai_mention_text_edit.h"
 
+#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/object/callable_mp.h"
 #include "editor/editor_node.h"
@@ -185,7 +186,28 @@ String AIMentionTextEdit::get_text_with_expanded_mentions() const {
 		if (c >= 0xE000 && c <= 0xF8FF && mentions.has(c)) {
 			const MentionData &md = mentions[c];
 
-			if (md.is_file) {
+			if (md.is_file && DirAccess::dir_exists_absolute(md.node_path)) {
+				// Folder mention: there is no content to inline, so list what it holds.
+				const int MAX_ENTRIES = 200;
+				result += "--- FOLDER: " + md.node_name + " (" + md.node_path + ") ---\n";
+				Ref<DirAccess> da = DirAccess::open(md.node_path);
+				if (da.is_valid()) {
+					const PackedStringArray dirs = da->get_directories();
+					const PackedStringArray files = da->get_files();
+					int listed = 0;
+					for (int j = 0; j < dirs.size() && listed < MAX_ENTRIES; j++, listed++) {
+						result += dirs[j] + "/\n";
+					}
+					for (int j = 0; j < files.size() && listed < MAX_ENTRIES; j++, listed++) {
+						result += files[j] + "\n";
+					}
+					const int total = dirs.size() + files.size();
+					if (total > listed) {
+						result += "[" + itos(total - listed) + " more entries not listed]\n";
+					}
+				}
+				result += "--- END FOLDER ---";
+			} else if (md.is_file) {
 				// Inline the file content so the AI has full context.
 				Ref<FileAccess> fa = FileAccess::open(md.node_path, FileAccess::READ);
 				if (fa.is_valid()) {

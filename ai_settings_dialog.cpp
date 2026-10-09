@@ -57,12 +57,12 @@ void AISettingsDialog::_notification(int p_what) {
 
 String AISettingsDialog::_get_default_model_for(int p_provider_index) const {
 	switch (p_provider_index) {
-		case 0: return "claude-opus-4-6";   // Anthropic
+		case 0: return "claude-opus-5-5";   // Anthropic
 		case 1: return "gpt-5.4";           // OpenAI
 		case 2: return "gemini-3.1-pro-preview"; // Gemini
 		case 3: return "glm-5.1";            // GLM
 		case 4: return "deepseek-chat";     // DeepSeek
-		default: return "claude-opus-4-6";
+		default: return "claude-opus-5-5";
 	}
 }
 
@@ -70,16 +70,17 @@ PackedStringArray AISettingsDialog::_get_fallback_models_for(int p_provider_inde
 	PackedStringArray models;
 	switch (p_provider_index) {
 		case 0: // Anthropic — non-deprecated models
+			models.push_back("claude-opus-5-5");
+			models.push_back("claude-opus-5");
+			models.push_back("claude-opus-4-8");
+			models.push_back("claude-opus-4-7");
 			models.push_back("claude-opus-4-6");
-			models.push_back("claude-opus-4-5");
-			models.push_back("claude-opus-4-1");
-			models.push_back("claude-opus-4");
+			models.push_back("claude-sonnet-5-5");
+			models.push_back("claude-sonnet-5");
 			models.push_back("claude-sonnet-4-6");
-			models.push_back("claude-sonnet-4-5");
-			models.push_back("claude-sonnet-4");
+			models.push_back("claude-haiku-5-5");
 			models.push_back("claude-haiku-4-5");
-			models.push_back("claude-haiku-3-5");
-			models.push_back("claude-haiku-3");
+			models.push_back("claude-fable-5-1");
 			break;
 		case 1: // OpenAI / Codex models
 			models.push_back("gpt-5.4");
@@ -157,7 +158,8 @@ void AISettingsDialog::_load_settings() {
 	api_key_edit->set_text(provider_api_keys[idx]);
 
 	endpoint_edit->set_text(es->get_setting("ai_assistant/api_endpoint"));
-	max_tokens_spin->set_value(es->get_setting("ai_assistant/max_tokens"));
+	// max_tokens is restored AFTER _on_provider_changed() below to prevent
+	// _on_model_changed() from overwriting the saved value with its recommendation.
 	temperature_spin->set_value(es->get_setting("ai_assistant/temperature"));
 
 	if (es->has_setting("ai_assistant/send_on_enter")) {
@@ -205,9 +207,32 @@ void AISettingsDialog::_load_settings() {
 		}
 	}
 
+	// Context compression settings.
+	if (compression_keep_recent_spin) {
+		int keep = es->has_setting("ai_assistant/compression_keep_recent")
+				? (int)es->get_setting("ai_assistant/compression_keep_recent") : 6;
+		compression_keep_recent_spin->set_value(keep);
+	}
+	if (compression_threshold_spin) {
+		// Round, don't truncate: 0.58f * 100 is 57.99..., which would drift down on every save.
+		int pct = es->has_setting("ai_assistant/compression_threshold_pct")
+				? (int)Math::round(float(es->get_setting("ai_assistant/compression_threshold_pct")) * 100.0f) : 70;
+		compression_threshold_spin->set_value(pct);
+	}
+	if (compression_ai_summary_check) {
+		bool use_ai = es->has_setting("ai_assistant/compression_use_ai_summary")
+				? (bool)es->get_setting("ai_assistant/compression_use_ai_summary") : false;
+		compression_ai_summary_check->set_pressed(use_ai);
+	}
+
 	// _on_provider_changed seeds the dropdown with the provider default and starts a fetch.
 	// Restore the saved model so it shows immediately and is preserved when fetch completes.
 	_on_provider_changed(idx);
+
+	// Restore the user-saved max_tokens NOW — after _on_provider_changed so that
+	// _on_model_changed()'s auto-recommendation doesn't win over the saved value.
+	max_tokens_spin->set_value(es->get_setting("ai_assistant/max_tokens"));
+
 	String saved_model = es->get_setting("ai_assistant/model");
 	if (!saved_model.is_empty()) {
 		bool found = false;
@@ -258,6 +283,11 @@ void AISettingsDialog::_update_ui_texts() {
 	if (label_send_on_enter) label_send_on_enter->set_text(TR(STR_SETTINGS_SEND_ON_ENTER));
 	if (label_auto_execute) label_auto_execute->set_text(TR(STR_SETTINGS_AUTO_EXECUTE));
 	if (label_restore_last_chat) label_restore_last_chat->set_text(TR(STR_SETTINGS_RESTORE_LAST_CHAT));
+	if (label_compression) label_compression->set_text(TR(STR_SETTINGS_COMPRESSION));
+	if (label_compression_keep_recent) label_compression_keep_recent->set_text(TR(STR_SETTINGS_COMPRESSION_KEEP_RECENT));
+	if (label_compression_threshold) label_compression_threshold->set_text(TR(STR_SETTINGS_COMPRESSION_THRESHOLD));
+	if (label_compression_ai_summary) label_compression_ai_summary->set_text(TR(STR_SETTINGS_COMPRESSION_AI_SUMMARY));
+	if (compression_ai_summary_check) compression_ai_summary_check->set_text(TR(STR_SETTINGS_COMPRESSION_AI_SUMMARY_DESC));
 	if (label_permissions) label_permissions->set_text(TR(STR_SETTINGS_PERMISSIONS));
 
 	if (api_key_edit) api_key_edit->set_placeholder(TR(STR_SETTINGS_API_KEY_PLACEHOLDER));
@@ -542,8 +572,26 @@ void AISettingsDialog::_on_models_request_completed(int p_result, int p_response
 	fetch_status_label->set_text("Latest: " + best + " (" + itos(models.size()) + " models)");
 	fetch_status_label->add_theme_color_override("font_color", Color(0.5, 1.0, 0.5));
 
-	// Sync max-tokens to the newly selected model.
-	_on_model_changed(model_option->get_selected());
+	// Sync max-tokens to the newly selected model, but preserve any value the user
+	// has already saved to EditorSettings — don't let the recommendation overwrite it.
+	{
+		EditorSettings *es2 = EditorSettings::get_singleton();
+		int saved_mt = (es2 && es2->has_setting("ai_assistant/max_tokens"))
+				? (int)es2->get_setting("ai_assistant/max_tokens")
+				: -1;
+		// The saved value belongs to the saved provider. If the user has switched
+		// provider in this dialog, carrying it over can exceed the new provider's
+		// output cap (e.g. Gemini's 65536 on DeepSeek) and make every request fail.
+		const char *prov_names[] = { "anthropic", "openai", "gemini", "glm", "deepseek" };
+		const bool same_provider = es2 && current_provider_idx >= 0 && current_provider_idx < 5 &&
+				String(es2->get_setting("ai_assistant/provider")) == prov_names[current_provider_idx];
+		_on_model_changed(model_option->get_selected());
+		// Restore saved value if it differs from the freshly-initialised default (4096).
+		// This means: user explicitly saved a custom value → keep it; brand-new install → keep recommendation.
+		if (same_provider && saved_mt > 0 && saved_mt != 4096) {
+			max_tokens_spin->set_value(saved_mt);
+		}
+	}
 }
 
 void AISettingsDialog::_on_confirmed() {
@@ -610,6 +658,18 @@ void AISettingsDialog::_on_confirmed() {
 		for (int i = 0; i < AIPermissionManager::PERM_MAX; i++) {
 			es->set_setting(perm_keys[i], perm_options[i]->get_selected());
 		}
+	}
+
+	// Context compression settings.
+	if (compression_keep_recent_spin) {
+		es->set_setting("ai_assistant/compression_keep_recent", (int)compression_keep_recent_spin->get_value());
+	}
+	if (compression_threshold_spin) {
+		float pct = (float)compression_threshold_spin->get_value() / 100.0f;
+		es->set_setting("ai_assistant/compression_threshold_pct", pct);
+	}
+	if (compression_ai_summary_check) {
+		es->set_setting("ai_assistant/compression_use_ai_summary", compression_ai_summary_check->is_pressed());
 	}
 
 	es->save();
@@ -858,6 +918,71 @@ AISettingsDialog::AISettingsDialog() {
 		}
 	}
 
+	// Context Compression section.
+	{
+		label_compression = memnew(Label);
+		label_compression->set_text(TR(STR_SETTINGS_COMPRESSION));
+		label_compression->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		label_compression->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
+		vbox->add_child(label_compression);
+
+		// Keep recent N messages.
+		{
+			HBoxContainer *hbox = memnew(HBoxContainer);
+			vbox->add_child(hbox);
+
+			label_compression_keep_recent = memnew(Label);
+			label_compression_keep_recent->set_text(TR(STR_SETTINGS_COMPRESSION_KEEP_RECENT));
+			label_compression_keep_recent->set_custom_minimum_size(Size2(120, 0));
+			hbox->add_child(label_compression_keep_recent);
+
+			// Step 2: messages come in user/assistant pairs, so an even count keeps
+			// the retained history starting on a user turn.
+			compression_keep_recent_spin = memnew(SpinBox);
+			compression_keep_recent_spin->set_min(2);
+			compression_keep_recent_spin->set_max(20);
+			compression_keep_recent_spin->set_step(2);
+			compression_keep_recent_spin->set_value(6);
+			compression_keep_recent_spin->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			hbox->add_child(compression_keep_recent_spin);
+		}
+
+		// Threshold percentage.
+		{
+			HBoxContainer *hbox = memnew(HBoxContainer);
+			vbox->add_child(hbox);
+
+			label_compression_threshold = memnew(Label);
+			label_compression_threshold->set_text(TR(STR_SETTINGS_COMPRESSION_THRESHOLD));
+			label_compression_threshold->set_custom_minimum_size(Size2(120, 0));
+			hbox->add_child(label_compression_threshold);
+
+			compression_threshold_spin = memnew(SpinBox);
+			compression_threshold_spin->set_min(30);
+			compression_threshold_spin->set_max(95);
+			compression_threshold_spin->set_step(5);
+			compression_threshold_spin->set_value(70);
+			compression_threshold_spin->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			hbox->add_child(compression_threshold_spin);
+		}
+
+		// AI summary toggle.
+		{
+			HBoxContainer *hbox = memnew(HBoxContainer);
+			vbox->add_child(hbox);
+
+			label_compression_ai_summary = memnew(Label);
+			label_compression_ai_summary->set_text(TR(STR_SETTINGS_COMPRESSION_AI_SUMMARY));
+			label_compression_ai_summary->set_custom_minimum_size(Size2(120, 0));
+			hbox->add_child(label_compression_ai_summary);
+
+			compression_ai_summary_check = memnew(CheckBox);
+			compression_ai_summary_check->set_text(TR(STR_SETTINGS_COMPRESSION_AI_SUMMARY_DESC));
+			compression_ai_summary_check->set_pressed(false);
+			hbox->add_child(compression_ai_summary_check);
+		}
+	}
+
 	// HTTP Request for auto-fetching models.
 	models_http_request = memnew(HTTPRequest);
 	models_http_request->set_use_threads(true);
@@ -898,6 +1023,16 @@ AISettingsDialog::AISettingsDialog() {
 		}
 		if (!es->has_setting("ai_assistant/language")) {
 			es->set_setting("ai_assistant/language", "en");
+		}
+		// Context compression defaults.
+		if (!es->has_setting("ai_assistant/compression_keep_recent")) {
+			es->set_setting("ai_assistant/compression_keep_recent", 6);
+		}
+		if (!es->has_setting("ai_assistant/compression_threshold_pct")) {
+			es->set_setting("ai_assistant/compression_threshold_pct", 0.70f);
+		}
+		if (!es->has_setting("ai_assistant/compression_use_ai_summary")) {
+			es->set_setting("ai_assistant/compression_use_ai_summary", false);
 		}
 	}
 
