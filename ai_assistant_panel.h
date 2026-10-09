@@ -119,6 +119,9 @@ private:
 	String pending_web_action; // "search" or "fetch"
 	String pending_web_query;  // Original query or URL.
 	String pending_web_user_message; // Original user message to re-send with results.
+	bool web_request_active = false;  // web_http_request handles one request at a time.
+	int web_requests_this_turn = 0;   // Reset when the user sends a message.
+	bool _begin_web_request();
 
 	// N4: File attachment.
 	Vector<String> pending_attachments;
@@ -214,6 +217,8 @@ private:
 
 	// Methods.
 	void _on_send_pressed();
+	// Clears retry / runtime-fix / plan-step flags so they can't outlive the run that set them.
+	void _reset_automation_state();
 	void _on_stop_pressed();
 	void _on_new_chat_pressed();
 	void _on_history_pressed();
@@ -238,6 +243,7 @@ private:
 	void _start_streaming(const String &p_url, const Vector<String> &p_headers, const String &p_body);
 	static void _stream_thread_func_static(void *p_userdata);
 	void _stream_thread_func();
+	bool _stream_stop_requested_locked();
 	void _on_stream_poll();
 	void _finish_streaming();
 	void _collapse_thinking_display();
@@ -250,6 +256,7 @@ private:
 	// Node mention system (chip-based via inline objects).
 	Ref<AIMentionHighlighter> mention_highlighter; // Hides PUA placeholder chars.
 	Panel *autocomplete_panel = nullptr;
+	ObjectID autocomplete_panel_id; // For safe release: the editor root may free the overlay first.
 	ItemList *autocomplete_list = nullptr;
 	int autocomplete_at_line = -1;
 	int autocomplete_at_col = -1;
@@ -338,8 +345,38 @@ private:
 	// then retries the request. Returns true if a retry was initiated.
 	bool _try_reactive_compress(const String &p_error_msg);
 	bool reactive_retry_pending = false; // Guard against recursive retries.
+	// "provider/model" pairs that rejected an explicit temperature this session.
+	HashSet<String> models_without_temperature;
+	String _temperature_key() const;
+	// Re-sends the last user message after a recoverable API error.
+	void _retry_last_user_message();
+	// If the API rejected the `temperature` parameter, stop sending it and retry.
+	bool _try_retry_without_temperature(const String &p_error_msg);
 	String _build_message_summary(const Dictionary &p_msg) const;
 	int _estimate_tokens(const String &p_text) const;
+
+	// Compression settings (loaded from EditorSettings).
+	int    compression_keep_recent    = 6;    // How many recent messages to always preserve.
+	float  compression_threshold_pct  = 0.70f; // Compress when history exceeds this fraction of available window.
+	bool   compression_use_ai_summary = false; // Send old messages to AI for a rich summary instead of truncating.
+	void   _load_compression_settings();
+
+	// AI-summary background request (only active when compression_use_ai_summary=true).
+	HTTPRequest *summary_http_request  = nullptr;
+	bool         summary_request_active = false;
+	// Exact heuristic block the in-flight AI summary will replace. Matching on the
+	// full text (not just the marker) keeps later compression rounds, the scripts
+	// snapshot and reactive-compaction lines intact, and makes a stale reply a no-op.
+	String       summary_placeholder_block;
+	// Estimated size of the last system prompt sent, so the compression threshold
+	// is computed against the window that is actually left for history.
+	int          last_system_prompt_tokens = 0;
+	void _request_ai_summary(const Array &p_messages, const String &p_placeholder_block);
+	// Drops an in-flight summary so it can't land in a different conversation.
+	void _cancel_pending_summary();
+	void _on_summary_completed(int p_result, int p_response_code,
+	                           const PackedStringArray &p_headers,
+	                           const PackedByteArray   &p_body);
 
 protected:
 	void _notification(int p_what);

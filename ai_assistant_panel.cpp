@@ -48,9 +48,24 @@
 #define AI_LOG(msg) print_line(String("[Godot AI] ") + msg)
 #define AI_ERR(msg) ERR_PRINT(String("[Godot AI] ") + msg)
 #define AI_WARN(msg) WARN_PRINT(String("[Godot AI] ") + msg)
+// Inline two-language text for chat messages that have no entry in AILocalization.
+#define AI_L(en, zh) (AILocalization::get_language() == "zh" ? String::utf8(zh) : String::utf8(en))
 
 // Forward-declare mention helper used in _on_input_gui_input (defined later).
 static bool _is_mention_word_char(char32_t c);
+
+// Gemini carries the API key in the query string; never print it.
+static String _redact_url_key(const String &p_url) {
+	const int key_pos = p_url.find("key=");
+	if (key_pos < 0) {
+		return p_url;
+	}
+	int key_end = p_url.find("&", key_pos);
+	if (key_end < 0) {
+		key_end = p_url.length();
+	}
+	return p_url.left(key_pos + 4) + "****" + p_url.substr(key_end);
+}
 
 // Static runtime error capture buffer (written on main thread only).
 String AIAssistantPanel::s_runtime_errors;
@@ -119,12 +134,11 @@ void AIAssistantPanel::_notification(int p_what) {
 			}
 		} break;
 		case NOTIFICATION_EXIT_TREE: {
-			// Remove the overlay from the editor root before this node is freed.
-			if (autocomplete_panel && autocomplete_panel->get_parent()) {
-				autocomplete_panel->get_parent()->remove_child(autocomplete_panel);
-				memdelete(autocomplete_panel);
-				autocomplete_panel = nullptr;
-			}
+			// The panel leaves the tree whenever its dock is moved or floated, not
+			// only on shutdown, so the overlay must survive this: freeing it here
+			// left autocomplete_list dangling and, at shutdown, raced the editor
+			// root's own teardown. It is released in the destructor instead.
+			_hide_mention_autocomplete();
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
 		} break;
@@ -248,6 +262,8 @@ void AIAssistantPanel::_update_provider() {
 	} else {
 		current_provider = Ref<AnthropicProvider>(memnew(AnthropicProvider));
 	}
+	// An in-flight summary was built for (and must be parsed by) the old provider.
+	_cancel_pending_summary();
 
 	current_provider->set_api_key(api_key_val);
 	if (!model_val.is_empty()) {
@@ -266,6 +282,7 @@ void AIAssistantPanel::_update_provider() {
 	}
 	current_provider->set_max_tokens(max_tokens_val);
 	current_provider->set_temperature(temperature_val);
+	current_provider->set_send_temperature(!models_without_temperature.has(_temperature_key()));
 
 	String actual_model = model_val.is_empty() ? current_provider->get_default_model() : model_val;
 	String actual_endpoint = endpoint_val.is_empty() ? current_provider->get_default_endpoint() : endpoint_val;
@@ -275,9 +292,10 @@ void AIAssistantPanel::_update_provider() {
 	AI_LOG("  Endpoint: " + actual_endpoint);
 	AI_LOG("  API Key: " + (api_key_val.is_empty() ? String("(not set)") : String("****" + api_key_val.right(4))));
 	AI_LOG("  Max tokens: " + itos(max_tokens_val) + " (recommended: " + itos(recommended) + "), Temperature: " + String::num(temperature_val, 1));
-	AI_LOG("  Context window: " + itos(context_len) + " tokens, Compression threshold: ~" + itos((int)((context_len - max_tokens_val) * 0.7)) + " tokens");
 
-	// Reload permissions.
+	// Reload compression and permission settings.
+	_load_compression_settings();
+	AI_LOG("  Context window: " + itos(context_len) + " tokens, Compression threshold: ~" + itos((int)((context_len - max_tokens_val) * compression_threshold_pct)) + " tokens before system prompt");
 	permission_manager->load_from_settings();
 
 	if (input_field) {
@@ -306,6 +324,14 @@ void AIAssistantPanel::_on_stop_pressed() {
 	}
 }
 
+void AIAssistantPanel::_reset_automation_state() {
+	runtime_fix_in_progress = false;
+	runtime_restart_after_fix = false;
+	plan_step_execution_mode = false;
+	auto_retry_count = 0;
+	reactive_retry_pending = false;
+}
+
 void AIAssistantPanel::_on_send_pressed() {
 	if (history_visible) {
 		_show_chat_view();
@@ -318,6 +344,13 @@ void AIAssistantPanel::_on_send_pressed() {
 
 	AI_LOG("========== NEW MESSAGE ==========");
 	AI_LOG("User input: " + text);
+
+	web_requests_this_turn = 0;
+
+	// A message typed by the user starts a fresh exchange. Any automation state
+	// left behind by a failed or cancelled run must not leak into it — a stale
+	// runtime_fix_in_progress would execute code in ASK mode and skip dialogs.
+	_reset_automation_state();
 
 	if (current_chat_id.is_empty()) {
 		_generate_chat_id();
@@ -351,6 +384,12 @@ void AIAssistantPanel::_on_send_pressed() {
 }
 
 void AIAssistantPanel::_on_new_chat_pressed() {
+	// The in-flight response would otherwise land in — and run its code in —
+	// the new conversation.
+	if (is_waiting_response) {
+		_append_message("System", AI_L("Stop the current response before starting a new chat.", "请先停止当前回复，再新建对话。"), Color(1.0, 0.7, 0.3));
+		return;
+	}
 	if (!conversation_history.is_empty()) {
 		_save_current_chat();
 	}
@@ -359,6 +398,7 @@ void AIAssistantPanel::_on_new_chat_pressed() {
 	conversation_history.clear();
 	full_conversation_history.clear();
 	context_summary = "";
+	_cancel_pending_summary();
 	pending_code = "";
 	pending_plan_md_path = "";
 	active_plan_md_path = "";
@@ -1084,7 +1124,7 @@ void AIAssistantPanel::_on_meta_clicked(const Variant &p_meta) {
 				// Trigger rescan.
 				EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 			} else {
-				_append_message("System", "Failed to save code to: " + save_path, Color(1.0, 0.4, 0.4));
+				_append_message("System", AI_L("Failed to save code to: ", "代码保存失败：") + save_path, Color(1.0, 0.4, 0.4));
 			}
 		}
 	} else if (meta.begins_with("details:")) {
@@ -1148,18 +1188,29 @@ void AIAssistantPanel::_on_meta_clicked(const Variant &p_meta) {
 			plan_execution_step_idx = 0;
 			plan_step_execution_mode = true;
 			_append_message("System",
-					String(U"▶ Starting plan execution — ") + itos(plan_execution_steps.size()) + " steps.",
+					AI_L("▶ Starting plan execution — ", "▶ 开始执行计划 — ") + itos(plan_execution_steps.size()) + AI_L(" steps.", " 个步骤。"),
 					Color(0.3, 1.0, 0.55));
 			_execute_plan_next_step();
 		} else {
-			_append_message("System", "No plan steps to execute. Please generate a plan first.", Color(1.0, 0.7, 0.3));
+			_append_message("System", AI_L("No plan steps to execute. Please generate a plan first.", "没有可执行的计划步骤，请先生成计划。"), Color(1.0, 0.7, 0.3));
 		}
 	} else if (meta.begins_with("revert:")) {
 		int idx = meta.substr(7).to_int();
+		// Read the description first: restoring discards this checkpoint and later ones.
+		const String cp_desc = checkpoint_manager->get_checkpoint_description(idx);
 		if (checkpoint_manager->restore_checkpoint(idx)) {
-			_append_message("System", "Checkpoint restored: " + checkpoint_manager->get_checkpoint_description(idx), Color(0.5, 1.0, 0.5));
+			const AICheckpointManager::RestoreReport &report = checkpoint_manager->get_last_restore_report();
+			String detail;
+			if (report.files_restored > 0 || report.files_removed > 0) {
+				detail = AI_L(" (files restored: ", "（还原文件：") + itos(report.files_restored) +
+						AI_L(", new files moved to trash: ", "，新增文件移入回收站：") + itos(report.files_removed) + AI_L(")", "）");
+			}
+			if (report.files_partial) {
+				detail += AI_L(" Note: large or binary files are not covered by checkpoints.", " 注意：大文件和二进制文件不在检查点范围内。");
+			}
+			_append_message("System", AI_L("Checkpoint restored: ", "已恢复检查点：") + cp_desc + detail, Color(0.5, 1.0, 0.5));
 		} else {
-			_append_message("System", "Failed to restore checkpoint.", Color(1.0, 0.4, 0.4));
+			_append_message("System", AI_L("Could not restore this checkpoint: it has expired, was already rolled back, or its scene is no longer the active tab.", "无法恢复此检查点：它已过期、已被回滚，或对应场景不是当前标签页。"), Color(1.0, 0.4, 0.4));
 		}
 	} else if (meta.begins_with("thinking:")) {
 		int thinking_id = meta.substr(9).to_int();
@@ -1202,20 +1253,32 @@ void AIAssistantPanel::_on_permission_cancelled() {
 	_append_message("System", TR(STR_SYS_EXEC_CANCELLED), Color(1.0, 0.7, 0.3));
 	pending_permission_code = "";
 	auto_retry_count = 0;
+	runtime_restart_after_fix = false;
+	plan_step_execution_mode = false;
 }
 
 // --- API Communication (Streaming) ---
 
 void AIAssistantPanel::_send_to_api(const String &p_message) {
+	// One request at a time. The stream thread and its shared state can't be
+	// restarted while a response is in flight, so automatic follow-ups (retries,
+	// runtime fixes, plan steps, web results) that arrive meanwhile are dropped.
+	if (is_waiting_response || stream_thread.is_started()) {
+		AI_WARN("Request dropped: another request is still in flight.");
+		return;
+	}
+
 	if (!current_provider.is_valid()) {
 		AI_ERR("No AI provider configured.");
 		_append_message("System", TR(STR_SYS_NO_PROVIDER), Color(1.0, 0.4, 0.4));
+		_reset_automation_state();
 		return;
 	}
 
 	if (current_provider->get_api_key().is_empty()) {
 		AI_ERR("API key not set.");
 		_append_message("System", TR(STR_SYS_NO_API_KEY), Color(1.0, 0.4, 0.4));
+		_reset_automation_state();
 		return;
 	}
 
@@ -1225,7 +1288,8 @@ void AIAssistantPanel::_send_to_api(const String &p_message) {
 
 	AI_LOG("Step 1: Building system prompt...");
 	String system_prompt = _get_system_prompt(p_message);
-	AI_LOG("  System prompt length: " + itos(system_prompt.length()) + " chars");
+	last_system_prompt_tokens = _estimate_tokens(system_prompt);
+	AI_LOG("  System prompt length: " + itos(system_prompt.length()) + " chars (~" + itos(last_system_prompt_tokens) + " tokens)");
 
 	// Build the actual user message with attachments.
 	String full_message = p_message;
@@ -1238,20 +1302,29 @@ void AIAssistantPanel::_send_to_api(const String &p_message) {
 		pending_attachments.clear();
 	}
 
-	// Attach screenshot description if one was captured.
+	// Attach the captured screenshot. Providers that accept images get the
+	// picture itself; for the others the model is told plainly that it cannot
+	// see it, rather than being handed a meaningless fragment of base64.
+	String screenshot_b64;
 	if (!pending_screenshot_path.is_empty()) {
-		// Load the image to get dimensions and encode as base64 for the prompt.
-		Ref<Image> screenshot_img = memnew(Image);
-		Error img_err = screenshot_img->load(pending_screenshot_path);
-		if (img_err == OK && !screenshot_img->is_empty()) {
-			PackedByteArray png_data = screenshot_img->save_png_to_buffer();
-			String base64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
-			full_message += "\n\n--- SCREENSHOT ATTACHED ---\n";
-			full_message += "A screenshot of the editor viewport (" + itos(screenshot_img->get_width()) + "x" + itos(screenshot_img->get_height()) + ") was captured.\n";
-			full_message += "File: " + pending_screenshot_path + "\n";
-			full_message += "Base64 PNG (first 200 chars): " + base64.substr(0, 200) + "...\n";
-			full_message += "When analyzing visual issues, the screenshot shows the current state of the editor viewport.\n";
-			full_message += "--- END SCREENSHOT ---\n";
+		Ref<Image> screenshot_img;
+		screenshot_img.instantiate();
+		if (screenshot_img->load(pending_screenshot_path) == OK && !screenshot_img->is_empty()) {
+			if (current_provider->supports_image_input()) {
+				// Keep the upload small: vision models downscale beyond ~1.5K px anyway.
+				const int MAX_SIDE = 1568;
+				const int longest = MAX(screenshot_img->get_width(), screenshot_img->get_height());
+				if (longest > MAX_SIDE) {
+					const float scale = (float)MAX_SIDE / (float)longest;
+					screenshot_img->resize(MAX(1, (int)(screenshot_img->get_width() * scale)), MAX(1, (int)(screenshot_img->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
+				}
+				PackedByteArray png_data = screenshot_img->save_png_to_buffer();
+				screenshot_b64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
+				full_message += "\n\n[A screenshot of the editor viewport (" + itos(screenshot_img->get_width()) + "x" + itos(screenshot_img->get_height()) + ") is attached to this message.]\n";
+			} else {
+				full_message += "\n\n[The user captured a screenshot of the editor viewport, but the current provider does not accept images, so you cannot see it. Say so if the answer depends on it.]\n";
+				_append_message("System", AI_L("The current provider does not accept images; the screenshot was not sent.", "当前服务商不支持图像输入，截图未发送。"), Color(1.0, 0.7, 0.3));
+			}
 		}
 		pending_screenshot_path = "";
 	}
@@ -1269,11 +1342,19 @@ void AIAssistantPanel::_send_to_api(const String &p_message) {
 		messages_to_send.push_back(ack_msg);
 	}
 	for (int i = 0; i < conversation_history.size(); i++) {
-		messages_to_send.push_back(conversation_history[i]);
+		// History entries carry local-only keys (e.g. "thinking"). APIs reject
+		// unknown message fields, so send role and content only.
+		const Dictionary stored = conversation_history[i];
+		Dictionary api_msg;
+		api_msg["role"] = stored.get("role", "user");
+		api_msg["content"] = stored.get("content", "");
+		messages_to_send.push_back(api_msg);
 	}
 
 	AI_LOG("Step 2: Building streaming request body...");
+	current_provider->set_pending_image(screenshot_b64);
 	String body = current_provider->build_stream_request_body(system_prompt, messages_to_send, full_message);
+	current_provider->set_pending_image(String());
 	AI_LOG("  Request body length: " + itos(body.length()) + " chars");
 
 	String url;
@@ -1287,7 +1368,7 @@ void AIAssistantPanel::_send_to_api(const String &p_message) {
 	Vector<String> headers = current_provider->get_headers();
 
 	AI_LOG("Step 3: Starting streaming request...");
-	AI_LOG("  URL: " + url);
+	AI_LOG("  URL: " + _redact_url_key(url));
 
 	Dictionary user_msg;
 	user_msg["role"] = "user";
@@ -1377,6 +1458,34 @@ void AIAssistantPanel::_stream_thread_func_static(void *p_userdata) {
 	self->_stream_thread_func();
 }
 
+// Length of the longest prefix of p_data that ends on a UTF-8 character boundary.
+static int _utf8_complete_prefix_len(const uint8_t *p_data, int p_len) {
+	// Walk back over at most 3 continuation bytes to the last lead byte.
+	for (int back = 1; back <= 4 && back <= p_len; back++) {
+		const uint8_t b = p_data[p_len - back];
+		if ((b & 0xC0) == 0x80) {
+			continue; // Continuation byte — keep looking for its lead.
+		}
+		int need = 1;
+		if ((b & 0xE0) == 0xC0) {
+			need = 2;
+		} else if ((b & 0xF0) == 0xE0) {
+			need = 3;
+		} else if ((b & 0xF8) == 0xF0) {
+			need = 4;
+		}
+		return need > back ? p_len - back : p_len;
+	}
+	return p_len;
+}
+
+bool AIAssistantPanel::_stream_stop_requested_locked() {
+	stream_mutex.lock();
+	const bool stop_req = stream_stop_requested;
+	stream_mutex.unlock();
+	return stop_req;
+}
+
 void AIAssistantPanel::_stream_thread_func() {
 	String url = _stream_url;
 	bool use_tls = false;
@@ -1435,6 +1544,13 @@ void AIAssistantPanel::_stream_thread_func() {
 
 	while (client->get_status() == HTTPClient::STATUS_CONNECTING ||
 			client->get_status() == HTTPClient::STATUS_RESOLVING) {
+		if (_stream_stop_requested_locked()) {
+			memdelete(client);
+			stream_mutex.lock();
+			stream_finished = true;
+			stream_mutex.unlock();
+			return;
+		}
 		client->poll();
 		OS::get_singleton()->delay_usec(50000);
 	}
@@ -1463,7 +1579,27 @@ void AIAssistantPanel::_stream_thread_func() {
 		return;
 	}
 
+	// Waiting for response headers: honour Stop, and give up on a server that
+	// accepts the connection but never answers instead of hanging forever.
+	const uint64_t request_started_ms = OS::get_singleton()->get_ticks_msec();
+	const uint64_t HEADER_TIMEOUT_MS = 180000;
 	while (client->get_status() == HTTPClient::STATUS_REQUESTING) {
+		if (_stream_stop_requested_locked()) {
+			memdelete(client);
+			stream_mutex.lock();
+			stream_finished = true;
+			stream_mutex.unlock();
+			return;
+		}
+		if (OS::get_singleton()->get_ticks_msec() - request_started_ms > HEADER_TIMEOUT_MS) {
+			memdelete(client);
+			stream_mutex.lock();
+			stream_error = true;
+			stream_error_msg = "Timed out waiting for the server to respond.";
+			stream_finished = true;
+			stream_mutex.unlock();
+			return;
+		}
 		client->poll();
 		OS::get_singleton()->delay_usec(50000);
 	}
@@ -1503,14 +1639,14 @@ void AIAssistantPanel::_stream_thread_func() {
 	}
 
 	String buffer;
+	PackedByteArray pending_bytes;
 	bool done = false;
+	bool stopped = false;
 
 	while (client->get_status() == HTTPClient::STATUS_BODY && !done) {
 		// Check if the user requested a stop.
-		stream_mutex.lock();
-		bool stop_req = stream_stop_requested;
-		stream_mutex.unlock();
-		if (stop_req) {
+		if (_stream_stop_requested_locked()) {
+			stopped = true;
 			break;
 		}
 
@@ -1518,7 +1654,15 @@ void AIAssistantPanel::_stream_thread_func() {
 		PackedByteArray chunk = client->read_response_body_chunk();
 
 		if (chunk.size() > 0) {
-			buffer += String::utf8((const char *)chunk.ptr(), chunk.size());
+			// Network chunks can end in the middle of a multi-byte character (every
+			// CJK character is 3 bytes). Decode only whole characters and carry the
+			// incomplete tail over to the next read.
+			pending_bytes.append_array(chunk);
+			const int decodable = _utf8_complete_prefix_len(pending_bytes.ptr(), pending_bytes.size());
+			if (decodable > 0) {
+				buffer += String::utf8((const char *)pending_bytes.ptr(), decodable);
+				pending_bytes = pending_bytes.slice(decodable);
+			}
 
 			while (true) {
 				int event_end = buffer.find("\n\n");
@@ -1615,9 +1759,19 @@ void AIAssistantPanel::_stream_thread_func() {
 		OS::get_singleton()->delay_usec(10000);
 	}
 
+	// A dropped connection is not a finished response: the text so far is
+	// truncated and its last code block must not be executed.
+	const HTTPClient::Status end_status = client->get_status();
+	const bool connection_lost = !done && !stopped &&
+			(end_status == HTTPClient::STATUS_CONNECTION_ERROR || end_status == HTTPClient::STATUS_TLS_HANDSHAKE_ERROR);
+
 	memdelete(client);
 
 	stream_mutex.lock();
+	if (connection_lost) {
+		stream_error = true;
+		stream_error_msg = "Connection lost before the response finished.";
+	}
 	stream_finished = true;
 	stream_mutex.unlock();
 }
@@ -1730,6 +1884,7 @@ void AIAssistantPanel::_on_stream_poll() {
 			chat_display->add_newline();
 			String partial = stream_accumulated;
 			_stream_provider.unref();
+			_reset_automation_state();
 			if (!partial.is_empty()) {
 				// Save partial response to history so context is preserved.
 				// Pass is_stopped_partial=true so code blocks are NOT executed
@@ -1750,8 +1905,12 @@ void AIAssistantPanel::_on_stream_poll() {
 			if (_try_reactive_compress(error_msg)) {
 				return; // Retry in progress — don't show error to user.
 			}
+			if (_try_retry_without_temperature(error_msg)) {
+				return;
+			}
 
-			_append_message("System", "Error: " + error_msg, Color(1.0, 0.4, 0.4));
+			_reset_automation_state();
+			_append_message("System", AI_L("Error: ", "错误：") + error_msg, Color(1.0, 0.4, 0.4));
 			return;
 		}
 
@@ -1841,6 +2000,12 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 	// Successful response clears reactive retry guard.
 	reactive_retry_pending = false;
 
+	// Stop is final: a stopped response never executes code, retries, continues
+	// a plan, or finishes a runtime fix.
+	if (p_is_stopped_partial) {
+		_reset_automation_state();
+	}
+
 	// Auto-compress context when history gets too long.
 	_compress_context_if_needed();
 
@@ -1916,7 +2081,7 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 						String retry_num = itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES);
 						AI_LOG("Pre-execution compile retry " + retry_num);
 						_append_message("System",
-								(String(U"⚠") + " GDScript syntax error - auto-fixing... (" + retry_num + ")"),
+								(AI_L("⚠ GDScript syntax error - auto-fixing... (", "⚠ GDScript 语法错误，自动修复中... (") + retry_num + ")"),
 								Color(1.0, 0.82f, 0.25f));
 						String retry_msg =
 								"The GDScript code you generated has parse errors that prevent it from compiling:\n\n" +
@@ -1927,9 +2092,9 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 						_send_to_api(retry_msg);
 					} else {
 						_append_message("System",
-								"GDScript parse errors (auto-fix limit reached):\n" + compile_error,
+								AI_L("GDScript parse errors (auto-fix limit reached):\n", "GDScript 解析错误（已达自动修复上限）：\n") + compile_error,
 								Color(1.0, 0.4f, 0.4f));
-						auto_retry_count = 0;
+						_reset_automation_state();
 						pending_code = "";
 					}
 					return;
@@ -1948,6 +2113,15 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 				AI_WARN("Safety check BLOCKED: " + safety_error);
 				_append_message("System", safety_error, Color(1.0, 0.4, 0.4));
 				pending_code = "";
+				if (auto_retry_count < MAX_AUTO_RETRIES) {
+					auto_retry_count++;
+					_send_to_api("Your code was not executed because it violates the editor's safety policy:\n" + safety_error +
+							"\n\nRewrite it to achieve the same goal without that. Stay inside the project (res:// and user:// paths), "
+							"do not start processes, do not use the network, and do not use OS/Engine/ClassDB beyond simple queries. "
+							"If the goal cannot be met within these limits, explain that instead of writing code.");
+				} else {
+					_reset_automation_state();
+				}
 			} else {
 				// Speculative risk classification (inspired by Claude Code's bash_classifier).
 				// Classify the code into a risk tier BEFORE consulting per-category
@@ -1960,62 +2134,41 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 					// classify_risk found a blocked pattern that safety check may have
 					// missed (edge case). Treat as blocked.
 					_append_message("System",
-						"Code contains a blocked operation and was not executed.",
+						AI_L("Code contains a blocked operation and was not executed.", "代码包含被禁止的操作，未执行。"),
 						Color(1.0, 0.4, 0.4));
+					_reset_automation_state();
 					pending_code = "";
-
-				} else if (tier == AIPermissionManager::RISK_READ_ONLY) {
-					// Pure inspection — no side effects possible. Skip all dialogs.
-					AI_LOG("  Risk tier: READ_ONLY — executing without confirmation.");
-					if (runtime_fix_in_progress) {
-						runtime_fix_in_progress = false;
-						runtime_restart_after_fix = true;
-					}
-					_execute_code_with_monitoring(pending_code);
-					pending_code = "";
-
-				} else if (tier == AIPermissionManager::RISK_DESTRUCTIVE) {
-					// Destructive operations: auto-confirm if autorun is enabled
-					// (user has explicitly opted in) or if this is a runtime fix.
-					// Otherwise show the confirmation dialog.
-					if (runtime_fix_in_progress || _get_autorun()) {
-						bool is_runtime_fix = runtime_fix_in_progress;
-						runtime_fix_in_progress = false;
-						runtime_restart_after_fix = is_runtime_fix;
-						_execute_code_with_monitoring(pending_code);
-						pending_code = "";
-					} else {
-						AIPermissionManager::PermissionResult perm =
-							permission_manager->check_code_permissions(pending_code);
-						String desc = perm.description.is_empty()
-							? "This code will make changes that cannot be easily undone."
-							: perm.description;
-						pending_permission_code = pending_code;
-						pending_code = "";
-						permission_dialog->set_text(desc + TR(STR_PERM_PROCEED));
-						permission_dialog->popup_centered();
-					}
 
 				} else {
-					// RISK_ADDITIVE: additive-only changes.
-					// Use existing per-category permission logic for fine-grained control.
+					// The per-category permission table is consulted for every tier.
+					// The risk tier only decides how much friction to add on top; it
+					// never lets code skip a Deny or an Ask.
 					AIPermissionManager::PermissionResult perm =
 						permission_manager->check_code_permissions(pending_code);
+					const bool is_runtime_fix = runtime_fix_in_progress;
+					runtime_fix_in_progress = false;
+
 					if (!perm.allowed) {
 						AI_WARN("Permission DENIED: " + perm.description);
 						_append_message("System", perm.description, Color(1.0, 0.4, 0.4));
+						_reset_automation_state();
 						pending_code = "";
-					} else if (perm.needs_confirmation && !runtime_fix_in_progress && !_get_autorun()) {
-						// needs_confirmation is only enforced when autorun is OFF.
-						// When autorun is ON the user has explicitly opted in to silent execution.
+					} else if (perm.needs_confirmation || (!is_runtime_fix && !_get_autorun())) {
+						// "Ask" always asks. With auto-execute off, everything asks.
+						String dialog_text;
+						if (!perm.description.is_empty()) {
+							dialog_text = perm.description + TR(STR_PERM_PROCEED);
+						} else if (tier == AIPermissionManager::RISK_DESTRUCTIVE) {
+							dialog_text = "This code will make changes that cannot be easily undone." + TR(STR_PERM_PROCEED);
+						} else {
+							dialog_text = TR(STR_PERM_EXECUTE_CONFIRM);
+						}
+						runtime_restart_after_fix = is_runtime_fix;
 						pending_permission_code = pending_code;
 						pending_code = "";
-						permission_dialog->set_text(perm.description + TR(STR_PERM_PROCEED));
+						permission_dialog->set_text(dialog_text);
 						permission_dialog->popup_centered();
 					} else {
-						// Auto-run: autorun enabled, runtime fix, or no confirmation needed.
-						bool is_runtime_fix = runtime_fix_in_progress;
-						runtime_fix_in_progress = false;
 						runtime_restart_after_fix = is_runtime_fix;
 						_execute_code_with_monitoring(pending_code);
 						pending_code = "";
@@ -2180,6 +2333,13 @@ void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_s
 			chat_display->add_newline();
 		}
 		auto_retry_count = 0;
+	}
+
+	// A stopped response is truncated and final: none of its side-effect markers
+	// (asset generation, web requests, memory writes) are acted on.
+	if (p_is_stopped_partial) {
+		_save_current_chat();
+		return;
 	}
 
 	// N8/N9: Detect image/audio generation markers in the response.
@@ -2357,8 +2517,11 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 	String first_line = p_code.get_slice("\n", 0).strip_edges().left(50);
 	Node *pre_exec_root = EditorInterface::get_singleton()->get_edited_scene_root();
 	bool had_scene_before = (pre_exec_root != nullptr);
+	// Snapshot the project's text files first; whichever checkpoint is created
+	// for this run takes it over, so Revert also undoes file writes and deletes.
+	checkpoint_manager->begin_file_snapshot();
 	bool checkpoint_created = checkpoint_manager->create_checkpoint("Before: " + first_line);
-	int cp_idx = checkpoint_created ? (checkpoint_manager->get_checkpoint_count() - 1) : -1;
+	int cp_idx = checkpoint_created ? checkpoint_manager->get_latest_id() : -1;
 
 	if (!compact) {
 		// Full mode: show [Revert] link and "Executing code..." message.
@@ -2384,6 +2547,13 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 	bool success = result["success"];
 	String output = result["output"];
 	String error_str = result["error"];
+
+	// No scene was open, so there is no scene checkpoint. Unless the code opened
+	// one (handled below), keep a files-only checkpoint so its writes can still
+	// be reverted. A failed run may have written files before it stopped, too.
+	if (cp_idx < 0 && (!success || EditorInterface::get_singleton()->get_edited_scene_root() == nullptr)) {
+		cp_idx = checkpoint_manager->create_files_checkpoint("Before: " + first_line);
+	}
 
 	if (success) {
 		AI_LOG("Execution SUCCESS: " + output);
@@ -2488,7 +2658,7 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 				plan_step_execution_mode = false;
 				active_plan_md_path = "";
 				_append_message("System",
-						String(U"✅ All plan steps completed!"),
+						AI_L("✅ All plan steps completed!", "✅ 计划的全部步骤已完成！"),
 						Color(0.3, 1.0, 0.55));
 			}
 		}
@@ -2499,7 +2669,7 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 		if (plan_step_execution_mode) {
 			plan_step_execution_mode = false;
 			_append_message("System",
-					String(U"⛔ Plan execution stopped at step ") + itos(plan_execution_step_idx + 1) + " due to failure.",
+					AI_L("⛔ Plan execution stopped at step ", "⛔ 计划在第 ") + itos(plan_execution_step_idx + 1) + AI_L(" due to failure.", " 步因失败而中止。"),
 					Color(1.0, 0.4, 0.4));
 		}
 		active_plan_md_path = "";
@@ -2530,14 +2700,14 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 			chat_display->add_newline();
 			chat_display->add_newline();
 		} else {
-			_append_message("System", "Execution failed: " + error_str, Color(1.0, 0.4, 0.4));
+			_append_message("System", AI_L("Execution failed: ", "执行失败：") + error_str, Color(1.0, 0.4, 0.4));
 		}
 
 		// Auto-recovery.
 		if (auto_retry_count < MAX_AUTO_RETRIES) {
 			auto_retry_count++;
 			AI_LOG("Auto-recovery attempt " + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES));
-			_append_message("System", "Auto-retrying... (" + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES) + ")", Color(1.0, 0.7, 0.3));
+			_append_message("System", AI_L("Auto-retrying... (", "自动重试中... (") + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES) + ")", Color(1.0, 0.7, 0.3));
 
 			String retry_msg = "The code failed with error:\n" + error_str + "\nPlease fix the code and try again.";
 			_save_current_chat();
@@ -2545,7 +2715,7 @@ void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
 			return;
 		} else {
 			AI_WARN("Max auto-retry attempts reached.");
-			_append_message("System", "Auto-recovery failed after " + itos(MAX_AUTO_RETRIES) + " attempts.", Color(1.0, 0.4, 0.4));
+			_append_message("System", AI_L("Auto-recovery failed after ", "自动恢复失败，已尝试 ") + itos(MAX_AUTO_RETRIES) + AI_L(" attempts.", " 次。"), Color(1.0, 0.4, 0.4));
 			auto_retry_count = 0;
 		}
 	}
@@ -2559,13 +2729,16 @@ void AIAssistantPanel::_on_deferred_error_check() {
 	if (error_monitor->has_ai_execution_errors()) {
 		String errors = error_monitor->get_ai_execution_errors_text();
 		AI_WARN("Deferred errors detected after execution:\n" + errors);
-		_append_message("System", "Post-execution warnings/errors detected:\n" + errors, Color(1.0, 0.7, 0.3));
+		_append_message("System", AI_L("Post-execution warnings/errors detected:\n", "执行后检测到警告或错误：\n") + errors, Color(1.0, 0.7, 0.3));
 
-		// Auto-retry to fix these errors.
-		if (auto_retry_count < MAX_AUTO_RETRIES) {
+		// Auto-retry to fix these errors — unless the next request (e.g. the
+		// following plan step) has already gone out.
+		if (is_waiting_response) {
+			AI_LOG("Deferred errors noted, but a request is in flight — not retrying.");
+		} else if (auto_retry_count < MAX_AUTO_RETRIES) {
 			auto_retry_count++;
 			AI_LOG("Auto-recovery (deferred) attempt " + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES));
-			_append_message("System", "Auto-fixing... (" + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES) + ")", Color(1.0, 0.7, 0.3));
+			_append_message("System", AI_L("Auto-fixing... (", "自动修复中... (") + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES) + ")", Color(1.0, 0.7, 0.3));
 
 			String retry_msg = "The code executed but produced these warnings/errors afterwards:\n" + errors + "\nPlease fix the issues. Make sure there are no errors or warnings.";
 			_save_current_chat();
@@ -2696,7 +2869,7 @@ void AIAssistantPanel::_mark_plan_steps_done(const String &p_md_path) {
 		rel = "res://" + rel.substr(res_root.length()).lstrip("/\\");
 	}
 	_append_message("System",
-			String(U"✅ Plan complete — ") + rel,
+			AI_L("✅ Plan complete — ", "✅ 计划完成 — ") + rel,
 			Color(0.4f, 1.0f, 0.4f));
 }
 
@@ -2763,7 +2936,7 @@ void AIAssistantPanel::_mark_one_plan_step_done(const String &p_md_path, int p_s
 		short_label += "...";
 	}
 	_append_message("System",
-			String(U"✅ Step ") + itos(p_step_idx + 1) + " done: " + short_label,
+			AI_L("✅ Step ", "✅ 步骤 ") + itos(p_step_idx + 1) + AI_L(" done: ", " 完成：") + short_label,
 			Color(0.4f, 1.0f, 0.55f));
 }
 
@@ -2782,7 +2955,7 @@ void AIAssistantPanel::_execute_plan_next_step() {
 	int total_steps = plan_execution_steps.size();
 
 	_append_message("System",
-			String(U"🔧 Executing step ") + itos(step_num) + "/" + itos(total_steps) + ": " + step_text,
+			AI_L("🔧 Executing step ", "🔧 正在执行步骤 ") + itos(step_num) + "/" + itos(total_steps) + ": " + step_text,
 			Color(0.7, 0.9, 1.0));
 
 	// Build the step prompt.
@@ -2969,6 +3142,13 @@ void AIAssistantPanel::_trigger_runtime_fix() {
 		return;
 	}
 
+	// Don't arm runtime_fix_in_progress for a request that can't be sent: the
+	// flag would then apply to whatever response is already streaming.
+	if (is_waiting_response) {
+		AI_LOG("[Watch] A request is in flight — skipping this runtime fix.");
+		return;
+	}
+
 	if (runtime_fix_attempt >= RUNTIME_MAX_ATTEMPTS) {
 		_append_message("System",
 				String(U"❌ ") + TR(STR_WATCH_FAILED),
@@ -3057,18 +3237,44 @@ void AIAssistantPanel::_trigger_runtime_fix() {
 
 // --- N8/N9: Asset Generation ---
 
+// Image/audio generation always talks to api.openai.com, so it must only ever
+// send the OpenAI key — never the key of whichever provider is active.
+static String _get_openai_asset_key(const Ref<AIProvider> &p_current) {
+	EditorSettings *es = EditorSettings::get_singleton();
+	if (es && es->has_setting("ai_assistant/api_key_openai")) {
+		const String key = es->get_setting("ai_assistant/api_key_openai");
+		if (!key.is_empty()) {
+			return key;
+		}
+	}
+	if (p_current.is_valid() && p_current->get_provider_name() == "openai") {
+		return p_current->get_api_key();
+	}
+	return String();
+}
+
+// Marker-supplied save paths come from model output: keep them inside the project.
+static bool _is_safe_asset_path(const String &p_path) {
+	return p_path.is_empty() || (p_path.begins_with("res://") && p_path.find("..") < 0);
+}
+
 void AIAssistantPanel::_handle_image_generation(const String &p_prompt, const String &p_save_path) {
-	if (current_provider->get_api_key().is_empty()) {
-		_append_message("System", "API key required for image generation.", Color(1.0, 0.4, 0.4));
+	const String openai_key = _get_openai_asset_key(current_provider);
+	if (openai_key.is_empty()) {
+		_append_message("System", AI_L("Image generation uses the OpenAI API: set an OpenAI API key in Settings first.", "图像生成使用 OpenAI 接口：请先在设置中填写 OpenAI API 密钥。"), Color(1.0, 0.4, 0.4));
+		return;
+	}
+	if (!_is_safe_asset_path(p_save_path)) {
+		_append_message("System", AI_L("Image generation skipped: save path must be inside res:// (", "已跳过图像生成：保存路径必须位于 res:// 内 (") + p_save_path + ").", Color(1.0, 0.4, 0.4));
 		return;
 	}
 
-	_append_message("System", "Generating image: " + p_prompt + "...", Color(0.5, 0.8, 1.0));
+	_append_message("System", AI_L("Generating image: ", "正在生成图像：") + p_prompt + "...", Color(0.5, 0.8, 1.0));
 
 	String body = AIImageGenerator::build_dalle_request(p_prompt);
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back("Authorization: Bearer " + current_provider->get_api_key());
+	headers.push_back("Authorization: Bearer " + openai_key);
 
 	pending_asset_type = "image";
 	pending_asset_path = p_save_path;
@@ -3076,22 +3282,27 @@ void AIAssistantPanel::_handle_image_generation(const String &p_prompt, const St
 	asset_http_request->cancel_request();
 	Error err = asset_http_request->request("https://api.openai.com/v1/images/generations", headers, HTTPClient::METHOD_POST, body);
 	if (err != OK) {
-		_append_message("System", "Failed to send image generation request.", Color(1.0, 0.4, 0.4));
+		_append_message("System", AI_L("Failed to send image generation request.", "图像生成请求发送失败。"), Color(1.0, 0.4, 0.4));
 	}
 }
 
 void AIAssistantPanel::_handle_audio_generation(const String &p_prompt, const String &p_save_path) {
-	if (current_provider->get_api_key().is_empty()) {
-		_append_message("System", "API key required for audio generation.", Color(1.0, 0.4, 0.4));
+	const String openai_key = _get_openai_asset_key(current_provider);
+	if (openai_key.is_empty()) {
+		_append_message("System", AI_L("Audio generation uses the OpenAI API: set an OpenAI API key in Settings first.", "音频生成使用 OpenAI 接口：请先在设置中填写 OpenAI API 密钥。"), Color(1.0, 0.4, 0.4));
+		return;
+	}
+	if (!_is_safe_asset_path(p_save_path)) {
+		_append_message("System", AI_L("Audio generation skipped: save path must be inside res:// (", "已跳过音频生成：保存路径必须位于 res:// 内 (") + p_save_path + ").", Color(1.0, 0.4, 0.4));
 		return;
 	}
 
-	_append_message("System", "Generating audio: " + p_prompt + "...", Color(0.5, 0.8, 1.0));
+	_append_message("System", AI_L("Generating audio: ", "正在生成音频：") + p_prompt + "...", Color(0.5, 0.8, 1.0));
 
 	String body = AIAudioGenerator::build_tts_request(p_prompt);
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back("Authorization: Bearer " + current_provider->get_api_key());
+	headers.push_back("Authorization: Bearer " + openai_key);
 
 	pending_asset_type = "audio";
 	pending_asset_path = p_save_path;
@@ -3099,14 +3310,14 @@ void AIAssistantPanel::_handle_audio_generation(const String &p_prompt, const St
 	asset_http_request->cancel_request();
 	Error err = asset_http_request->request("https://api.openai.com/v1/audio/speech", headers, HTTPClient::METHOD_POST, body);
 	if (err != OK) {
-		_append_message("System", "Failed to send audio generation request.", Color(1.0, 0.4, 0.4));
+		_append_message("System", AI_L("Failed to send audio generation request.", "音频生成请求发送失败。"), Color(1.0, 0.4, 0.4));
 	}
 }
 
 void AIAssistantPanel::_on_asset_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
 		String body_text = String::utf8((const char *)p_body.ptr(), p_body.size());
-		_append_message("System", "Asset generation failed (HTTP " + itos(p_response_code) + "): " + body_text.left(300), Color(1.0, 0.4, 0.4));
+		_append_message("System", AI_L("Asset generation failed (HTTP ", "资源生成失败 (HTTP ") + itos(p_response_code) + "): " + body_text.left(300), Color(1.0, 0.4, 0.4));
 		return;
 	}
 
@@ -3116,12 +3327,12 @@ void AIAssistantPanel::_on_asset_request_completed(int p_result, int p_response_
 		if (!b64.is_empty()) {
 			String path = pending_asset_path.is_empty() ? "res://ai_generated_image.png" : pending_asset_path;
 			if (AIImageGenerator::save_base64_as_texture(b64, path)) {
-				_append_message("System", "Image saved: " + path, Color(0.5, 1.0, 0.5));
+				_append_message("System", AI_L("Image saved: ", "图像已保存：") + path, Color(0.5, 1.0, 0.5));
 			} else {
-				_append_message("System", "Failed to save image.", Color(1.0, 0.4, 0.4));
+				_append_message("System", AI_L("Failed to save image.", "图像保存失败。"), Color(1.0, 0.4, 0.4));
 			}
 		} else {
-			_append_message("System", "Failed to parse image response.", Color(1.0, 0.4, 0.4));
+			_append_message("System", AI_L("Failed to parse image response.", "图像响应解析失败。"), Color(1.0, 0.4, 0.4));
 		}
 	} else if (pending_asset_type == "audio") {
 		String path = pending_asset_path.is_empty() ? "res://ai_generated_audio.mp3" : pending_asset_path;
@@ -3130,9 +3341,9 @@ void AIAssistantPanel::_on_asset_request_completed(int p_result, int p_response_
 			path = path.get_basename() + ".mp3";
 		}
 		if (AIAudioGenerator::save_audio_bytes(p_body, path)) {
-			_append_message("System", "Audio saved: " + path, Color(0.5, 1.0, 0.5));
+			_append_message("System", AI_L("Audio saved: ", "音频已保存：") + path, Color(0.5, 1.0, 0.5));
 		} else {
-			_append_message("System", "Failed to save audio.", Color(1.0, 0.4, 0.4));
+			_append_message("System", AI_L("Failed to save audio.", "音频保存失败。"), Color(1.0, 0.4, 0.4));
 		}
 	}
 
@@ -3376,6 +3587,9 @@ void AIAssistantPanel::_save_current_chat() {
 	// but display always comes from the full messages list.
 	if (!context_summary.is_empty()) {
 		chat_data["context_summary"] = context_summary;
+		// How many leading messages the summary stands in for, so a reload can
+		// rebuild the same working copy instead of sending them twice.
+		chat_data["compressed_count"] = MAX(0, full_conversation_history.size() - conversation_history.size());
 	}
 
 	String json_str = JSON::stringify(chat_data, "\t");
@@ -3391,6 +3605,11 @@ void AIAssistantPanel::_save_current_chat() {
 }
 
 void AIAssistantPanel::_load_chat(const String &p_file_path) {
+	if (is_waiting_response) {
+		_show_chat_view();
+		_append_message("System", AI_L("Stop the current response before loading another chat.", "请先停止当前回复，再载入其他对话。"), Color(1.0, 0.7, 0.3));
+		return;
+	}
 	Ref<FileAccess> f = FileAccess::open(p_file_path, FileAccess::READ);
 	if (!f.is_valid()) {
 		AI_ERR("Failed to open chat file: " + p_file_path);
@@ -3417,6 +3636,18 @@ void AIAssistantPanel::_load_chat(const String &p_file_path) {
 	// Also restore working copy — compression will re-trim on next API call if needed.
 	conversation_history = full_conversation_history.duplicate();
 	context_summary = chat_data.has("context_summary") ? String(chat_data["context_summary"]) : "";
+	if (!context_summary.is_empty()) {
+		const int compressed_count = chat_data.has("compressed_count") ? (int)chat_data["compressed_count"] : -1;
+		if (compressed_count > 0 && compressed_count < full_conversation_history.size()) {
+			// The summary replaces exactly these messages in the working copy.
+			conversation_history = full_conversation_history.slice(compressed_count);
+		} else {
+			// Older save without the count: the full history is authoritative, so
+			// drop the summary rather than send the same content twice.
+			context_summary = "";
+		}
+	}
+	_cancel_pending_summary();
 	displayed_code_blocks.clear();
 
 	// Disable scroll_follow while bulk-loading history so the scroll bar
@@ -3614,7 +3845,7 @@ void AIAssistantPanel::_populate_history_list() {
 
 		Button *del_btn = memnew(Button);
 		del_btn->set_text("X");
-		del_btn->set_tooltip_text("Delete this chat");
+		del_btn->set_tooltip_text(AI_L("Delete this chat", "删除此对话"));
 		del_btn->set_custom_minimum_size(Size2(28, 0));
 		del_btn->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_item_deleted).bind(full_path));
 		row->add_child(del_btn);
@@ -3814,6 +4045,7 @@ AIAssistantPanel::AIAssistantPanel() {
 	// Avoids OS-window focus stealing that PopupPanel causes.
 	// Added to EditorInterface::get_base_control() in NOTIFICATION_READY.
 	autocomplete_panel = memnew(Panel);
+	autocomplete_panel_id = autocomplete_panel->get_instance_id();
 	autocomplete_panel->set_mouse_filter(Control::MOUSE_FILTER_STOP);
 	autocomplete_panel->hide();
 	autocomplete_list = memnew(ItemList);
@@ -3856,8 +4088,16 @@ AIAssistantPanel::AIAssistantPanel() {
 	web_http_request = memnew(HTTPRequest);
 	web_http_request->set_use_threads(true);
 	web_http_request->set_timeout(30.0);
+	web_http_request->set_body_size_limit(2 * 1024 * 1024); // A page, not a download.
 	web_http_request->connect("request_completed", callable_mp(this, &AIAssistantPanel::_on_web_request_completed));
 	add_child(web_http_request);
+
+	// AI-summary background request (context compression).
+	summary_http_request = memnew(HTTPRequest);
+	summary_http_request->set_use_threads(true);
+	summary_http_request->set_timeout(60.0);
+	summary_http_request->connect("request_completed", callable_mp(this, &AIAssistantPanel::_on_summary_completed));
+	add_child(summary_http_request);
 
 	// --- Stream Poll Timer ---
 	stream_poll_timer = memnew(Timer);
@@ -3953,8 +4193,70 @@ AIAssistantPanel::AIAssistantPanel() {
 
 // --- Web Search ---
 
+// URLs in [FETCH_URL:] come from model output, which fetched pages and attached
+// files can steer. Only plain public web addresses are allowed: no loopback or
+// private-network hosts (the editor would act as a proxy into the local network)
+// and no oversized URLs (a long query string is the easy way to smuggle data out).
+static bool _is_public_web_url(const String &p_url, String &r_reason) {
+	const int MAX_URL_LENGTH = 500;
+	if (p_url.length() > MAX_URL_LENGTH) {
+		r_reason = "URL is too long";
+		return false;
+	}
+	String rest;
+	if (p_url.begins_with("https://")) {
+		rest = p_url.substr(8);
+	} else if (p_url.begins_with("http://")) {
+		rest = p_url.substr(7);
+	} else {
+		r_reason = "only http(s) URLs are allowed";
+		return false;
+	}
+	String host = rest.get_slice("/", 0).get_slice("?", 0).get_slice("#", 0).to_lower();
+	if (host.find("@") >= 0) {
+		host = host.get_slice("@", host.get_slice_count("@") - 1);
+	}
+	if (host.begins_with("[")) {
+		r_reason = "IPv6 literal hosts are not allowed";
+		return false;
+	}
+	host = host.get_slice(":", 0);
+
+	bool is_private = host.is_empty() || host.find(".") < 0 || host == "localhost" ||
+			host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal") ||
+			host.begins_with("127.") || host.begins_with("10.") || host.begins_with("0.") ||
+			host.begins_with("192.168.") || host.begins_with("169.254.");
+	if (!is_private && host.begins_with("172.")) {
+		const int second = host.get_slice(".", 1).to_int();
+		is_private = second >= 16 && second <= 31;
+	}
+	if (is_private) {
+		r_reason = "local and private-network addresses are not allowed";
+		return false;
+	}
+	return true;
+}
+
+// One web request per response, and a few per user message: each result is fed
+// back to the model, whose reply may ask for another, so without a cap a page
+// can keep the loop going indefinitely.
+bool AIAssistantPanel::_begin_web_request() {
+	const int MAX_WEB_REQUESTS_PER_TURN = 3;
+	if (web_request_active) {
+		AI_WARN("Web request skipped: another one is still in progress.");
+		return false;
+	}
+	if (web_requests_this_turn >= MAX_WEB_REQUESTS_PER_TURN) {
+		_append_message("System", AI_L("Web request skipped: limit of ", "已跳过网络请求：已达每条消息 ") + itos(MAX_WEB_REQUESTS_PER_TURN) + AI_L(" per message reached.", " 次的上限。"), Color(1.0, 0.7, 0.4));
+		return false;
+	}
+	web_requests_this_turn++;
+	return true;
+}
+
 void AIAssistantPanel::_handle_web_search(const String &p_query, const String &p_user_message) {
 	if (!web_search.is_valid() || !web_http_request) return;
+	if (!_begin_web_request()) return;
 
 	pending_web_action = "search";
 	pending_web_query = p_query;
@@ -3968,17 +4270,25 @@ void AIAssistantPanel::_handle_web_search(const String &p_query, const String &p
 
 	Vector<String> headers;
 	headers.push_back("User-Agent: GodotAI/1.0");
-	web_http_request->request(url, headers, HTTPClient::METHOD_GET);
+	web_request_active = web_http_request->request(url, headers, HTTPClient::METHOD_GET) == OK;
 }
 
 void AIAssistantPanel::_handle_fetch_url(const String &p_url, const String &p_user_message) {
 	if (!web_search.is_valid() || !web_http_request) return;
 
+	String url = web_search->sanitize_url(p_url);
+	String reject_reason;
+	if (!_is_public_web_url(url, reject_reason)) {
+		AI_WARN("FETCH_URL rejected (" + reject_reason + "): " + url.left(120));
+		_append_message("System", AI_L("Fetch skipped: ", "已跳过抓取：") + reject_reason + ".", Color(1.0, 0.7, 0.4));
+		return;
+	}
+	if (!_begin_web_request()) return;
+
 	pending_web_action = "fetch";
 	pending_web_query = p_url;
 	pending_web_user_message = p_user_message;
 
-	String url = web_search->sanitize_url(p_url);
 	AI_LOG("Fetching URL: " + url);
 
 	_append_message("System", String::utf8("🌐 Fetching: ") + url + "...", Color(0.6, 0.8, 1.0));
@@ -3986,7 +4296,7 @@ void AIAssistantPanel::_handle_fetch_url(const String &p_url, const String &p_us
 	Vector<String> headers;
 	headers.push_back("User-Agent: GodotAI/1.0");
 	headers.push_back("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-	web_http_request->request(url, headers, HTTPClient::METHOD_GET);
+	web_request_active = web_http_request->request(url, headers, HTTPClient::METHOD_GET) == OK;
 }
 
 // --- Cross-session learning ---
@@ -4000,10 +4310,36 @@ void AIAssistantPanel::_handle_write_memory(const String &p_content) {
 	const String path = "res://godot_ai.md";
 	const String section_header = "## AI-Discovered Quirks";
 
-	// Read existing file (may not exist yet).
+	// This file is loaded into every future system prompt, so what goes into it
+	// is kept small and inert: it follows the file-write permission, is a single
+	// short line (no headings or blocks of injected instructions), and is always
+	// shown to the user.
+	if (permission_manager.is_valid() &&
+			permission_manager->get_permission(AIPermissionManager::PERM_FILE_WRITE) == AIPermissionManager::LEVEL_DENY) {
+		AI_LOG("WRITE_MEMORY skipped: file writes are denied by permission settings.");
+		return;
+	}
+	const int MAX_MEMORY_CHARS = 300;
+	String note = p_content.replace("\r", " ").replace("\n", " ").strip_edges();
+	while (note.begins_with("#")) {
+		note = note.substr(1).strip_edges();
+	}
+	if (note.is_empty()) {
+		return;
+	}
+	if (note.length() > MAX_MEMORY_CHARS) {
+		note = note.left(MAX_MEMORY_CHARS) + "...";
+	}
+
+	// Read existing file (may not exist yet). If it exists but cannot be read,
+	// stop: writing now would replace its contents with just this one entry.
 	String existing_text;
-	Ref<FileAccess> rf = FileAccess::open(path, FileAccess::READ);
-	if (rf.is_valid()) {
+	if (FileAccess::exists(path)) {
+		Ref<FileAccess> rf = FileAccess::open(path, FileAccess::READ);
+		if (!rf.is_valid()) {
+			AI_WARN("WRITE_MEMORY: " + path + " exists but could not be read; not overwriting it.");
+			return;
+		}
 		existing_text = rf->get_as_text();
 	}
 
@@ -4011,7 +4347,7 @@ void AIAssistantPanel::_handle_write_memory(const String &p_content) {
 	Dictionary dt = Time::get_singleton()->get_datetime_dict_from_system();
 	String timestamp = vformat("%04d-%02d-%02d",
 		(int)dt["year"], (int)dt["month"], (int)dt["day"]);
-	String new_entry = "- [" + timestamp + "] " + p_content + "\n";
+	String new_entry = "- [" + timestamp + "] " + note + "\n";
 
 	String new_text;
 	int section_pos = existing_text.find(section_header);
@@ -4038,15 +4374,17 @@ void AIAssistantPanel::_handle_write_memory(const String &p_content) {
 	if (wf.is_valid()) {
 		wf->store_string(new_text);
 		AI_LOG("WRITE_MEMORY: Appended quirk to " + path);
+		_append_message("System", AI_L("Saved to godot_ai.md: ", "已写入 godot_ai.md：") + note, Color(0.6, 0.8, 1.0));
 	} else {
 		AI_WARN("WRITE_MEMORY: Could not write to " + path);
 	}
 }
 
 void AIAssistantPanel::_on_web_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	web_request_active = false;
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
 		AI_ERR("Web request failed: result=" + itos(p_result) + " code=" + itos(p_response_code));
-		_append_message("System", "Web request failed (HTTP " + itos(p_response_code) + "). The AI will respond without web data.", Color(1.0, 0.7, 0.4));
+		_append_message("System", AI_L("Web request failed (HTTP ", "网络请求失败 (HTTP ") + itos(p_response_code) + AI_L("). The AI will respond without web data.", ")，AI 将在没有网页数据的情况下回答。"), Color(1.0, 0.7, 0.4));
 		return;
 	}
 
@@ -4071,7 +4409,7 @@ void AIAssistantPanel::_on_web_request_completed(int p_result, int p_response_co
 	}
 
 	if (web_context.is_empty()) {
-		_append_message("System", "No useful content found.", Color(1.0, 0.7, 0.4));
+		_append_message("System", AI_L("No useful content found.", "未找到有用内容。"), Color(1.0, 0.7, 0.4));
 		return;
 	}
 
@@ -4096,55 +4434,130 @@ void AIAssistantPanel::_on_web_request_completed(int p_result, int p_response_co
 // --- Context Compression ---
 
 int AIAssistantPanel::_estimate_tokens(const String &p_text) const {
-	// Rough estimate: ~4 characters per token for English, ~2 for CJK.
-	// Use a conservative 3 chars/token average.
-	return MAX(1, p_text.length() / 3);
+	// CJK characters (Chinese / Japanese / Korean) each tokenise as roughly 1 token.
+	// All other characters average ~4 per token (ASCII, punctuation, whitespace).
+	// This gives far more accurate estimates than a flat "÷3" average, especially
+	// for mixed Chinese–English conversations.
+	int cjk_chars = 0;
+	int other_chars = 0;
+	for (int i = 0; i < p_text.length(); i++) {
+		const char32_t c = p_text[i];
+		if ((c >= 0x4E00 && c <= 0x9FFF)   ||  // CJK Unified Ideographs
+		    (c >= 0x3400 && c <= 0x4DBF)   ||  // CJK Extension A
+		    (c >= 0x20000 && c <= 0x2A6DF) ||  // CJK Extension B
+		    (c >= 0x3040 && c <= 0x309F)   ||  // Hiragana
+		    (c >= 0x30A0 && c <= 0x30FF)   ||  // Katakana
+		    (c >= 0xAC00 && c <= 0xD7AF)) {    // Hangul syllables
+			cjk_chars++;
+		} else {
+			other_chars++;
+		}
+	}
+	// CJK: 1 token/char.  Other: 1 token per 4 chars.
+	return MAX(1, cjk_chars + other_chars / 4);
 }
 
 String AIAssistantPanel::_build_message_summary(const Dictionary &p_msg) const {
-	String role = p_msg["role"];
-	String content = p_msg["content"];
+	const String role    = p_msg["role"];
+	const String content = p_msg["content"];
 
 	if (role == "user") {
-		// Extract the core request — first line or first 150 chars.
-		String first_line = content.get_slice("\n", 0).strip_edges();
-		// Remove attachment context for summary.
-		int attach_pos = first_line.find("--- ATTACHED CONTEXT ---");
-		if (attach_pos >= 0) {
-			first_line = first_line.left(attach_pos).strip_edges();
+		// Strip large attachment/context blocks — they dwarf the actual request.
+		String trimmed = content;
+		static const char *noise_markers[] = {
+			"--- ATTACHED CONTEXT ---", "--- FILE:", "--- END FILE",
+			"[CONTEXT SUMMARY", "[Node:", nullptr
+		};
+		for (int m = 0; noise_markers[m]; m++) {
+			int pos = trimmed.find(noise_markers[m]);
+			if (pos >= 0) {
+				trimmed = trimmed.left(pos).strip_edges();
+				break;
+			}
 		}
-		if (first_line.length() > 150) {
-			first_line = first_line.left(150) + "...";
+		// Keep the first 300 characters of the actual request.
+		trimmed = trimmed.strip_edges();
+		if (trimmed.length() > 300) {
+			trimmed = trimmed.left(300) + "...";
 		}
-		return "User: " + first_line;
+		return "User: " + trimmed;
+
 	} else if (role == "assistant") {
-		// Extract what was done — look for print() output or first meaningful line.
-		// Check for code blocks — summarize as action.
+		String summary;
+
 		if (content.find("```") >= 0) {
-			// Has code — extract the last print() content as summary.
-			String summary_line;
-			int search_from = 0;
-			while (true) {
-				int print_pos = content.find("print(\"", search_from);
-				if (print_pos < 0) break;
-				int str_start = print_pos + 7;
-				int str_end = content.find("\"", str_start);
-				if (str_end > str_start) {
-					summary_line = content.substr(str_start, str_end - str_start);
+			// --- Code response: extract rich metadata ---
+			// 1. Collect all func/class definitions.
+			Vector<String> symbols;
+			{
+				static const char *kw[] = { "func ", "class ", "var ", nullptr };
+				for (int k = 0; kw[k]; k++) {
+					int pos = 0;
+					while (true) {
+						pos = content.find(kw[k], pos);
+						if (pos < 0) break;
+						int end = content.find("\n", pos);
+						if (end < 0) end = MIN(pos + 60, content.length());
+						String line = content.substr(pos, end - pos).strip_edges();
+						if (line.length() > 60) line = line.left(60);
+						symbols.push_back(line);
+						pos = end + 1;
+						if (symbols.size() >= 5) break;  // cap at 5 symbols
+					}
+					if (symbols.size() >= 5) break;
 				}
-				search_from = str_end + 1;
 			}
-			if (!summary_line.is_empty()) {
-				return "AI: [Code] " + summary_line;
+			// 2. Find the first code-block language tag (e.g. ```gdscript).
+			String lang_tag;
+			{
+				int tick = content.find("```");
+				if (tick >= 0) {
+					int nl = content.find("\n", tick);
+					if (nl > tick + 3) {
+						lang_tag = content.substr(tick + 3, nl - tick - 3).strip_edges();
+					}
+				}
 			}
-			return "AI: [Executed code block]";
+			// 3. Collect mentioned file paths (res://).
+			Vector<String> files;
+			{
+				int pos = 0;
+				while (true) {
+					pos = content.find("res://", pos);
+					if (pos < 0) break;
+					int end = pos + 6;
+					while (end < content.length() && content[end] != '"' &&
+					       content[end] != '\'' && content[end] != '\n' &&
+					       content[end] != ' ') {
+						end++;
+					}
+					String path = content.substr(pos, end - pos);
+					if (!files.has(path)) files.push_back(path);
+					pos = end;
+					if (files.size() >= 3) break;
+				}
+			}
+			// Assemble summary.
+			summary = "AI: [Code";
+			if (!lang_tag.is_empty()) {
+				summary += "/" + lang_tag;
+			}
+			summary += "]";
+			if (!files.is_empty()) {
+				summary += " files=" + String(",").join(files);
+			}
+			if (!symbols.is_empty()) {
+				summary += " defines=[" + String(", ").join(symbols) + "]";
+			}
+		} else {
+			// --- Text-only response: keep 300 chars ---
+			String trimmed = content.strip_edges();
+			if (trimmed.length() > 300) {
+				trimmed = trimmed.left(300) + "...";
+			}
+			summary = "AI: " + trimmed;
 		}
-		// Text-only response — first 150 chars.
-		String trimmed = content.strip_edges();
-		if (trimmed.length() > 150) {
-			trimmed = trimmed.left(150) + "...";
-		}
-		return "AI: " + trimmed;
+		return summary;
 	}
 	return "";
 }
@@ -4158,54 +4571,68 @@ void AIAssistantPanel::_compress_context_if_needed() {
 	}
 
 	// Calculate threshold based on model's context length.
-	// Reserve space for: system prompt (~3K tokens) + max output tokens + safety margin.
+	// The window left for history is what remains after the max output tokens and
+	// the system prompt (base prompt + injected context, measured on the last send).
 	int context_length = 8192;
-	int output_tokens = 4096;
+	int output_tokens  = 4096;
 	if (current_provider.is_valid()) {
 		context_length = current_provider->get_model_context_length();
-		output_tokens = current_provider->get_recommended_max_tokens();
+		output_tokens  = current_provider->get_max_tokens();
 	}
-	// Use 70% of (context_length - output_tokens) as the compression threshold.
-	// This leaves 30% headroom for system prompt, attachments, etc.
-	int TOKEN_THRESHOLD = (int)((context_length - output_tokens) * 0.7);
+	// User-configurable threshold fraction (default 70%).
 	// Clamp to reasonable range: minimum 4000, maximum 500000.
-	TOKEN_THRESHOLD = CLAMP(TOKEN_THRESHOLD, 4000, 500000);
-	const int KEEP_RECENT = 6; // Keep last 6 messages (3 exchanges) intact.
+	const int TOKEN_THRESHOLD = CLAMP(
+		(int)((context_length - output_tokens - last_system_prompt_tokens) * compression_threshold_pct),
+		4000, 500000);
+
+	// User-configurable: how many recent messages to always preserve. Rounded up to
+	// an even count so the retained history starts on a user turn, not mid-pair.
+	const int KEEP_RECENT = MAX(2, compression_keep_recent + (compression_keep_recent & 1));
 
 	if (total_tokens <= TOKEN_THRESHOLD || conversation_history.size() <= KEEP_RECENT) {
 		return;
 	}
 
-	AI_LOG("Context compression triggered: ~" + itos(total_tokens) + " tokens, " + itos(conversation_history.size()) + " messages.");
+	const int compress_count = conversation_history.size() - KEEP_RECENT;
+	AI_LOG(vformat("Context compression triggered: ~%d tokens (threshold %d), %d messages -> keeping last %d.",
+		total_tokens, TOKEN_THRESHOLD, conversation_history.size(), KEEP_RECENT));
 
-	// Compress older messages into summary.
-	int compress_count = conversation_history.size() - KEEP_RECENT;
-	String new_summary;
-
-	// Start with existing summary.
-	if (!context_summary.is_empty()) {
-		new_summary = context_summary + "\n";
+	// --- Collect the messages that will be compressed ---
+	Array to_compress;
+	for (int i = 0; i < compress_count; i++) {
+		to_compress.push_back(conversation_history[i]);
 	}
 
-	new_summary += "--- Compressed messages ---\n";
+	// ── Heuristic summary (always built; used immediately or as fallback) ───
+	String heuristic_block = "--- Compressed messages ---\n";
 	for (int i = 0; i < compress_count; i++) {
 		Dictionary msg = conversation_history[i];
 		String line = _build_message_summary(msg);
 		if (!line.is_empty()) {
-			new_summary += line + "\n";
+			heuristic_block += line + "\n";
 		}
 	}
+	String new_summary;
+	if (!context_summary.is_empty()) {
+		new_summary = context_summary + "\n";
+	}
+	new_summary += heuristic_block;
 
-	// Remove compressed messages from history.
+	if (compression_use_ai_summary && !summary_request_active) {
+		// ── AI-summary path ──────────────────────────────────────────────────
+		// Fire a background summary request; the heuristic block stays in place
+		// until the AI response arrives and replaces exactly that block.
+		_request_ai_summary(to_compress, heuristic_block);
+	}
+
+	// Remove compressed messages from the working copy.
 	for (int i = 0; i < compress_count; i++) {
 		conversation_history.remove_at(0);
 	}
-
 	context_summary = new_summary;
 
-	// Post-compaction file restoration (inspired by Claude Code).
-	// Re-inject currently open scripts so the AI doesn't "forget" the files
-	// it was working on immediately after context compression.
+	// Post-compaction file restoration — re-inject currently open scripts so the
+	// AI doesn't immediately "forget" the files it was working on.
 	{
 		String scripts_snapshot = context_collector->get_open_scripts_snapshot(3, 4000);
 		if (!scripts_snapshot.is_empty()) {
@@ -4216,17 +4643,160 @@ void AIAssistantPanel::_compress_context_if_needed() {
 
 	int new_tokens = _estimate_tokens(context_summary);
 	for (int i = 0; i < conversation_history.size(); i++) {
-		Dictionary msg = conversation_history[i];
-		new_tokens += _estimate_tokens(String(msg["content"]));
+		new_tokens += _estimate_tokens(String(conversation_history[i].operator Dictionary()["content"]));
 	}
-
-	AI_LOG("Context compressed: " + itos(compress_count) + " messages -> summary (" + itos(context_summary.length()) + " chars). New total: ~" + itos(new_tokens) + " tokens, " + itos(conversation_history.size()) + " messages remaining.");
+	AI_LOG(vformat("Context compressed: %d messages -> summary (%d chars). New total: ~%d tokens, %d messages remaining.",
+		compress_count, context_summary.length(), new_tokens, conversation_history.size()));
 }
 
-// Parses OpenAI / Anthropic "context too long" error messages to extract the
-// exact token gap, then drops the minimum number of conversation messages
-// needed to cover it and retries the request automatically.
-//
+// ── AI Summary helpers ──────────────────────────────────────────────────────
+
+void AIAssistantPanel::_load_compression_settings() {
+	EditorSettings *es = EditorSettings::get_singleton();
+	if (!es) {
+		return;
+	}
+	if (es->has_setting("ai_assistant/compression_keep_recent")) {
+		compression_keep_recent = (int)es->get_setting("ai_assistant/compression_keep_recent");
+	}
+	if (es->has_setting("ai_assistant/compression_threshold_pct")) {
+		compression_threshold_pct = (float)es->get_setting("ai_assistant/compression_threshold_pct");
+	}
+	if (es->has_setting("ai_assistant/compression_use_ai_summary")) {
+		compression_use_ai_summary = (bool)es->get_setting("ai_assistant/compression_use_ai_summary");
+	}
+	AI_LOG(vformat("Compression settings: keep_recent=%d, threshold=%.0f%%, ai_summary=%s",
+		compression_keep_recent,
+		compression_threshold_pct * 100.0f,
+		compression_use_ai_summary ? "on" : "off"));
+}
+
+void AIAssistantPanel::_cancel_pending_summary() {
+	if (summary_request_active && summary_http_request) {
+		summary_http_request->cancel_request();
+		AI_LOG("Pending AI summary request cancelled.");
+	}
+	summary_request_active = false;
+	summary_placeholder_block = "";
+}
+
+void AIAssistantPanel::_request_ai_summary(const Array &p_messages, const String &p_placeholder_block) {
+	if (!current_provider.is_valid() || !summary_http_request) {
+		return;
+	}
+	if (summary_request_active) {
+		return; // A summary is already in-flight.
+	}
+
+	// Build conversation text for the summarisation prompt.
+	String history_text;
+	for (int i = 0; i < p_messages.size(); i++) {
+		Dictionary msg = p_messages[i];
+		const String role    = String(msg["role"]) == "user" ? "User" : "AI";
+		// Cap each message at 800 chars so the summary prompt stays reasonable.
+		String content = String(msg["content"]).left(800);
+		if (String(msg["content"]).length() > 800) {
+			content += "...";
+		}
+		history_text += role + ": " + content + "\n---\n";
+	}
+
+	const String system_prompt =
+		"You are a conversation-history compressor for an AI coding assistant. "
+		"Your ONLY job: produce a dense, structured summary that preserves everything "
+		"a coding AI needs to continue the work — decisions made, files created/modified "
+		"(with res:// paths), function/class names defined, bugs fixed, approaches tried "
+		"and rejected, and the overall goal. "
+		"Respond in the SAME language the user used. "
+		"Output ONLY the summary, no preamble.";
+
+	const String user_prompt =
+		"Summarize the following conversation history:\n\n" + history_text;
+
+	// Build a non-streaming request. Temporarily cap max_tokens for the summary
+	// so we don't pay for a long reply; 1024 tokens is plenty for a summary.
+	String body = current_provider->build_request_body(system_prompt, Array(), user_prompt);
+
+	// Patch max_tokens / max_completion_tokens in the JSON to 1024.
+	{
+		Ref<JSON> j;
+		j.instantiate();
+		if (j->parse(body) == OK) {
+			Dictionary d = j->get_data();
+			if (d.has("max_tokens"))            d["max_tokens"]            = 1024;
+			if (d.has("max_completion_tokens")) d["max_completion_tokens"] = 1024;
+			if (d.has("generationConfig")) {
+				Dictionary gc = d["generationConfig"];
+				gc["maxOutputTokens"] = 1024;
+				d["generationConfig"] = gc;
+			}
+			body = JSON::stringify(d);
+		}
+	}
+
+	Vector<String> headers = current_provider->get_headers();
+	// get_api_endpoint() is only the user's override and is empty by default, so
+	// resolve the URL through the provider like the streaming path does. Gemini
+	// selects streaming by URL, the others by the "stream" body flag.
+	String url;
+	GeminiProvider *gemini = Object::cast_to<GeminiProvider>(current_provider.ptr());
+	if (gemini) {
+		url = gemini->get_request_url();
+	} else {
+		url = current_provider->get_stream_url();
+	}
+
+	Error err = summary_http_request->request(url, headers, HTTPClient::METHOD_POST, body);
+	if (err == OK) {
+		summary_request_active    = true;
+		summary_placeholder_block = p_placeholder_block;
+		AI_LOG("AI summary request fired for " + itos(p_messages.size()) + " messages.");
+	} else {
+		AI_WARN("Failed to start AI summary request — heuristic summary will be kept.");
+	}
+}
+
+void AIAssistantPanel::_on_summary_completed(int p_result, int p_response_code,
+                                              const PackedStringArray & /*p_headers*/,
+                                              const PackedByteArray   &p_body) {
+	const String placeholder = summary_placeholder_block;
+	summary_request_active    = false;
+	summary_placeholder_block = "";
+
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
+		AI_WARN(vformat("AI summary request failed (result=%d, code=%d) — heuristic summary kept.",
+			p_result, p_response_code));
+		return;
+	}
+	if (!current_provider.is_valid()) {
+		return;
+	}
+
+	const String body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
+	const String ai_text  = current_provider->parse_response(body_str);
+	// parse_response() reports failures as "Error: ..." / "API Error: ..." strings.
+	if (ai_text.is_empty() || ai_text.begins_with("Error: ") || ai_text.begins_with("API Error: ")) {
+		AI_WARN("AI summary response was empty or an error — heuristic summary kept.");
+		return;
+	}
+
+	// Swap exactly the heuristic block this request was fired for. If it is no
+	// longer in the summary (the block was rewritten since), keep what is there
+	// rather than guessing where the AI text belongs.
+	const int block_pos = placeholder.is_empty() ? -1 : context_summary.find(placeholder);
+	if (block_pos < 0) {
+		AI_WARN("AI summary arrived but its placeholder block is gone — discarded.");
+		return;
+	}
+	context_summary = context_summary.left(block_pos) +
+			"--- AI Summary ---\n" + ai_text + "\n" +
+			context_summary.substr(block_pos + placeholder.length());
+
+	AI_LOG("AI summary received and applied (" + itos(ai_text.length()) + " chars).");
+}
+
+// ── Reactive compression ────────────────────────────────────────────────────
+
 // Supported error formats:
 //   Anthropic: "prompt is too long: 195432 tokens > 180000 maximum"
 //   OpenAI:    "This model's maximum context length is 128000 tokens. However,
@@ -4359,15 +4929,87 @@ bool AIAssistantPanel::_try_reactive_compress(const String &p_error_msg) {
 	send_button->set_visible(true);
 	stop_button->set_visible(false);
 
+	// _send_to_api() appends the message again, so take the failed copy out of
+	// the full history too (it was already popped from the working copy above).
+	if (!full_conversation_history.is_empty()) {
+		const Dictionary last_full = full_conversation_history[full_conversation_history.size() - 1];
+		if (String(last_full.get("role", "")) == "user") {
+			full_conversation_history.resize(full_conversation_history.size() - 1);
+		}
+	}
 	String user_content = String(last_user_msg["content"]);
 	_send_to_api(user_content);
 	return true;
 }
 
+String AIAssistantPanel::_temperature_key() const {
+	if (!current_provider.is_valid()) {
+		return String();
+	}
+	const String model = current_provider->get_model().is_empty() ? current_provider->get_default_model() : current_provider->get_model();
+	return current_provider->get_provider_name() + "/" + model;
+}
+
+void AIAssistantPanel::_retry_last_user_message() {
+	if (conversation_history.is_empty()) {
+		return;
+	}
+	const Dictionary last_msg = conversation_history[conversation_history.size() - 1];
+	if (String(last_msg.get("role", "")) != "user") {
+		return;
+	}
+	conversation_history.resize(conversation_history.size() - 1);
+	if (!full_conversation_history.is_empty()) {
+		const Dictionary last_full = full_conversation_history[full_conversation_history.size() - 1];
+		if (String(last_full.get("role", "")) == "user") {
+			full_conversation_history.resize(full_conversation_history.size() - 1);
+		}
+	}
+	is_waiting_response = false;
+	send_button->set_visible(true);
+	stop_button->set_visible(false);
+	_send_to_api(String(last_msg.get("content", "")));
+}
+
+bool AIAssistantPanel::_try_retry_without_temperature(const String &p_error_msg) {
+	if (!current_provider.is_valid() || !current_provider->is_sending_temperature()) {
+		return false; // Already off: the error is about something else.
+	}
+	const String lower = p_error_msg.to_lower();
+	if (lower.find("temperature") < 0 || lower.find("http 400") < 0) {
+		return false;
+	}
+	models_without_temperature.insert(_temperature_key());
+	current_provider->set_send_temperature(false);
+	AI_LOG("Model rejected the temperature parameter; retrying without it: " + _temperature_key());
+	_append_message("System",
+			AI_L("This model does not accept a custom temperature; retrying with its default.", "该模型不接受自定义温度，已改用默认值重试。"),
+			Color(1.0f, 0.75f, 0.2f));
+	_retry_last_user_message();
+	return true;
+}
+
 AIAssistantPanel::~AIAssistantPanel() {
 	if (stream_thread.is_started()) {
+		// Ask the thread to stop first; otherwise closing the editor waits for
+		// the whole response to finish generating.
+		stream_mutex.lock();
+		stream_stop_requested = true;
+		stream_mutex.unlock();
 		stream_thread.wait_to_finish();
 	}
+	// The autocomplete overlay is parented to the editor root. If that root is
+	// already gone it took the overlay with it, so look it up by id.
+	if (Node *overlay = Object::cast_to<Node>(ObjectDB::get_instance(autocomplete_panel_id))) {
+		if (!overlay->get_parent()) {
+			memdelete(overlay); // Never attached — still ours.
+		} else if (overlay->is_inside_tree()) {
+			overlay->queue_free();
+		}
+		// Otherwise its parent is being torn down and will free it.
+	}
+	autocomplete_panel = nullptr;
+	autocomplete_list = nullptr;
 	if (!conversation_history.is_empty()) {
 		_save_current_chat();
 	}
