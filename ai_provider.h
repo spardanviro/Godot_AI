@@ -13,6 +13,12 @@ protected:
 	String api_endpoint;
 	int max_tokens = 4096;
 	float temperature = 0.7f;
+	// Base64 PNG to attach to the next user message (empty = none). Set by the
+	// panel right before building a request and cleared right after.
+	String pending_image_png_b64;
+	// Some reasoning models only accept their default sampling temperature and
+	// answer 400 to any explicit value; the panel turns this off when that happens.
+	bool send_temperature = true;
 
 	static void _bind_methods();
 
@@ -31,6 +37,12 @@ public:
 
 	void set_temperature(float p_temp);
 	float get_temperature() const;
+
+	void set_pending_image(const String &p_png_base64) { pending_image_png_b64 = p_png_base64; }
+	void set_send_temperature(bool p_send) { send_temperature = p_send; }
+	bool is_sending_temperature() const { return send_temperature; }
+	// Whether build_stream_request_body() can attach pending_image_png_b64.
+	virtual bool supports_image_input() const { return false; }
 
 	virtual String get_provider_name() const;
 	virtual String get_default_endpoint() const;

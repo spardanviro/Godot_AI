@@ -39,7 +39,9 @@ String GLMProvider::build_request_body(const String &p_system_prompt, const Arra
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_tokens"] = max_tokens;
-	body["temperature"] = temperature;
+	if (send_temperature) {
+		body["temperature"] = temperature;
+	}
 
 	Array messages;
 
@@ -90,7 +92,7 @@ String GLMProvider::parse_response(const String &p_response_body) const {
 
 	Dictionary choice = choices[0];
 	Dictionary message = choice["message"];
-	return message["content"];
+	return message.get("content", Variant()).get_type() == Variant::STRING ? String(message["content"]) : String();
 }
 
 Vector<String> GLMProvider::get_headers() const {
@@ -188,7 +190,9 @@ String GLMProvider::build_stream_request_body(const String &p_system_prompt, con
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_tokens"] = max_tokens;
-	body["temperature"] = temperature;
+	if (send_temperature) {
+		body["temperature"] = temperature;
+	}
 	body["stream"] = true;
 
 	Array messages;
@@ -237,7 +241,7 @@ String GLMProvider::parse_stream_delta(const String &p_data) const {
 
 	Dictionary delta = choice["delta"];
 	if (delta.has("content")) {
-		return delta["content"];
+		return delta["content"].get_type() == Variant::STRING ? String(delta["content"]) : String();
 	}
 
 	return "";
@@ -272,11 +276,11 @@ Dictionary GLMProvider::parse_stream_delta_ex(const String &p_data) const {
 	Dictionary delta = choice["delta"];
 
 	// GLM-5 uses "reasoning_content" for thinking tokens (same as OpenAI o-series).
-	if (delta.has("reasoning_content") && String(delta["reasoning_content"]).length() > 0) {
+	if (delta.get("reasoning_content", Variant()).get_type() == Variant::STRING && String(delta["reasoning_content"]).length() > 0) {
 		result["thinking"] = delta["reasoning_content"];
 	}
 
-	if (delta.has("content") && String(delta["content"]).length() > 0) {
+	if (delta.get("content", Variant()).get_type() == Variant::STRING && String(delta["content"]).length() > 0) {
 		result["content"] = delta["content"];
 	}
 

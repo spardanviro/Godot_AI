@@ -56,7 +56,9 @@ String OpenAIProvider::build_request_body(const String &p_system_prompt, const A
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_completion_tokens"] = max_tokens;
-	body["temperature"] = temperature;
+	if (send_temperature) {
+		body["temperature"] = temperature;
+	}
 
 	Array messages;
 
@@ -107,7 +109,7 @@ String OpenAIProvider::parse_response(const String &p_response_body) const {
 
 	Dictionary choice = choices[0];
 	Dictionary message = choice["message"];
-	return message["content"];
+	return message.get("content", Variant()).get_type() == Variant::STRING ? String(message["content"]) : String();
 }
 
 Vector<String> OpenAIProvider::get_headers() const {
@@ -219,7 +221,9 @@ String OpenAIProvider::build_stream_request_body(const String &p_system_prompt, 
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_completion_tokens"] = max_tokens;
-	body["temperature"] = temperature;
+	if (send_temperature) {
+		body["temperature"] = temperature;
+	}
 	body["stream"] = true;
 
 	Array messages;
@@ -235,7 +239,22 @@ String OpenAIProvider::build_stream_request_body(const String &p_system_prompt, 
 
 	Dictionary user_msg;
 	user_msg["role"] = "user";
-	user_msg["content"] = p_user_message;
+	if (pending_image_png_b64.is_empty()) {
+		user_msg["content"] = p_user_message;
+	} else {
+		Dictionary text_part;
+		text_part["type"] = "text";
+		text_part["text"] = p_user_message;
+		Dictionary image_url;
+		image_url["url"] = "data:image/png;base64," + pending_image_png_b64;
+		Dictionary image_part;
+		image_part["type"] = "image_url";
+		image_part["image_url"] = image_url;
+		Array content_parts;
+		content_parts.push_back(text_part);
+		content_parts.push_back(image_part);
+		user_msg["content"] = content_parts;
+	}
 	messages.push_back(user_msg);
 
 	body["messages"] = messages;
@@ -270,7 +289,7 @@ String OpenAIProvider::parse_stream_delta(const String &p_data) const {
 
 	Dictionary delta = choice["delta"];
 	if (delta.has("content")) {
-		return delta["content"];
+		return delta["content"].get_type() == Variant::STRING ? String(delta["content"]) : String();
 	}
 
 	return "";
@@ -305,11 +324,11 @@ Dictionary OpenAIProvider::parse_stream_delta_ex(const String &p_data) const {
 	Dictionary delta = choice["delta"];
 
 	// OpenAI o-series models use "reasoning_content" for thinking tokens.
-	if (delta.has("reasoning_content") && String(delta["reasoning_content"]).length() > 0) {
+	if (delta.get("reasoning_content", Variant()).get_type() == Variant::STRING && String(delta["reasoning_content"]).length() > 0) {
 		result["thinking"] = delta["reasoning_content"];
 	}
 
-	if (delta.has("content") && String(delta["content"]).length() > 0) {
+	if (delta.get("content", Variant()).get_type() == Variant::STRING && String(delta["content"]).length() > 0) {
 		result["content"] = delta["content"];
 	}
 

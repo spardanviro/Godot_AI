@@ -35,7 +35,9 @@ String DeepSeekProvider::build_request_body(const String &p_system_prompt, const
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_tokens"] = max_tokens;
-	body["temperature"] = temperature;
+	if (send_temperature) {
+		body["temperature"] = temperature;
+	}
 
 	Array messages;
 
@@ -83,7 +85,7 @@ String DeepSeekProvider::parse_response(const String &p_response_body) const {
 
 	Dictionary choice = choices[0];
 	Dictionary message = choice["message"];
-	return message["content"];
+	return message.get("content", Variant()).get_type() == Variant::STRING ? String(message["content"]) : String();
 }
 
 Vector<String> DeepSeekProvider::get_headers() const {
@@ -171,7 +173,9 @@ String DeepSeekProvider::build_stream_request_body(const String &p_system_prompt
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_tokens"] = max_tokens;
-	body["temperature"] = temperature;
+	if (send_temperature) {
+		body["temperature"] = temperature;
+	}
 	body["stream"] = true;
 
 	Array messages;
@@ -219,7 +223,7 @@ String DeepSeekProvider::parse_stream_delta(const String &p_data) const {
 
 	Dictionary delta = choice["delta"];
 	if (delta.has("content")) {
-		return delta["content"];
+		return delta["content"].get_type() == Variant::STRING ? String(delta["content"]) : String();
 	}
 
 	return "";
@@ -254,11 +258,11 @@ Dictionary DeepSeekProvider::parse_stream_delta_ex(const String &p_data) const {
 	Dictionary delta = choice["delta"];
 
 	// deepseek-reasoner streams thinking tokens via "reasoning_content".
-	if (delta.has("reasoning_content") && String(delta["reasoning_content"]).length() > 0) {
+	if (delta.get("reasoning_content", Variant()).get_type() == Variant::STRING && String(delta["reasoning_content"]).length() > 0) {
 		result["thinking"] = delta["reasoning_content"];
 	}
 
-	if (delta.has("content") && String(delta["content"]).length() > 0) {
+	if (delta.get("content", Variant()).get_type() == Variant::STRING && String(delta["content"]).length() > 0) {
 		result["content"] = delta["content"];
 	}
 

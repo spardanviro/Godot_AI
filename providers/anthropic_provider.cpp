@@ -15,18 +15,18 @@ String AnthropicProvider::get_default_endpoint() const {
 }
 
 String AnthropicProvider::get_default_model() const {
-	return "claude-opus-4-6";
+	return "claude-opus-5-5";
 }
 
 int AnthropicProvider::get_model_context_length() const {
 	String m = model.is_empty() ? get_default_model() : model;
-	// Opus 4.6 and Sonnet 4.6 support 1M context at standard pricing.
-	if (m.find("opus-4-6") >= 0 || m.find("sonnet-4-6") >= 0) return 1000000;
-	// Sonnet 4.5/4 support 1M via beta header; default to 200K.
-	if (m.find("opus") >= 0) return 200000;
-	if (m.find("sonnet") >= 0) return 200000;
-	if (m.find("haiku") >= 0) return 200000;
-	return 200000;
+	// 200K: Haiku 4.5 and everything before the 4.6 generation. Listed first so
+	// the 1M default below only applies to current models (4.6 and later, plus
+	// the Fable family), which all have a 1M window.
+	if (m.find("haiku-4-5") >= 0 || m.find("claude-3") >= 0) return 200000;
+	if (m.find("opus-4-5") >= 0 || m.find("opus-4-1") >= 0 || m.find("opus-4-0") >= 0 || m.find("opus-4-2") >= 0) return 200000;
+	if (m.find("sonnet-4-5") >= 0 || m.find("sonnet-4-0") >= 0 || m.find("sonnet-4-2") >= 0) return 200000;
+	return 1000000;
 }
 
 int AnthropicProvider::get_recommended_max_tokens() const {
@@ -171,7 +171,10 @@ String AnthropicProvider::select_best_model(const PackedStringArray &p_models) c
 			// Take first two segments: major-minor.
 			Vector<String> segs = ver_part.split("-");
 			if (segs.size() >= 2) {
-				float ver = segs[0].to_float() + segs[1].to_float() * 0.1f;
+				// The second segment is the minor version only when it is short:
+				// in "claude-opus-4-20250514" it is a date, not minor 20250514.
+				const float minor = segs[1].length() <= 2 ? segs[1].to_float() : 0.0f;
+				float ver = segs[0].to_float() + minor * 0.1f;
 				if (ver > best_ver || (ver == best_ver && (best.is_empty() || m.length() < best.length()))) {
 					best_ver = ver;
 					best = m;
@@ -233,7 +236,24 @@ String AnthropicProvider::build_stream_request_body(const String &p_system_promp
 
 	Dictionary user_msg;
 	user_msg["role"] = "user";
-	user_msg["content"] = p_user_message;
+	if (pending_image_png_b64.is_empty()) {
+		user_msg["content"] = p_user_message;
+	} else {
+		Dictionary source;
+		source["type"] = "base64";
+		source["media_type"] = "image/png";
+		source["data"] = pending_image_png_b64;
+		Dictionary image_block;
+		image_block["type"] = "image";
+		image_block["source"] = source;
+		Dictionary text_block;
+		text_block["type"] = "text";
+		text_block["text"] = p_user_message;
+		Array content_blocks;
+		content_blocks.push_back(image_block);
+		content_blocks.push_back(text_block);
+		user_msg["content"] = content_blocks;
+	}
 	messages.push_back(user_msg);
 
 	body["messages"] = messages;

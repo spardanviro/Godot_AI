@@ -11,6 +11,7 @@ protected:
 
 public:
 	virtual String get_provider_name() const override;
+	virtual bool supports_image_input() const override { return true; }
 	virtual String get_default_endpoint() const override;
 	virtual String get_default_model() const override;
 

@@ -82,6 +82,14 @@ String GeminiProvider::build_request_body(const String &p_system_prompt, const A
 	Dictionary user_part;
 	user_part["text"] = p_user_message;
 	Array user_parts;
+	if (!pending_image_png_b64.is_empty()) {
+		Dictionary inline_data;
+		inline_data["mime_type"] = "image/png";
+		inline_data["data"] = pending_image_png_b64;
+		Dictionary image_part;
+		image_part["inline_data"] = inline_data;
+		user_parts.push_back(image_part);
+	}
 	user_parts.push_back(user_part);
 	user_content["parts"] = user_parts;
 	contents.push_back(user_content);
@@ -91,7 +99,9 @@ String GeminiProvider::build_request_body(const String &p_system_prompt, const A
 	// Generation config.
 	Dictionary gen_config;
 	gen_config["maxOutputTokens"] = max_tokens;
-	gen_config["temperature"] = temperature;
+	if (send_temperature) {
+		gen_config["temperature"] = temperature;
+	}
 	body["generationConfig"] = gen_config;
 
 	return JSON::stringify(body, "", false);
