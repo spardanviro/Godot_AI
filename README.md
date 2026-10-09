@@ -37,12 +37,13 @@ The panel is mounted in the right dock area of the editor.
 - `AGENT`: action-oriented mode with execution flow
 - `PLAN`: planning-first mode before execution
 
-### Scene node mentions and editor-aware input
+### Node and file mentions and editor-aware input
 
-- Type `@` in the input box to open scene-node autocomplete
-- Drag scene nodes into the input field to insert mention chips
+- Type `@` in the input box to open autocomplete for scene nodes; once at least one character follows the `@`, matching project files are listed too
+- Drag scene nodes from the Scene dock, or files and folders from the FileSystem dock, into the input field to insert mention chips
 - Use the `@` toolbar button to mention the current scene selection
-- Mention chips are rendered inline and expanded into structured node context before the request is sent
+- Right-click nodes in the Scene dock or entries in the FileSystem dock to mention them from the context menu
+- Mention chips are rendered inline (files in green, nodes in blue) and expanded before the request is sent: nodes into structured node context, files into their contents (capped at 50,000 characters), folders into a listing of their entries
 - Mention placeholders are atomic single-character tokens, so backspace removes them cleanly
 
 ### File attachments
@@ -72,9 +73,11 @@ The system prompt stays lean. Instead of statically including all Godot API docu
 
 ### On-demand gotchas injection (`AIGotchasIndex`)
 
-401 Godot-specific gotchas and pitfalls are stored in a keyword-indexed table. At request time, only entries whose keywords match the user's message are injected (capped at ~3000 chars). This replaces a previous 3100-line static section that was injected on every request regardless of relevance.
+445 Godot-specific gotchas and pitfalls are stored in a keyword-indexed table. At request time, only entries whose keywords match the user's message are injected, most relevant first, within a hard 3000-character budget. This replaces static sections that were injected on every request regardless of relevance.
 
-Token savings per request: ~90% reduction in gotcha-related context overhead.
+Matching ignores generic keywords (ordinary English words, `gdscript`, `node`, `int`, ...) and weights the rest by rarity, so an entry needs at least one reasonably specific hit — typically a class or method name — to be injected. A message that names no specific API gets no gotchas. Class names are matched even when written directly against CJK text.
+
+The always-on base prompt is about 57K characters (~14K tokens).
 
 ### Domain-specific prompting (`AIDomainPrompts`)
 
@@ -86,18 +89,20 @@ Specialized system prompt fragments for domain-focused requests (UI/Control layo
 - Wraps generated code as `EditorScript`
 - Executes code in the editor context
 - Supports compile-only validation before execution
-- Uses a basic dangerous-call blocklist before execution
+- Checks generated code against a safety policy before execution
 - Integrates permission checks for sensitive operations
 - Skips code execution in `ASK` mode
 - If a streamed response is manually stopped, partial code is preserved in history but not executed
 
-Blocked API patterns:
+Safety policy for editor-executed code (checked on the token stream, so comments and string contents are not mistaken for code):
 
-- `OS.execute`
-- `OS.shell_open`
-- `OS.kill`
-- `OS.create_process`
-- `.shell_execute`
+- `OS`, `Engine` and `ClassDB` may only be used as `Name.method(...)` with a harmless method (`OS.get_name()`, `Engine.is_editor_hint()`, `ClassDB.class_exists()`, ...). They cannot be assigned, passed or indexed, so process-spawning methods cannot be reached through an alias, `Engine.get_singleton()` or `ClassDB.instantiate()`
+- `Expression`, `JavaClassWrapper`, `JavaScriptBridge`, `GDExtensionManager` and `EditorSettings` are rejected, as is any access to the assistant's own settings (API keys, permissions)
+- Network calls (`request`, `connect_to_host`, `listen`, ...) are rejected. Creating networking nodes for the game is fine; using the network from the editor is not
+- String literals may not name absolute paths, UNC or `file://` locations, or `res://`/`user://` paths that climb out with `..`
+- When code is rejected, the reason is sent back to the model so it can rewrite within the rules
+
+This is static analysis, not a sandbox. It cannot see values assembled at run time: a path or method name built from pieces passes the check. Review generated code before running it on a machine or project you care about, and keep auto-execute off if you want to approve each run.
 
 ### Permission system
 
@@ -113,6 +118,10 @@ Execution permissions are categorized and configurable per operation type:
 
 Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny.
 
+The table is consulted for every piece of generated code, whatever its risk tier: `Deny` blocks it and `Ask` always shows a confirmation dialog, including when auto-execute is on. With auto-execute off, every execution is confirmed first.
+
+Categories are detected by matching API names in the generated code. This catches ordinary model output; it is not a sandbox, and code written to evade the matching can get past it.
+
 ### Context collection
 
 The assistant can build editor-aware context from:
@@ -126,7 +135,17 @@ The assistant can build editor-aware context from:
 
 ### Context compression
 
-Long conversations are summarized automatically when token usage grows too large for the current model context window. The implementation keeps recent exchanges intact and compresses older history into a rolling summary.
+Long conversations are summarized automatically when token usage grows too large for the current model context window. The implementation keeps recent exchanges intact and compresses older history into a rolling summary. Only the working copy sent to the model is compressed; the full history is kept for display and for saved chats.
+
+Three settings control it (Settings dialog, Context Compression section):
+
+- **Keep recent messages** (2–20, default 6): how many of the latest messages are never compressed
+- **Compress at** (30–95%, default 70%): how full the history window may get before compression runs. The window is the model's context length minus the max output tokens and the system prompt
+- **AI summary** (default off): ask the model for a summary of the compressed messages in a background request. This costs tokens; when it is off, or the request fails, a local heuristic summary is used instead
+
+Token counts are estimated locally: one token per CJK character, one per four other characters.
+
+If the provider still rejects a request as too long, the oldest messages are dropped and the request is retried once.
 
 ### Error monitoring and self-recovery
 
@@ -134,11 +153,14 @@ Long conversations are summarized automatically when token usage grows too large
 - Separates AI-caused execution errors from unrelated console noise
 - Feeds failures back into the assistant for automatic retry
 - Supports up to 3 auto-retry attempts
+- Watches the running game: when a played scene stops with runtime errors, the assistant is asked for a fix and the scene is restarted, up to 5 attempts
 
 ### Checkpoints and revert flow
 
 - Creates scene checkpoints before risky modifications
-- Stores multiple recent checkpoints
+- Stores up to 10 recent checkpoints, each written to disk when taken so built-in sub-resources (materials, shapes) are restored too
+- Also snapshots the project's text files (scripts, scenes, resources, config; up to 512 KB each) before each run. Reverting restores files the code changed or deleted and moves files created since to the system trash. Large and binary files are not covered
+- Reverting returns the project to that point in time, so it also undoes edits you made to those files after the checkpoint
 - Allows reverting through the panel UI
 
 ### Chat history
@@ -158,7 +180,7 @@ Generated assets are written into project paths such as `res://ai_generated_imag
 ### Web search and page fetch
 
 - DuckDuckGo HTML search integration
-- Direct URL fetch support
+- Direct URL fetch support, limited to public http(s) addresses (no localhost or private-network hosts) and to 3 web requests per user message
 - HTML-to-text extraction for prompt augmentation
 
 ### Localization
@@ -175,7 +197,7 @@ Core components:
 | `ai_assistant_plugin.*` | Editor plugin entry point |
 | `ai_settings_dialog.*` | Provider and behavior configuration UI |
 | `ai_mention_text_edit.*` | Mention-capable chat input with inline chips and drag-and-drop |
-| `ai_mention_highlighter.*` | Syntax highlighter that renders mention chips |
+| `ai_mention_highlighter.*` | Syntax highlighter that hides the mention placeholder characters (the chips are drawn by `ai_mention_text_edit`) |
 | `ai_provider.*` | Abstract provider interface |
 | `ai_response_parser.*` | Extracts text and code blocks from model replies |
 | `ai_script_executor.*` | Wraps and runs generated GDScript in editor context |
@@ -188,9 +210,9 @@ Core components:
 | `ai_audio_generator.*` | Audio generation helpers |
 | `ai_ui_agent.*` | UI-specific prompting helper |
 | `ai_profiler_collector.*` | Profiler data collection for performance prompts |
-| `ai_system_prompt.*` | Base system prompt builder (~1150 lines, lean) |
+| `ai_system_prompt.*` | Base system prompt builder (about 57K characters) |
 | `ai_api_doc_loader.*` | On-demand Godot API reference injection |
-| `ai_gotchas_index.*` | On-demand gotchas injection (401 entries, keyword-indexed) |
+| `ai_gotchas_index.*` | On-demand gotchas injection (445 entries, keyword-indexed, relevance-ranked) |
 | `ai_domain_prompts.*` | Domain-specific prompt fragments |
 | `ai_localization.h` | UI string localization table |
 
@@ -199,7 +221,7 @@ Provider implementations in `providers/`:
 | File | Provider |
 |------|----------|
 | `anthropic_provider.*` | Anthropic Claude |
-| `openai_provider.*` | OpenAI (also covers DeepSeek-compatible) |
+| `openai_provider.*` | OpenAI and OpenAI-compatible endpoints |
 | `gemini_provider.*` | Google Gemini |
 | `deepseek_provider.*` | DeepSeek |
 | `glm_provider.*` | Zhipu AI GLM |
@@ -244,6 +266,10 @@ Settings are stored in `EditorSettings` under the `ai_assistant/*` namespace.
 | `ai_assistant/temperature` | Sampling temperature (default: 0.7) |
 | `ai_assistant/send_on_enter` | Send on Enter key (default: true) |
 | `ai_assistant/autorun` | Auto-execute generated code (default: true) |
+| `ai_assistant/restore_last_chat` | Reload the most recent chat on editor startup (default: true) |
+| `ai_assistant/compression_keep_recent` | Recent messages never compressed (default: 6) |
+| `ai_assistant/compression_threshold_pct` | Fraction of the history window that triggers compression (default: 0.7) |
+| `ai_assistant/compression_use_ai_summary` | Summarize compressed messages with the model (default: false) |
 | `ai_assistant/language` | UI language (`en` or `zh`) |
 | `ai_assistant/permissions/*` | Per-category execution permissions |
 
@@ -261,8 +287,8 @@ Create `res://godot_ai.md` in your project to define project-specific instructio
 6. Start using the panel in `ASK`, `AGENT`, or `PLAN` mode.
 7. Optionally enrich the next request by:
    - attaching a file with the `+` button
-   - mentioning scene nodes with `@`
-   - dragging scene nodes into the input field
+   - mentioning scene nodes or project files with `@`
+   - dragging scene nodes, files, or folders into the input field
 
 ## Project Layout
 
@@ -305,7 +331,7 @@ ai_assistant/
 
 - Requires user-provided API keys for all LLM providers.
 - Web search is implemented via HTML scraping; provider pages may require maintenance.
-- Asset generation currently uses OpenAI-specific endpoints.
+- Asset generation currently uses OpenAI-specific endpoints and needs an OpenAI API key in Settings, whichever provider is active. Generated assets can only be saved under `res://`.
 - No automated CI or cross-platform packaging workflows yet.
 
 ## License
