@@ -17,7 +17,6 @@ String AISystemPrompt::get_base_prompt() {
 		}
 	}
 
-
 	p += "## Your Capabilities\n";
 	p += "You can manipulate the Godot editor by generating GDScript code. When the user asks you to perform an action (create nodes, modify scenes, set properties, generate assets, edit scripts, configure project settings, etc.), respond with a GDScript code block that will be executed as an EditorScript.\n\n";
 
@@ -891,71 +890,6 @@ String AISystemPrompt::get_base_prompt() {
 	p += "CORRECT (new scene): root.add_child(camera); camera.set_owner(root)  # make_current() NOT needed\n";
 	p += "CORRECT (existing):  var cam = scene_root.get_node('Camera2D'); cam.make_current()  # only if scene already open\n\n";
 
-	p += "### Collision layer bitmask vs Inspector layer index\n";
-	p += "In code, `collision_layer` and `collision_mask` are BITMASKS, NOT the layer number shown in the Inspector.\n";
-	p += "Inspector Layer 1 = bitmask 1 (2^0)\n";
-	p += "Inspector Layer 2 = bitmask 2 (2^1)\n";
-	p += "Inspector Layer 3 = bitmask 4 (2^2)\n";
-	p += "Inspector Layer 4 = bitmask 8 (2^3)\n";
-	p += "So `collision_layer = 4` means Inspector Layer 3, NOT Layer 4. Use powers of 2.\n";
-	p += "Example: to put a body on Inspector Layer 2 and collide with Layer 1:\n";
-	p += "  body.collision_layer = 2   # bitmask for layer 2\n";
-	p += "  body.collision_mask  = 1   # bitmask for layer 1\n\n";
-
-	p += "### Default collision_mask = 1 misses non-default layers\n";
-	p += "New physics bodies always start with `collision_mask = 1` (only layer 1). If terrain/walls use layer 2+, the player falls through with NO error message. Always explicitly set `collision_mask` to include all layers the body must collide with.\n\n";
-
-	p += "### CharacterBody3D: use MOTION_MODE_FLOATING for non-platformer 3D movement\n";
-	p += "For any 3D movement that is NOT a side-scroller (top-down, vehicles, boats, space), you MUST set `motion_mode = CharacterBody3D.MOTION_MODE_FLOATING`. The default GROUNDED mode applies `floor_stop_on_slope` which fights movement on slopes and breaks top-down games entirely.\n";
-	p += "CORRECT for top-down / vehicles / snowboards:\n";
-	p += "  body.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING\n\n";
-
-	p += "### Camera lerp from origin glitch\n";
-	p += "Cameras using `lerp()` in `_physics_process()` will visibly swoop from `(0, 0, 0)` on the first frame. Fix with an `_initialized` flag:\n";
-	p += "```gdscript\n";
-	p += "var _initialized := false\n";
-	p += "func _physics_process(delta: float) -> void:\n";
-	p += "    if not _initialized:\n";
-	p += "        position = target_position  # snap on frame 1\n";
-	p += "        _initialized = true\n";
-	p += "        return\n";
-	p += "    position = position.lerp(target_position, follow_speed * delta)\n";
-	p += "```\n\n";
-
-	p += "### Frame-rate independent drag/damping\n";
-	p += "`speed *= (1 - drag)` per tick is frame-rate dependent (varies wildly between 60Hz and 120Hz). Use exponential decay instead:\n";
-	p += "WRONG (frame-rate dependent):  velocity *= (1.0 - drag)\n";
-	p += "CORRECT (frame-rate independent):  velocity *= exp(-drag_rate * delta)\n\n";
-
-	p += "### BoxShape3D snags on trimesh surfaces (use CapsuleShape3D instead)\n";
-	p += "BoxShape3D catches on internal collision edges of trimesh surfaces (Godot/Jolt limitation). For objects that slide across trimesh (vehicles, rolling objects, players on terrain), use CapsuleShape3D or SphereShape3D instead.\n\n";
-
-	p += "### Smooth yaw rotation — avoid 360-degree spin-around\n";
-	p += "`lerp()` on raw angles causes objects to spin 360 degrees when crossing the 0/2PI boundary. Always wrap the angle difference to `[-PI, PI]` first:\n";
-	p += "WRONG:  rotation.y = lerp(rotation.y, target_yaw, t)\n";
-	p += "CORRECT:\n";
-	p += "```gdscript\n";
-	p += "var diff: float = fmod(target_yaw - rotation.y + 3.0 * PI, TAU) - PI\n";
-	p += "rotation.y += diff * turn_speed * delta\n";
-	p += "```\n\n";
-
-	p += "### 2D collision shape slightly smaller than tile for smooth movement\n";
-	p += "For grid-based 2D games, make the collision shape slightly smaller than the tile (e.g., 48px CollisionShape in a 64px grid). Without this, characters snag on corridor entrances and can't pass through 1-tile-wide corridors.\n\n";
-
-	p += "### ProceduralSkyMaterial — avoid multiple sun discs\n";
-	p += "If you add multiple DirectionalLight3D nodes and WorldEnvironment uses ProceduralSkyMaterial, multiple sun discs appear. Fix:\n";
-	p += "- Primary sun light:  `light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_AND_SKY`\n";
-	p += "- Fill/secondary lights:  `light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY`\n\n";
-
-	p += "### Sibling signal timing in _ready()\n";
-	p += "`_ready()` fires on children in scene order. If sibling A emits a signal in its `_ready()` and sibling B hasn't connected yet, B misses the signal. Fix: after connecting in B's `_ready()`, check if A already has data and call the handler manually:\n";
-	p += "```gdscript\n";
-	p += "func _ready() -> void:\n";
-	p += "    %SiblingA.data_changed.connect(_on_data_changed)\n";
-	p += "    if %SiblingA.has_data():  # check if already populated\n";
-	p += "        _on_data_changed(%SiblingA.get_data())\n";
-	p += "```\n\n";
-
 	p += "### Pass-by-value types cannot be used as out-parameters\n";
 	p += "`bool`, `int`, `float`, `Vector2`, `Vector3`, `AABB`, `Transform3D` are VALUE types. Assigning to a function parameter does NOT update the caller's variable. Use Array or Dictionary as an accumulator when you need out-parameters:\n";
 	p += "```gdscript\n";
@@ -972,36 +906,6 @@ String AISystemPrompt::get_base_prompt() {
 	p += "Groups set via `node.add_to_group()` during EditorScript execution are saved into the `.tscn` file. This is usually desired, but be aware that groups set this way persist between editor sessions.\n\n";
 
 	// --- 4.5 / 4.6 API changes ---
-	p += "### Label.autowrap was replaced by autowrap_mode (Godot 4.x)\n";
-	p += "The old boolean `Label.autowrap` no longer exists. Use `Label.autowrap_mode` with the `TextServer.AutowrapMode` enum:\n";
-	p += "  WRONG:  label.autowrap = true\n";
-	p += "  CORRECT: label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART  # wraps at word boundaries\n";
-	p += "Other values: AUTOWRAP_ARBITRARY (any character), AUTOWRAP_WORD (word only), AUTOWRAP_OFF (no wrap).\n\n";
-
-	p += "### TileMapLayer (Godot 4.3+) — physics quadrant chunking changes get_coords_for_body_rid()\n";
-	p += "In Godot 4.5+, `TileMapLayer` enables physics quadrant chunking by default (`physics_quadrant_size` is non-zero). This means `get_coords_for_body_rid(rid)` may return wrong tile coordinates if the body spans a quadrant boundary or if quadrant size is large. To get reliable per-tile coords from a physics body RID, either:\n";
-	p += "- Call `get_coords_for_body_rid()` as usual but verify with `get_cell_source_id(coords) != -1`\n";
-	p += "- Or set `physics_quadrant_size = 0` to disable chunking if precision is critical.\n\n";
-
-	p += "### TileMap is deprecated — use TileMapLayer (Godot 4.3+)\n";
-	p += "The old `TileMap` node still exists for compatibility but is deprecated. All new projects should use one or more `TileMapLayer` nodes directly as children of the scene root or a Node2D. Each `TileMapLayer` represents one layer (previously `TileMap` had multiple layers).\n";
-	p += "WRONG:  var tm = TileMap.new()  # deprecated\n";
-	p += "CORRECT: var layer = TileMapLayer.new()  # one node per layer\n\n";
-
-	p += "### Node.get_rpc_config() renamed to get_node_rpc_config() (Godot 4.5)\n";
-	p += "For multiplayer RPC setup, the method was renamed:\n";
-	p += "  WRONG:  node.get_rpc_config()\n";
-	p += "  CORRECT: node.get_node_rpc_config()\n\n";
-
-	p += "### RenderingServer physics interpolation methods removed (Godot 4.5)\n";
-	p += "`RenderingServer.instance_reset_physics_interpolation()` and `RenderingServer.instance_set_interpolated()` were removed. Use node-level interpolation instead: enable `Node3D.physics_interpolation_mode` and call `Node3D.reset_physics_interpolation()` on the node directly.\n\n";
-
-	p += "### AnimationPlayer string properties are StringName in 4.6+ (GDScript auto-converts)\n";
-	p += "`AnimationPlayer.current_animation`, `assigned_animation`, and `autoplay` changed from String to StringName in Godot 4.6. GDScript auto-converts, so existing code still works. However in C# you must update types explicitly. The `current_animation_changed` signal parameter is also now StringName.\n\n";
-
-	p += "### StandardMaterial3D: no_depth_test + TRANSPARENCY_ALPHA = invisible\n";
-	p += "In `forward_plus` rendering mode, a `StandardMaterial3D` with BOTH `no_depth_test = true` AND transparency mode `TRANSPARENCY_ALPHA` set will be completely invisible. For UI overlays and billboards, use `transparency = TRANSPARENCY_DISABLED` + `shading_mode = SHADING_MODE_UNSHADED` instead.\n";
-	p += "For surfaces layered on terrain (roads on ground), offset vertically by 0.1–0.3m and set `render_priority = 1` to avoid Z-fighting.\n\n";
 
 	// --- GDScript 4.7 quirks from official docs ---
 	p += "### get_editor_interface() does NOT exist in Godot 4.7 — use EditorInterface directly\n";
@@ -1021,154 +925,15 @@ String AISystemPrompt::get_base_prompt() {
 	p += "  WRONG: EditorInterface.add_root_node(root); camera.make_current()  # camera not in tree yet!\n";
 	p += "  CORRECT: EditorInterface.add_root_node(root)  # Camera2D auto-becomes current when scene opens\n\n";
 
-	p += "### @onready + @export on the same variable — @onready silently overwrites the exported value\n";
-	p += "Using both `@onready` and `@export` on the same variable is treated as an **error** (ONREADY_WITH_EXPORT). The `@export` value set in the inspector is discarded when `_ready()` fires because `@onready` runs then and overwrites it. NEVER combine them:\n";
-	p += "  WRONG:  @export @onready var label: Label = $Label  # export value ignored!\n";
-	p += "  CORRECT: @export var label_path: NodePath; @onready var label: Label = get_node(label_path)\n";
-	p += "  OR:      @onready var label: Label = $Label  # without @export\n\n";
-
-	p += "### @static_unload does not currently work — scripts are never freed\n";
-	p += "The `@static_unload` annotation is supposed to allow a script's static data to be freed when no instances exist. Due to a current bug, scripts are NEVER freed even with this annotation. Do not rely on `@static_unload` for memory management. Place `@static_unload` at the very top of the script (before `class_name` and `extends`) if used, as it applies to the entire script including inner classes.\n\n";
-
-	p += "### Static variables cannot use @export or @onready\n";
-	p += "Static class variables (`static var`) cannot be decorated with `@export` or `@onready`. They belong to the class, not to instances. Local variables also cannot be declared static. Static variables share their value across ALL instances.\n";
-	p += "  WRONG:  @export static var count: int = 0\n";
-	p += "  WRONG:  @onready static var singleton_ref = Engine.get_singleton(\"MySingleton\")\n";
-	p += "  CORRECT: static var count: int = 0  # class-level, no annotation\n\n";
-
-	p += "### @export_storage — persist non-exported properties in scene files\n";
-	p += "`@export_storage` saves a property in `.tscn`/`.tres` files without showing it in the inspector. Useful for runtime state that should be saved with the scene but not edited directly. Different from `@export` (which shows in the inspector) and plain `var` (not saved).\n";
-	p += "  @export_storage var cached_data: Dictionary = {}\n\n";
-
-	p += "### @export_tool_button — adds a clickable button in the Inspector (Godot 4.3+)\n";
-	p += "`@export_tool_button(\"Label\", \"IconName\")` creates a button in the Inspector that calls a Callable when clicked. Only works in `@tool` scripts. The second argument is optional (icon name from the editor theme):\n";
-	p += "  @tool\n";
-	p += "  @export_tool_button(\"Bake\", \"Bake\") var _bake_button = bake\n";
-	p += "  func bake() -> void: pass\n\n";
-
-	p += "### @export_custom — override display in Inspector without changing the type\n";
-	p += "`@export_custom(hint, hint_string)` allows a custom inspector hint for a property that cannot be achieved with standard @export annotations. The property type is unchanged.\n\n";
-
-	p += "### Typed arrays in @export: use Array[Type] directly\n";
-	p += "Exported typed arrays use bracket syntax. `Array[PackedScene]`, `Array[int]`, `Array[String]` all work. Inner classes can also be array element types:\n";
-	p += "  @export var scenes: Array[PackedScene] = []\n";
-	p += "  @export var scores: Array[int] = []\n";
-	p += "NOTE: Nested typed arrays like `Array[Array[int]]` are NOT supported — use `Array[Array]` for 2D arrays.\n\n";
-
-	p += "### @export_range suffix — annotate unit directly on the slider\n";
-	p += "`@export_range(min, max, step, \"suffix:UNIT\")` shows a unit label on the slider in the Inspector:\n";
-	p += "  @export_range(0, 100, 1, \"suffix:kg\") var weight: float = 0.0\n";
-	p += "  @export_range(0, 360, 0.1, \"radians_as_degrees\") var angle: float = 0.0\n";
-	p += "The `\"radians_as_degrees\"` flag stores radians internally but displays and edits degrees in the Inspector.\n\n";
-
-	p += "### for-loop typed variable — type inference works in for loops (Godot 4.2+)\n";
-	p += "Loop variables can have explicit type annotations even when iterating an untyped array:\n";
-	p += "  for name: String in name_list:  # name is typed String\n";
-	p += "This avoids INFERRED_FULL_TYPED warnings when the array is untyped.\n\n";
-
-	p += "### Custom iterators — implement _iter_init, _iter_next, _iter_get\n";
-	p += "Objects can be iterable in `for` loops by implementing three methods:\n";
-	p += "  func _iter_init(arg) -> bool: ...  # returns false if empty\n";
-	p += "  func _iter_next(arg) -> bool: ...  # advances, returns false at end\n";
-	p += "  func _iter_get(arg) -> Variant: ... # returns current element\n";
-	p += "The `arg` parameter is passed from the `for` loop (e.g., `for x in my_obj.range(5):`).\n\n";
-
 	// --- 4.5→4.7 API changes from class reference docs ---
-	p += "### Node.NOTIFICATION_MOVED_IN_PARENT deprecated — use NOTIFICATION_CHILD_ORDER_CHANGED\n";
-	p += "The constant `Node.NOTIFICATION_MOVED_IN_PARENT` is deprecated. The engine no longer sends it. Use `Node.NOTIFICATION_CHILD_ORDER_CHANGED` instead to detect reordering of children.\n\n";
-
-	p += "### Control.auto_translate deprecated — use Node.auto_translate_mode\n";
-	p += "The `auto_translate` property on Control is deprecated. Use `Node.auto_translate_mode` (inherited by all nodes) and `Node.can_auto_translate()` instead.\n";
-	p += "  WRONG:  control.auto_translate = false\n";
-	p += "  CORRECT: control.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED\n\n";
-
-	p += "### Control.LAYOUT_DIRECTION_LOCALE deprecated — use LAYOUT_DIRECTION_APPLICATION_LOCALE\n";
-	p += "  WRONG:  control.layout_direction = Control.LAYOUT_DIRECTION_LOCALE\n";
-	p += "  CORRECT: control.layout_direction = Control.LAYOUT_DIRECTION_APPLICATION_LOCALE\n\n";
-
-	p += "### Control theme items are NOT Object properties — use get_theme_*/add_theme_*_override\n";
-	p += "Theme items (colors, fonts, constants, icons, styles) on Control nodes are NOT exposed as Object properties. You CANNOT use `control.get(\"theme_override_colors/font_color\")` or `control.set(...)`. You MUST use the dedicated theme API:\n";
-	p += "  WRONG:  label.set(\"theme_override_colors/font_color\", Color.RED)\n";
-	p += "  CORRECT: label.add_theme_color_override(\"font_color\", Color.RED)\n";
-	p += "  CORRECT: label.get_theme_color(\"font_color\")  # read\n";
-	p += "Theme override methods: `add_theme_color_override`, `add_theme_font_override`, `add_theme_font_size_override`, `add_theme_constant_override`, `add_theme_icon_override`, `add_theme_stylebox_override`. Remove with `remove_theme_*_override`.\n\n";
-
-	p += "### Viewport.push_unhandled_input() deprecated — use push_input()\n";
-	p += "`Viewport.push_unhandled_input(event)` is deprecated. Use `Viewport.push_input(event, in_local_coords)` instead. The deprecated version also does NOT propagate to embedded Window or SubViewport nodes.\n\n";
-
-	p += "### AnimationPlayer: old ANIMATION_PROCESS_* constants deprecated (use AnimationMixer)\n";
-	p += "The following AnimationPlayer constants and methods are deprecated in favour of AnimationMixer equivalents:\n";
-	p += "  DEPRECATED → CORRECT:\n";
-	p += "  AnimationPlayer.ANIMATION_PROCESS_PHYSICS → AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_PHYSICS\n";
-	p += "  AnimationPlayer.ANIMATION_PROCESS_IDLE    → AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_IDLE\n";
-	p += "  AnimationPlayer.ANIMATION_PROCESS_MANUAL  → AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL\n";
-	p += "  AnimationPlayer.ANIMATION_METHOD_CALL_DEFERRED  → AnimationMixer.ANIMATION_CALLBACK_MODE_METHOD_DEFERRED\n";
-	p += "  AnimationPlayer.ANIMATION_METHOD_CALL_IMMEDIATE → AnimationMixer.ANIMATION_CALLBACK_MODE_METHOD_IMMEDIATE\n";
-	p += "Properties `callback_mode_method`, `callback_mode_process`, `root_node` moved to AnimationMixer base class.\n\n";
-
-	p += "### AnimationPlayer: new section-based playback (Godot 4.7)\n";
-	p += "AnimationPlayer gained section-based playback in 4.7. You can play a sub-range of an animation:\n";
-	p += "  player.play_section(\"Run\", 0.2, 0.8)  # play only 0.2s→0.8s of Run\n";
-	p += "  player.set_section_with_markers(\"start_marker\", \"end_marker\")\n";
-	p += "  player.play_section_with_markers(\"Run\", \"loop_start\", \"loop_end\")\n";
-	p += "New property `playback_auto_capture` (default: true) — automatically captures current pose before blending to a new animation. Set `playback_auto_capture_duration` to control blend time.\n\n";
-
-	p += "### MeshInstance3D.skeleton default changed in Godot 4.6 — may break rigged meshes\n";
-	p += "The default lookup behavior of `MeshInstance3D.skeleton` (NodePath) changed in 4.6. Old code that relied on auto-detection of a parent Skeleton3D will fail. Fix:\n";
-	p += "  Option 1: Enable ProjectSettings → animation/compatibility/default_parent_skeleton_in_mesh_instance_3d\n";
-	p += "  Option 2: Explicitly set skeleton path in code or Inspector\n\n";
-
-	p += "### RigidBody2D: contact monitoring requires both flags set\n";
-	p += "To receive `body_entered`/`body_exited` signals and use `get_colliding_bodies()`, you MUST set BOTH:\n";
-	p += "  body.contact_monitor = true\n";
-	p += "  body.max_contacts_reported = 4  # or however many contacts you need\n";
-	p += "Setting only one has no effect. Collision results are one physics frame delayed.\n\n";
-
-	p += "### Viewport input propagation order (4.7)\n";
-	p += "Input events are dispatched in this order: `_shortcut_input()` → `_unhandled_key_input()` → `_unhandled_input()` → `Control._gui_input()`. Call `set_input_as_handled()` at any stage to stop propagation. Use `_input()` to intercept ALL events before this chain.\n\n";
-
-	p += "### SceneTree.change_scene_to_file() replaces change_scene()\n";
-	p += "The old `SceneTree.change_scene(path)` method is gone. Use:\n";
-	p += "  get_tree().change_scene_to_file(\"res://my_scene.tscn\")  # from path string\n";
-	p += "  get_tree().change_scene_to_packed(packed_scene)           # from PackedScene\n";
-	p += "  get_tree().change_scene_to_node(scene_node)               # from instantiated node\n\n";
 
 	// --- Engine internals knowledge from official engine_details docs ---
-	p += "### Variant types (except Nil and Object) are NEVER null\n";
-	p += "In GDScript, `int`, `float`, `bool`, `Vector2`, `Vector3`, `Color`, `String`, `Array`, `Dictionary`, `Rect2`, `Transform2D`, `Transform3D`, `Basis`, `Quaternion`, `AABB`, `Plane`, and other built-in Variant types CANNOT be null. They always have a default zero-initialised value. Only variables of type `Object` (or an Object subclass) can be null. Do NOT check `if my_vector == null` or `if my_string == null` — it is always false. Check `Object`-typed variables for null before calling methods on them.\n";
-	p += "  WRONG:  if my_vec3 == null: return   # Vector3 is never null\n";
-	p += "  WRONG:  if my_dict == null: return   # Dictionary is never null\n";
-	p += "  CORRECT: if my_node == null: return  # Object/Node can be null\n\n";
-
-	p += "### HashMap does NOT preserve insertion order — use Array or Dictionary\n";
-	p += "The internal C++ `HashMap` (and `HashSet`) do NOT guarantee insertion order — iteration order is effectively random. The GDScript `Dictionary`, however, DOES preserve insertion order (it is an ordered map). When writing GDScript, use `Dictionary` when order matters. When iterating a `Dictionary`, keys are yielded in insertion order. `Array` always maintains insertion order.\n\n";
-
-	p += "### Godot containers are NOT thread-safe — use Mutex for cross-thread access\n";
-	p += "`Array`, `Dictionary`, `String`, `PackedByteArray`, and all other Godot containers are NOT thread-safe. Reading or writing from multiple threads simultaneously without a `Mutex` causes crashes or undefined behavior. Use `Mutex.lock()`/`unlock()` or the `with Mutex` pattern when sharing data across threads.\n";
-	p += "  var _mutex := Mutex.new()\n";
-	p += "  func _thread_func() -> void:\n";
-	p += "      _mutex.lock()\n";
-	p += "      _shared_array.append(1)\n";
-	p += "      _mutex.unlock()\n\n";
-
-	p += "### ERR_FAIL_COND / ERR_FAIL_COND_V fire when condition is TRUE (inverted vs assert)\n";
-	p += "C++ engine macros `ERR_FAIL_COND(cond)` and `ERR_FAIL_COND_V(cond, return_value)` trigger (print error and return early) when `cond` is **true** — the OPPOSITE of a C-style assert. This is a common source of confusion when reading engine source:\n";
-	p += "  ERR_FAIL_COND(p_index < 0);     // fires (returns) if p_index IS negative\n";
-	p += "  ERR_FAIL_COND(!is_valid());      // fires if is_valid() returns FALSE\n";
-	p += "  ERR_FAIL_NULL(p_ptr);            // fires if p_ptr IS null\n\n";
-
-	p += "### TSCN format: load_steps deprecated, uid:// paths mandatory in 4.6+\n";
-	p += "In `.tscn` and `.tres` files: the `load_steps` header field is deprecated in Godot 4.6 (it still parses but is no longer generated). The `uid://` scheme is the canonical resource reference format — every resource saved in 4.6+ gets a stable UID embedded in its file, and TSCN files prefer `uid://xxxxx \"res://path\"` references so the scene stays valid even if you rename the file. Do NOT hardcode bare `res://` paths in handwritten TSCN if you expect the file to be renamed. The `format=3` header field identifies Godot 4.x TSCN.\n\n";
-
-	p += "### AnimationPlayer optimized 3D tracks — no per-keyframe easing or blending\n";
-	p += "When `AnimationMixer.deterministic = false` and the animation targets 3D nodes via optimized tracks (Position3D, Rotation3D, Scale3D), per-keyframe easing curves and transition types are IGNORED. The track uses simple linear interpolation. To use custom easing, switch to generic `value` tracks or set `deterministic = true`. This is a deliberate performance trade-off for 3D skeletal animation.\n\n";
 
 	p += "### TTR()/RTR() and vformat() ordering — vformat OUTSIDE TTR\n";
 	p += "When building translatable strings with substitution parameters in C++ engine code:\n";
 	p += "  WRONG:  TTR(vformat(\"Error at line %d\", line))   // vformat inside TTR — wrong!\n";
 	p += "  CORRECT: vformat(TTR(\"Error at line %d\"), line)  // TTR wraps the template, vformat substitutes\n";
 	p += "`TTR(s)` returns the translated template string; `vformat(translated, args...)` then substitutes values. Nesting them the other way translates the already-substituted string, which will never match a translation entry.\n\n";
-
 
 	// providers that support prompt caching (Anthropic cache_control prefix,
 	// OpenAI prefix caching). Everything that follows is dynamic/session-specific.

@@ -21,10 +21,22 @@ void AIContextCollector::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("build_context_prompt"), &AIContextCollector::build_context_prompt);
 }
 
+// Both trees are attached to every request, outside the cached prefix, so their
+// size is bounded by entry count as well as depth: a scene with thousands of
+// instances or a project with an asset pack would otherwise add hundreds of KB.
+static const int MAX_CONTEXT_NODES = 300;
+static const int MAX_CONTEXT_FILES = 400;
+static int _context_nodes_left = 0;
+static int _context_files_left = 0;
+
 String AIContextCollector::_describe_node_recursive(Node *p_node, int p_depth, int p_max_depth) const {
 	if (!p_node || p_depth > p_max_depth) {
 		return "";
 	}
+	if (_context_nodes_left <= 0) {
+		return "";
+	}
+	_context_nodes_left--;
 
 	String indent;
 	for (int i = 0; i < p_depth; i++) {
@@ -70,7 +82,11 @@ String AIContextCollector::get_scene_tree_description() const {
 	}
 
 	String result = "Current scene tree:\n";
+	_context_nodes_left = MAX_CONTEXT_NODES;
 	result += _describe_node_recursive(root, 0, 10);
+	if (_context_nodes_left <= 0) {
+		result += "  ... (scene tree truncated at " + itos(MAX_CONTEXT_NODES) + " nodes)\n";
+	}
 	return result;
 #else
 	return "Scene tree info not available outside editor.";
@@ -134,16 +150,24 @@ static void _collect_dir_recursive(EditorFileSystemDirectory *p_dir, const Strin
 		return;
 	}
 
-	// Subdirectories first.
+	// This directory's own files first, so the top levels of the project are
+	// always listed before the budget is spent deep inside one subfolder.
+	const int file_count = p_dir->get_file_count();
+	for (int i = 0; i < file_count; i++) {
+		if (_context_files_left <= 0) {
+			r_result += p_indent + "... (" + itos(file_count - i) + " more files)\n";
+			break;
+		}
+		_context_files_left--;
+		r_result += p_indent + p_dir->get_file(i) + "\n";
+	}
+
 	for (int i = 0; i < p_dir->get_subdir_count(); i++) {
 		EditorFileSystemDirectory *sub = p_dir->get_subdir(i);
 		r_result += p_indent + "[" + sub->get_name() + "/]\n";
-		_collect_dir_recursive(sub, p_indent + "  ", r_result, p_depth + 1);
-	}
-
-	// Then files.
-	for (int i = 0; i < p_dir->get_file_count(); i++) {
-		r_result += p_indent + p_dir->get_file(i) + "\n";
+		if (_context_files_left > 0) {
+			_collect_dir_recursive(sub, p_indent + "  ", r_result, p_depth + 1);
+		}
 	}
 }
 
@@ -161,7 +185,11 @@ String AIContextCollector::get_project_structure() const {
 		return result + "  (empty)\n";
 	}
 
+	_context_files_left = MAX_CONTEXT_FILES;
 	_collect_dir_recursive(root, "  ", result, 0);
+	if (_context_files_left <= 0) {
+		result += "  (listing truncated at " + itos(MAX_CONTEXT_FILES) + " files; folders without contents were not expanded)\n";
+	}
 
 	return result;
 #else

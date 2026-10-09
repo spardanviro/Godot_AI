@@ -7,9 +7,9 @@
 bool AIAPIDocLoader::_word_in_string(const String &p_haystack, const String &p_word) {
 	int pos = p_haystack.find(p_word);
 	while (pos >= 0) {
-		bool left_ok  = (pos == 0) || !is_unicode_identifier_continue(p_haystack[pos - 1]);
+		bool left_ok  = (pos == 0) || !is_ascii_identifier_char(p_haystack[pos - 1]);
 		bool right_ok = (pos + p_word.length() >= (int)p_haystack.length()) ||
-		                !is_unicode_identifier_continue(p_haystack[pos + p_word.length()]);
+		                !is_ascii_identifier_char(p_haystack[pos + p_word.length()]);
 		if (left_ok && right_ok) {
 			return true;
 		}

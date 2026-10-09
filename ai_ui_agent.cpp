@@ -31,9 +31,22 @@ bool AIUIAgent::is_ui_request(const String &p_message) {
 		nullptr
 	};
 
+	// Whole words only (a trailing plural "s" is allowed): a bare substring
+	// test fires on "build", "guide", "quit", "table", "controller", ...
 	for (int i = 0; ui_keywords[i]; i++) {
-		if (lower.find(ui_keywords[i]) != -1) {
-			return true;
+		const String kw = ui_keywords[i];
+		int pos = lower.find(kw);
+		while (pos != -1) {
+			int end = pos + kw.length();
+			if (end < lower.length() && lower[end] == 's') {
+				end++;
+			}
+			const bool left_ok = pos == 0 || !is_ascii_identifier_char(lower[pos - 1]);
+			const bool right_ok = end >= lower.length() || !is_ascii_identifier_char(lower[end]);
+			if (left_ok && right_ok) {
+				return true;
+			}
+			pos = lower.find(kw, pos + 1);
 		}
 	}
 

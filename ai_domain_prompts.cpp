@@ -144,8 +144,17 @@ static const char *kw_complex_project[] = {
 
 bool AIDomainPrompts::_matches_keywords(const String &p_lower, const char *const *p_keywords) {
 	for (int i = 0; p_keywords[i]; i++) {
-		if (p_lower.find(String::utf8(p_keywords[i])) != -1) {
-			return true;
+		const String kw = String::utf8(p_keywords[i]);
+		// Keywords are stems ("tile" for tilemap/tiles), so only the left edge is
+		// anchored: "tile" must not match inside "versatile", nor "joint" inside
+		// "disjoint". CJK keywords have no word boundaries and stay substrings.
+		const bool anchor = !kw.is_empty() && is_ascii_identifier_char(kw[0]);
+		int pos = p_lower.find(kw);
+		while (pos != -1) {
+			if (!anchor || pos == 0 || !is_ascii_identifier_char(p_lower[pos - 1])) {
+				return true;
+			}
+			pos = p_lower.find(kw, pos + 1);
 		}
 	}
 	return false;
