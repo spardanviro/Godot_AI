@@ -95,7 +95,7 @@ AIPermissionManager::RiskTier AIPermissionManager::classify_risk(const String &p
 
 	// ── Tier 2: DESTRUCTIVE — changes that can't be easily undone ────────────
 	static const char *destructive_patterns[] = {
-		"DirAccess.remove", "remove_absolute", "OS.move_to_trash",
+		"DirAccess.remove", "remove_absolute", ".remove(", "OS.move_to_trash", "move_to_trash",
 		"queue_free()", ".free()",
 		"remove_child(",
 		"ProjectSettings.set_setting", "ProjectSettings.save",
@@ -166,15 +166,18 @@ Vector<AIPermissionManager::Category> AIPermissionManager::categorize_code(const
 		result.push_back(PERM_CHANGE_PROJECT_SETTINGS);
 	}
 
-	// Detect file writes.
-	if (p_code.find("ResourceSaver") != -1 || p_code.find("FileAccess.open") != -1 ||
-			p_code.find("store_string") != -1) {
+	// Detect file writes. Matched on method names as well as class names so an
+	// aliased class (var fa = FileAccess) is still caught.
+	if (p_code.find("ResourceSaver") != -1 || p_code.find("FileAccess") != -1 ||
+			p_code.find("store_") != -1 || p_code.find("save_scene") != -1 ||
+			p_code.find("make_dir") != -1 || p_code.find("rename") != -1 ||
+			p_code.find(".copy(") != -1 || p_code.find("copy_absolute") != -1) {
 		result.push_back(PERM_FILE_WRITE);
 	}
 
 	// Detect file deletion.
 	if (p_code.find("DirAccess.remove") != -1 || p_code.find("remove_absolute") != -1 ||
-			p_code.find(".remove(") != -1 || p_code.find("OS.move_to_trash") != -1) {
+			p_code.find(".remove(") != -1 || p_code.find("move_to_trash") != -1) {
 		result.push_back(PERM_FILE_DELETE);
 	}
 
