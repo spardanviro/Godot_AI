@@ -2,6 +2,7 @@
 
 #ifdef TOOLS_ENABLED
 
+#include "ai_markdown.h"
 #include "ai_response_parser.h"
 
 #include "scene/gui/margin_container.h"
@@ -9,9 +10,10 @@
 class RichTextLabel;
 
 // The chat transcript: messages, the reply as it streams in, one-line
-// execution summaries and the clickable links attached to them. It only
-// renders what it is told; a click on a link is reported through the
-// link_clicked(kind, id) signal.
+// execution summaries and the clickable links attached to them. What the
+// model writes is rendered as Markdown. It only renders what it is told; a
+// click on a link is reported through the link_clicked(kind, id) signal, and
+// a web link in a reply opens in the browser.
 class AIChatView : public MarginContainer {
 	GDCLASS(AIChatView, MarginContainer);
 
@@ -67,6 +69,7 @@ public:
 
 protected:
 	static void _bind_methods();
+	void _notification(int p_what);
 
 private:
 	RichTextLabel *text = nullptr; // RichTextLabel cannot be subclassed, so it is wrapped.
@@ -81,15 +84,20 @@ private:
 		bool placeholder_shown = false; // Generic "Thinking..." line is up.
 		bool thinking_shown = false; // Reasoning tokens are being written.
 		bool thinking_collapsed = false; // Reasoning was folded into a link.
-		bool prefix_shown = false; // "AI: " has been written.
+		bool prefix_shown = false; // The answer has started.
+		bool prefix_written = false; // "AI: " is in the transcript for good.
 		int paragraph_start = 0; // First paragraph of the placeholder / reasoning.
+		// First paragraph of the part of the answer that is rewritten as it
+		// grows (see AIMarkdownStream); -1 when none is up.
+		int tail_start = -1;
 		String thinking_text;
+		AIMarkdownStream markdown;
 	};
 	StreamDisplay stream_display;
 
 	// While a reply streams in, the end of the transcript belongs to it:
 	// the placeholder and the reasoning are removed again, and the answer
-	// is one growing paragraph. A message that arrives meanwhile (an asset
+	// keeps rewriting its last block. A message that arrives meanwhile (an asset
 	// finished generating, the game reported an error) is held back and
 	// written once the reply is complete.
 	struct DeferredMessage {
@@ -101,9 +109,15 @@ private:
 	Vector<DeferredMessage> deferred_messages;
 
 	void _append_ai_prefix();
+	AIMarkdownStyle _markdown_style() const;
+	// "AI: " followed by p_markdown, rendered.
+	void _append_ai_markdown(const String &p_markdown);
+	void _write_stream_answer(const String &p_bbcode);
+	void _remove_stream_tail();
 	void _append_link(LinkKind p_kind, int p_id, const String &p_text, const Color &p_color);
 	void _append_thinking_link(const String &p_thinking);
 	int _current_paragraph() const;
+	void _remove_paragraphs_from(int p_paragraph);
 	void _remove_stream_paragraphs();
 	void _collapse_thinking();
 	void _on_meta_clicked(const Variant &p_meta);

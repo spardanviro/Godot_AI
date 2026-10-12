@@ -347,11 +347,12 @@ void AIAssistantPanel::_show_details(const String &p_response) {
 	code_blocks = AIResponseAnalysis::dedupe_consecutive(code_blocks);
 
 	details_text->clear();
+	ai_use_code_font(details_text);
+	const AIMarkdownStyle markdown_style = ai_markdown_style(details_text->get_theme_font_size(SNAME("normal_font_size")));
 	for (int i = 0; i < text_segments.size(); i++) {
 		details_text->push_color(ai_themed(COLOR_DETAILS_TEXT));
-		details_text->add_text(text_segments[i]);
+		details_text->append_text(AIMarkdown::to_bbcode(text_segments[i], markdown_style));
 		details_text->pop();
-		details_text->add_newline();
 		details_text->add_newline();
 	}
 	for (int i = 0; i < code_blocks.size(); i++) {

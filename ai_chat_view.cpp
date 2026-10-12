@@ -10,6 +10,7 @@
 
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 #include "scene/gui/rich_text_label.h"
 
 static const Color COLOR_USER(0.9, 0.9, 0.9);
@@ -63,7 +64,20 @@ void AIChatView::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("link_clicked", PropertyInfo(Variant::INT, "kind"), PropertyInfo(Variant::INT, "id")));
 }
 
+void AIChatView::_notification(int p_what) {
+	if (p_what == NOTIFICATION_THEME_CHANGED) {
+		ai_use_code_font(text);
+	}
+}
+
 void AIChatView::_on_meta_clicked(const Variant &p_meta) {
+	// A link the model wrote. The renderer only makes web addresses clickable;
+	// checked again here, since this hands the address to the system.
+	const String target = p_meta;
+	if (target.begins_with("https://") || target.begins_with("http://")) {
+		OS::get_singleton()->shell_open(target);
+		return;
+	}
 	const Link link = parse_link(p_meta);
 	if (link.kind != LINK_NONE) {
 		emit_signal(SNAME("link_clicked"), (int)link.kind, link.id);
@@ -174,6 +188,17 @@ void AIChatView::_append_ai_prefix() {
 	text->pop();
 }
 
+AIMarkdownStyle AIChatView::_markdown_style() const {
+	return ai_markdown_style(text->get_theme_font_size(SNAME("normal_font_size")));
+}
+
+void AIChatView::_append_ai_markdown(const String &p_markdown) {
+	_append_ai_prefix();
+	// Every block ends its own line.
+	text->append_text(AIMarkdown::to_bbcode(p_markdown, _markdown_style()));
+	text->add_newline();
+}
+
 void AIChatView::_append_link(LinkKind p_kind, int p_id, const String &p_text, const Color &p_color) {
 	text->push_color(ai_themed(p_color));
 	text->push_meta(_link_meta(p_kind, p_id));
@@ -203,6 +228,7 @@ void AIChatView::begin_stream(bool p_show_content) {
 	stream_display = StreamDisplay();
 	stream_display.active = true;
 	stream_display.show_content = p_show_content;
+	stream_display.markdown.reset(_markdown_style());
 
 	// A placeholder until the first token arrives; reasoning tokens replace it
 	// and the first answer token removes it.
@@ -222,14 +248,39 @@ int AIChatView::_current_paragraph() const {
 	return text->get_paragraph_count() - 1;
 }
 
-// Removes everything from paragraph_start up to, but not including, the open
+// Removes everything from p_paragraph up to, but not including, the open
 // paragraph at the end. Callers end what they wrote with a newline first, so
 // the open paragraph is always an empty one that is safe to keep writing into.
-void AIChatView::_remove_stream_paragraphs() {
-	const int count = _current_paragraph() - stream_display.paragraph_start;
+void AIChatView::_remove_paragraphs_from(int p_paragraph) {
+	const int count = _current_paragraph() - p_paragraph;
 	for (int i = 0; i < count; i++) {
-		text->remove_paragraph(stream_display.paragraph_start);
+		text->remove_paragraph(p_paragraph);
 	}
+}
+
+void AIChatView::_remove_stream_paragraphs() {
+	_remove_paragraphs_from(stream_display.paragraph_start);
+}
+
+// Takes down the provisional end of the answer, to write it again with the
+// text that has arrived since.
+void AIChatView::_remove_stream_tail() {
+	if (stream_display.tail_start >= 0) {
+		_remove_paragraphs_from(stream_display.tail_start);
+		stream_display.tail_start = -1;
+	}
+}
+
+// p_bbcode comes from the Markdown stream: whole blocks, each ending its line.
+void AIChatView::_write_stream_answer(const String &p_bbcode) {
+	if (p_bbcode.is_empty()) {
+		return;
+	}
+	// Until a block is final the prefix is part of the tail and goes down with it.
+	if (!stream_display.prefix_written) {
+		_append_ai_prefix();
+	}
+	text->append_text(p_bbcode);
 }
 
 void AIChatView::_collapse_thinking() {
@@ -275,11 +326,21 @@ void AIChatView::add_stream_delta(const String &p_text, bool p_is_thinking) {
 	if (!stream_display.show_content) {
 		return;
 	}
-	if (!stream_display.prefix_shown) {
-		stream_display.prefix_shown = true;
-		_append_ai_prefix();
+	stream_display.prefix_shown = true;
+
+	// Blocks the new text completed are written for good; the block still
+	// open is written provisionally and replaced on the next delta.
+	_remove_stream_tail();
+	const String completed = stream_display.markdown.push(p_text);
+	if (!completed.is_empty()) {
+		_write_stream_answer(completed);
+		stream_display.prefix_written = true;
 	}
-	text->add_text(p_text);
+	const String pending = stream_display.markdown.get_pending();
+	if (!pending.is_empty()) {
+		stream_display.tail_start = _current_paragraph();
+		_write_stream_answer(pending);
+	}
 }
 
 void AIChatView::end_stream(int p_outcome) {
@@ -295,16 +356,25 @@ void AIChatView::end_stream(int p_outcome) {
 		thinking_texts.write[thinking_texts.size() - 1] = stream_display.thinking_text;
 	}
 
+	bool answer_written = stream_display.prefix_written;
+	if (stream_display.prefix_shown) {
+		_remove_stream_tail();
+		const String rest = stream_display.markdown.finish();
+		_write_stream_answer(rest);
+		answer_written = answer_written || !rest.is_empty();
+	}
+
 	const bool stopped = p_outcome == AIStreamClient::OUTCOME_STOPPED;
 	if (stopped) {
 		text->push_color(ai_themed(COLOR_STOPPED));
 		text->push_italics();
-		text->add_text(AI_L(" [stopped]", " [已停止]"));
+		text->add_text(AI_L("[stopped]", "[已停止]"));
 		text->pop();
 		text->pop();
-	}
-	if (stream_display.prefix_shown || stopped) {
 		text->add_newline();
+	}
+	// The answer's blocks and the marker each ended their own line.
+	if (answer_written || stopped) {
 		text->add_newline();
 	}
 
@@ -328,12 +398,7 @@ void AIChatView::show_response(const Dictionary &p_response) {
 
 	// Text that was not shown while streaming is shown now.
 	if (show_text && !streamed && !text_segments.is_empty()) {
-		_append_ai_prefix();
-		for (int i = 0; i < text_segments.size(); i++) {
-			text->add_text(text_segments[i]);
-		}
-		text->add_newline();
-		text->add_newline();
+		_append_ai_markdown(String("\n\n").join(text_segments));
 	}
 
 	for (int i = 0; i < blocks.size(); i++) {
@@ -406,12 +471,9 @@ void AIChatView::show_plan(const Dictionary &p_plan) {
 	text->push_bold();
 	text->add_text(String(U"📋 ") + AI_L("Plan:", "计划："));
 	text->pop();
-	text->add_newline();
-	for (int i = 0; i < text_segments.size(); i++) {
-		text->add_text(text_segments[i]);
-	}
 	text->pop();
 	text->add_newline();
+	text->append_text(AIMarkdown::to_bbcode(String("\n\n").join(text_segments), _markdown_style()));
 
 	if (!file.is_empty()) {
 		text->add_newline();
@@ -493,10 +555,10 @@ void AIChatView::show_history(const Array &p_history, const Ref<AIResponseParser
 		}
 		blocks = AIResponseAnalysis::dedupe_consecutive(blocks);
 
-		for (int j = 0; j < text_segments.size(); j++) {
-			if (!text_segments[j].strip_edges().is_empty()) {
-				append_message("AI", text_segments[j], COLOR_AI);
-			}
+		// One message, however many code blocks cut its text into segments.
+		const String reply_text = String("\n\n").join(text_segments).strip_edges();
+		if (!reply_text.is_empty()) {
+			_append_ai_markdown(reply_text);
 		}
 		if (blocks.is_empty()) {
 			continue;
@@ -507,7 +569,11 @@ void AIChatView::show_history(const Array &p_history, const Ref<AIResponseParser
 
 		_append_ai_prefix();
 		text->push_color(ai_themed(COLOR_SUCCESS));
-		text->add_text(AIResponseAnalysis::summarize_code(blocks[blocks.size() - 1]));
+		// The history does not say whether the code ran (in ASK mode it does
+		// not), so the fallback summary, which says it did, is not used here.
+		const String summary = AIResponseAnalysis::summarize_code(blocks[blocks.size() - 1]);
+		const bool says_nothing = summary == AIResponseAnalysis::summarize_code(String());
+		text->add_text(says_nothing ? AI_L("Code", "代码") + " (" + itos(blocks.size()) + ")" : summary);
 		text->pop();
 		text->add_text("  ");
 		_append_link(LINK_DETAILS, detail_responses.size() - 1, String(U"[▶ Details]"), COLOR_LINK_DETAILS);
