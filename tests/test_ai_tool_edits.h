@@ -11,6 +11,7 @@
 #include "scene/2d/node_2d.h"
 #include "scene/2d/physics/collision_shape_2d.h"
 #include "scene/gui/button.h"
+#include "scene/gui/label.h"
 #include "scene/resources/2d/rectangle_shape_2d.h"
 #include "tests/test_macros.h"
 
@@ -225,16 +226,32 @@ TEST_CASE("[AIAssistant][SceneTree][ToolEdits] rename, delete and connect check 
 	CHECK_FALSE(scene.root->has_node(NodePath("Enemy")));
 }
 
+TEST_CASE("[AIAssistant][SceneTree][ToolEdits] an anchor preset on a Control takes effect, as it does in the Inspector") {
+	Scene scene;
+	bool ok = false;
+
+	scene.run("create_node", "{\"class\": \"Label\", \"name\": \"Title\", \"parent\": \"Start\", \"properties\": {\"text\": \"Hi\", \"anchors_preset\": 8}}", &ok);
+	const Control *title = Object::cast_to<Control>(scene.root->get_node_or_null(NodePath("Start/Title")));
+	scene.run("set_node_properties", "{\"path\": \"Start/Title\", \"properties\": {\"anchors_preset\": 5}}");
+
+	CHECK(ok);
+	REQUIRE(title);
+	// Preset 5 is "centre top": anchored to the middle horizontally, the top vertically.
+	CHECK(title->get_anchor(SIDE_LEFT) == doctest::Approx(0.5));
+	CHECK(title->get_anchor(SIDE_RIGHT) == doctest::Approx(0.5));
+	CHECK(title->get_anchor(SIDE_TOP) == doctest::Approx(0.0));
+}
+
 // --- Files and permissions ---
 
-TEST_CASE("[AIAssistant][ToolEdits] files the editor owns, secret stores and the project root are not written") {
+TEST_CASE("[AIAssistant][ToolEdits] files the editor owns and secret stores are not written; the user's path is") {
 	String reason;
 
 	CHECK(AIToolbox::is_writable_project_file("res://scripts/player.gd", reason));
 	CHECK(AIToolbox::is_writable_project_file("res://data/levels.json", reason));
 
-	CHECK_FALSE(AIToolbox::is_writable_project_file("res://player.gd", reason));
-	CHECK(reason.contains("folder"));
+	// Where files belong is advice to the model, not a rule against the user's own path.
+	CHECK(AIToolbox::is_writable_project_file("res://player.gd", reason));
 	CHECK_FALSE(AIToolbox::is_writable_project_file("res://project.godot", reason));
 	CHECK_FALSE(AIToolbox::is_writable_project_file("res://scenes/main.tscn", reason));
 	CHECK_FALSE(AIToolbox::is_writable_project_file("res://android/export_presets.cfg", reason));

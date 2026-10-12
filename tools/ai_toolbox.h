@@ -44,7 +44,7 @@ public:
 	// project that is not one of the places secrets are kept. r_reason says
 	// why not.
 	static bool is_readable_project_file(const String &p_path, String &r_reason);
-	// Narrower: also not a file the editor owns, and not in res:// itself.
+	// Narrower: also not a file the editor owns.
 	static bool is_writable_project_file(const String &p_path, String &r_reason);
 	static bool parse_arguments(const String &p_arguments, Dictionary &r_arguments);
 

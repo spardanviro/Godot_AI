@@ -7,6 +7,7 @@
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
+#include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_parser.h"
 #include "scene/main/node.h"
 #include "scene/resources/packed_scene.h"
@@ -78,13 +79,18 @@ void set_properties(Object *p_object, const Dictionary &p_values, const String &
 	}
 }
 
-// Adds a node that is not in the tree yet, owned by the scene root.
-void add_node(Node *p_parent, Node *p_node, Node *p_root, const String &p_action, bool p_use_editor) {
+// Adds a node that is not in the tree yet, owned by the scene root, and then
+// sets its properties — in that order, and in the order given: a Control's
+// anchors and layout are worked out against its parent.
+void add_node(Node *p_parent, Node *p_node, Node *p_root, const Dictionary &p_values, const String &p_action, bool p_use_editor) {
 #ifdef TOOLS_ENABLED
 	if (EditorUndoRedoManager *undo = undo_manager(p_use_editor)) {
 		undo->create_action(p_action);
 		undo->add_do_method(p_parent, "add_child", p_node, true);
 		undo->add_do_method(p_node, "set_owner", p_root);
+		for (const Variant *key = p_values.next(nullptr); key; key = p_values.next(key)) {
+			undo->add_do_property(p_node, *key, p_values[*key]);
+		}
 		undo->add_do_reference(p_node);
 		undo->add_undo_method(p_parent, "remove_child", p_node);
 		undo->commit_action();
@@ -93,6 +99,26 @@ void add_node(Node *p_parent, Node *p_node, Node *p_root, const String &p_action
 #endif
 	p_parent->add_child(p_node, true);
 	p_node->set_owner(p_root);
+	for (const Variant *key = p_values.next(nullptr); key; key = p_values.next(key)) {
+		p_node->set(*key, p_values[*key]);
+	}
+}
+
+// A Control ignores "anchors_preset" unless its layout mode is "Anchors",
+// which the Inspector switches to by itself when a preset is picked. So does
+// this: the mode goes first, then the preset, then the rest as given.
+Dictionary with_layout_mode(const Object *p_object, const Dictionary &p_values) {
+	static const int LAYOUT_MODE_ANCHORS = 1;
+	if (!p_values.has("anchors_preset") || p_values.has("layout_mode") || !ClassDB::is_parent_class(p_object->get_class_name(), "Control")) {
+		return p_values;
+	}
+	Dictionary ordered;
+	ordered["layout_mode"] = LAYOUT_MODE_ANCHORS;
+	ordered["anchors_preset"] = p_values["anchors_preset"];
+	for (const Variant *key = p_values.next(nullptr); key; key = p_values.next(key)) {
+		ordered[*key] = p_values[*key];
+	}
+	return ordered;
 }
 
 void collect_owned(Node *p_node, const Node *p_owner, Vector<Node *> &r_owned) {
@@ -146,16 +172,14 @@ Node *AIToolbox::_find_node(const String &p_path, String &r_error) const {
 // Nodes
 // =============================================================================
 
-// Finishes a node that is about to be added: properties, script, groups.
+// Finishes a node that is about to be added: script and groups, and the
+// values its properties are to get (r_values; set once it is in the tree).
 // On false nothing was added and the caller frees the node.
-static bool prepare_node(Node *p_node, const Dictionary &p_arguments, String &r_error) {
-	Dictionary values;
-	if (!AIToolValues::convert_properties(p_node, dictionary_argument(p_arguments, "properties"), values, r_error)) {
+static bool prepare_node(Node *p_node, const Dictionary &p_arguments, Dictionary &r_values, String &r_error) {
+	if (!AIToolValues::convert_properties(p_node, dictionary_argument(p_arguments, "properties"), r_values, r_error)) {
 		return false;
 	}
-	for (const Variant *key = values.next(nullptr); key; key = values.next(key)) {
-		p_node->set(*key, values[*key]);
-	}
+	r_values = with_layout_mode(p_node, r_values);
 	const String script_path = String(p_arguments.get("script", "")).strip_edges();
 	if (!script_path.is_empty()) {
 		const Ref<Script> script = ResourceLoader::exists(script_path) ? ResourceLoader::load(script_path, "Script") : Ref<Resource>();
@@ -174,7 +198,8 @@ static bool prepare_node(Node *p_node, const Dictionary &p_arguments, String &r_
 String AIToolbox::_add_prepared_node(Node *p_node, const Dictionary &p_arguments, bool &r_ok) const {
 	String error;
 	Node *root = _get_scene_root();
-	if (!prepare_node(p_node, p_arguments, error)) {
+	Dictionary values;
+	if (!prepare_node(p_node, p_arguments, values, error)) {
 		memdelete(p_node);
 		return fail(r_ok, error);
 	}
@@ -188,6 +213,9 @@ String AIToolbox::_add_prepared_node(Node *p_node, const Dictionary &p_arguments
 		// An empty scene: the node becomes its root.
 		if (_uses_editor() && String(p_arguments.get("parent", ".")).strip_edges().trim_suffix(".").is_empty()) {
 			EditorInterface::get_singleton()->add_root_node(p_node);
+			for (const Variant *key = values.next(nullptr); key; key = values.next(key)) {
+				p_node->set(*key, values[*key]);
+			}
 			return "Created the scene root " + String(p_node->get_name()) + " (" + p_node->get_class() + "). The scene has no file yet: save_scene with a path.";
 		}
 #endif
@@ -199,7 +227,7 @@ String AIToolbox::_add_prepared_node(Node *p_node, const Dictionary &p_arguments
 		memdelete(p_node);
 		return fail(r_ok, error);
 	}
-	add_node(parent, p_node, root, "AI: Add " + String(p_node->get_name()), _uses_editor());
+	add_node(parent, p_node, root, values, "AI: Add " + String(p_node->get_name()), _uses_editor());
 	String out = "Created " + path_of(root, p_node) + " (" + p_node->get_class() + ").";
 	if (!wanted_name.is_empty() && String(p_node->get_name()) != wanted_name) {
 		out += " The name '" + wanted_name + "' was taken, so it is called '" + String(p_node->get_name()) + "'.";
@@ -256,6 +284,7 @@ String AIToolbox::_set_node_properties(const Dictionary &p_arguments, bool &r_ok
 	if (!AIToolValues::convert_properties(node, dictionary_argument(p_arguments, "properties"), values, error)) {
 		return fail(r_ok, error);
 	}
+	values = with_layout_mode(node, values);
 	const PackedStringArray add_groups = strings_argument(p_arguments, "add_groups");
 	const PackedStringArray remove_groups = strings_argument(p_arguments, "remove_groups");
 	if (values.is_empty() && add_groups.is_empty() && remove_groups.is_empty()) {
@@ -449,10 +478,6 @@ bool AIToolbox::is_writable_project_file(const String &p_path, String &r_reason)
 		r_reason = "'." + extension + "' files are written by the editor. Change a scene with the node tools and save_scene.";
 		return false;
 	}
-	if (p_path.get_base_dir() == "res://") {
-		r_reason = "files are not placed directly in res://; put it in a folder such as res://scripts/.";
-		return false;
-	}
 	return true;
 }
 
@@ -466,6 +491,7 @@ String AIToolbox::_write_file(const Dictionary &p_arguments, bool &r_ok) const {
 		return fail(r_ok, "'content' is required: the whole text of the file.");
 	}
 	const String content = String(p_arguments["content"]).replace("\r\n", "\n");
+	String compile_errors;
 
 	// A script that does not parse would break whatever it is attached to.
 	if (path.get_extension().to_lower() == "gd") {
@@ -477,6 +503,15 @@ String AIToolbox::_write_file(const Dictionary &p_arguments, bool &r_ok) const {
 		}
 		if (!errors.is_empty()) {
 			return fail(r_ok, "the script was not written because it does not parse:\n" + errors);
+		}
+		// It parses; whether it compiles (types, names) is the analyzer's
+		// word. Such a script is still written — what it lacks may be a file
+		// that comes next — but the model is told.
+		GDScriptAnalyzer analyzer(&parser);
+		if (analyzer.analyze() != OK) {
+			for (const GDScriptParser::ParserError &error : parser.get_errors()) {
+				compile_errors += "  line " + itos(error.start_line) + ": " + error.message + "\n";
+			}
 		}
 	}
 
@@ -504,7 +539,11 @@ String AIToolbox::_write_file(const Dictionary &p_arguments, bool &r_ok) const {
 		}
 	}
 #endif
-	return String(existed ? "Replaced " : "Created ") + path + " (" + itos(content.split("\n").size()) + " lines).";
+	String out = String(existed ? "Replaced " : "Created ") + path + " (" + itos(content.split("\n").size()) + " lines).";
+	if (!compile_errors.is_empty()) {
+		out += "\nIt was written, but it does not compile yet:\n" + compile_errors + "Fix these and write the file again, unless they are about a file you are about to create.";
+	}
+	return out;
 }
 
 String AIToolbox::_save_scene(const Dictionary &p_arguments, bool &r_ok) const {
@@ -524,8 +563,11 @@ String AIToolbox::_save_scene(const Dictionary &p_arguments, bool &r_ok) const {
 		const Error error = EditorInterface::get_singleton()->save_scene();
 		return error == OK ? "Saved " + root->get_scene_file_path() + "." : fail(r_ok, "the scene could not be saved (error " + itos(error) + ").");
 	}
-	if (!path.begins_with("res://") || path.contains("..") || path.get_extension().to_lower() != "tscn" || path.get_base_dir() == "res://") {
-		return fail(r_ok, "'path' has to be a .tscn inside a folder of the project, e.g. res://scenes/main.tscn.");
+	if (!root->get_scene_file_path().is_empty() && root->get_scene_file_path() != path) {
+		return fail(r_ok, "the scene already has a file, " + root->get_scene_file_path() + ". Call save_scene without 'path' to save it there.");
+	}
+	if (!path.begins_with("res://") || path.contains("..") || path.get_extension().to_lower() != "tscn") {
+		return fail(r_ok, "'path' has to be a .tscn of the project, e.g. res://scenes/main.tscn.");
 	}
 	DirAccess::make_dir_recursive_absolute(path.get_base_dir());
 	EditorInterface::get_singleton()->save_scene_as(path, false);

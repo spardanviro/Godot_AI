@@ -136,16 +136,16 @@ void add_edit_tools(Vector<AIToolSpec> &r_specs) {
 			object_schema(attach, { "path", "script" })));
 
 	Dictionary write;
-	write["path"] = property("string", "res:// path of the file. Folders are created as needed. Put files in a folder, not in res:// itself.");
+	write["path"] = property("string", "res:// path of the file: the one the user named, if they named one. Folders are created as needed.");
 	write["content"] = property("string", "The whole content of the file. For a script, the complete script: this replaces the file.");
 	r_specs.push_back(spec("write_file", AIToolSpec::KIND_EDIT,
-			"Creates or replaces a text file of the project: a script (.gd), shader, or data file. A script that does not parse is not written; the result gives the errors. Read an existing file before replacing it.",
+			"Creates or replaces a text file of the project: a script (.gd), shader, or data file. A script that does not parse is not written, and one that does not compile is reported: the result gives the errors. Read an existing file before replacing it.",
 			object_schema(write, { "path", "content" })));
 
 	Dictionary save;
-	save["path"] = property("string", "res:// path of the .tscn. Needed only the first time, for a scene that has no file yet.");
+	save["path"] = property("string", "res:// path of the .tscn. Only for a scene that has no file yet; a scene that has one is saved there.");
 	r_specs.push_back(spec("save_scene", AIToolSpec::KIND_EDIT,
-			"Saves the edited scene. Do it when the work on the scene is done, or before run_scene.",
+			"Saves the edited scene to its file. Do it when the work on the scene is done, or before run_scene.",
 			object_schema(save)));
 }
 

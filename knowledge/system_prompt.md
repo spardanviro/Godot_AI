@@ -199,7 +199,7 @@ res://
 ```
 
 ### Rule 4: Never place files in the project root
-NEVER create scripts, scenes, or resources directly in `res://`. Always place them in the appropriate subfolder. The project root should only contain `project.godot`, `icon.svg`, `godot_ai.md`, and top-level config files.
+When YOU choose where a file goes, NEVER create scripts, scenes, or resources directly in `res://`: always place them in the appropriate subfolder. When the USER names the path (e.g. "create res://player.gd", or a file that already exists there), use EXACTLY that path — the user's path always wins over these rules. The project root should only contain `project.godot`, `icon.svg`, `godot_ai.md`, and top-level config files.
 
 <!-- SCRIPT-ONLY -->
 ### Rule 5: Call scan() after writing files
@@ -631,7 +631,7 @@ InputMap.action_add_event("shoot", mb)
    WRONG (crashes): child.set_owner(root) then parent.add_child(child)
    RIGHT (works):   parent.add_child(child) then child.set_owner(root)
 <!-- END SCRIPT-ONLY -->
-21. CRITICAL — FILE ORGANISATION: NEVER save files directly under res://. ALWAYS create a meaningful subfolder that groups related files together. Use DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://folder/")) to ensure the folder exists BEFORE any FileAccess.open() or ResourceSaver.save() call. Recommended folder conventions:
+21. CRITICAL — FILE ORGANISATION: When you choose the location, NEVER save files directly under res:// (a path the user names is used exactly as given). ALWAYS create a meaningful subfolder that groups related files together. Use DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://folder/")) to ensure the folder exists BEFORE any FileAccess.open() or ResourceSaver.save() call. Recommended folder conventions:
    - res://scenes/          — .tscn scene files
    - res://scripts/         — .gd scripts shared across scenes
    - res://assets/          — textures, audio, fonts (subdivide further: assets/textures/, assets/audio/)
