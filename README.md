@@ -231,39 +231,39 @@ Whether a request may start, whether code may run and what Stop means all follow
 
 | File | Role |
 |------|------|
-| `ai_assistant_plugin.*` | Editor plugin entry point |
-| `ai_assistant_panel.*` | The dock: layout, user actions, dialogs |
-| `ai_chat_view.*` | Chat transcript, streaming display, clickable links |
-| `ai_markdown.*` | Markdown to RichTextLabel BBCode, whole or as a stream; escapes everything the model wrote |
-| `ai_mention_autocomplete.*` | `@` completion popup for scene nodes and project files |
-| `ai_mention_text_edit.*`, `ai_mention_highlighter.*` | Mention-capable input field with inline chips |
-| `ai_settings_dialog.*`, `ai_settings_dialog_model.cpp`, `ai_settings_dialog_layout.cpp` | Settings window (tabs: model, general, permissions, advanced): reading and writing the `ai_assistant/*` settings; provider, key and model handling; widgets and captions |
-| `ai_model_selector.*`, `ai_model_list_fetcher.*` | Model name field with a pick list; live model list from the provider's API |
-| `ai_provider_catalog.h`, `providers/ai_provider_catalog.cpp` | Display names and known models per provider |
-| `ai_agent_controller.*`, `ai_agent_controller_replies.cpp` | Agent loop as an explicit state machine; signals instead of UI calls |
-| `ai_session.*` | Conversation history, context compression, overflow recovery, attachment de-duplication |
-| `ai_chat_store.*` | Saved chats (`user://ai_assistant_chats`) |
-| `ai_stream_client.*`, `ai_stream_protocol.*` | Streaming HTTP client; SSE decoding, UTF-8 boundaries, `<think>` tag splitting |
-| `ai_code_runner.*` | Review gate and execution with checkpoints and error monitoring |
-| `ai_script_executor.*` | Wraps, checks and runs generated GDScript as an `EditorScript` |
-| `ai_permission_manager.*` | Rule-based execution gating |
-| `ai_checkpoint_manager.*` | Checkpoint and restore support |
-| `ai_error_monitor.*` | Tracks editor/runtime errors around AI execution |
-| `ai_runtime_watch.*` | Detects runtime errors of the running game and requests fixes |
-| `ai_response_parser.*`, `ai_response_analysis.*` | Code blocks, side-effect markers, plan steps, URL and path policy |
-| `ai_plan.*` | PLAN-mode steps and their Markdown checklist |
-| `ai_web_requester.*`, `ai_web_fetch.*`, `ai_web_search.*` | Web search and page fetch; the fetch runs on a worker thread and connects only to addresses it has checked |
-| `ai_asset_service.*`, `ai_image_generator.*`, `ai_audio_generator.*` | Image and speech generation |
-| `ai_proxy.*`, `ai_proxy_os.cpp` | Which HTTP proxy the assistant's requests use (system, none, custom) |
-| `ai_network_thread.h` | Marks the network worker threads, so their engine errors are not taken for project errors |
-| `ai_history_summarizer.*` | Optional model-written summary of compressed history |
-| `ai_project_memory.*` | Notes the model asks to remember in `res://godot_ai.md` |
-| `ai_prompt_builder.*`, `ai_context_collector.*`, `ai_profiler_collector.*` | System prompt assembly and editor context |
-| `ai_knowledge.*` | Loads the knowledge files (built-in defaults + override directory) |
-| `ai_system_prompt.*`, `ai_gotchas_index.*`, `ai_domain_prompts.*`, `ai_api_doc_loader.*` | Select from the knowledge base what a message needs |
-| `ai_provider.*`, `ai_provider_setup.*`, `providers/` | Provider interface, configuration, implementations |
-| `ai_credential_store.*` | API key storage outside the settings file |
-| `ai_localization.h` | UI string localization table |
+| `ui/ai_assistant_plugin.*` | Editor plugin entry point |
+| `ui/ai_assistant_panel.*` | The dock: layout, user actions, dialogs |
+| `ui/ai_chat_view.*` | Chat transcript, streaming display, clickable links |
+| `ui/ai_markdown.*` | Markdown to RichTextLabel BBCode, whole or as a stream; escapes everything the model wrote |
+| `ui/ai_mention_autocomplete.*` | `@` completion popup for scene nodes and project files |
+| `ui/ai_mention_text_edit.*`, `ui/ai_mention_highlighter.*` | Mention-capable input field with inline chips |
+| `ui/ai_settings_dialog.*`, `ui/ai_settings_dialog_model.cpp`, `ui/ai_settings_dialog_layout.cpp` | Settings window (tabs: model, general, permissions, advanced): reading and writing the `ai_assistant/*` settings; provider, key and model handling; widgets and captions |
+| `ui/ai_model_selector.*`, `network/ai_model_list_fetcher.*` | Model name field with a pick list; live model list from the provider's API |
+| `providers/ai_provider_catalog.h`, `providers/ai_provider_catalog.cpp` | Display names and known models per provider |
+| `agent/ai_agent_controller.*`, `agent/ai_agent_controller_replies.cpp` | Agent loop as an explicit state machine; signals instead of UI calls |
+| `agent/ai_session.*` | Conversation history, context compression, overflow recovery, attachment de-duplication |
+| `agent/ai_chat_store.*` | Saved chats (`user://ai_assistant_chats`) |
+| `network/ai_stream_client.*`, `network/ai_stream_protocol.*` | Streaming HTTP client; SSE decoding, UTF-8 boundaries, `<think>` tag splitting |
+| `execution/ai_code_runner.*` | Review gate and execution with checkpoints and error monitoring |
+| `execution/ai_script_executor.*` | Wraps, checks and runs generated GDScript as an `EditorScript` |
+| `execution/ai_permission_manager.*` | Rule-based execution gating |
+| `execution/ai_checkpoint_manager.*` | Checkpoint and restore support |
+| `execution/ai_error_monitor.*` | Tracks editor/runtime errors around AI execution |
+| `agent/ai_runtime_watch.*` | Detects runtime errors of the running game and requests fixes |
+| `agent/ai_response_parser.*`, `agent/ai_response_analysis.*` | Code blocks, side-effect markers, plan steps, URL and path policy |
+| `agent/ai_plan.*` | PLAN-mode steps and their Markdown checklist |
+| `network/ai_web_requester.*`, `network/ai_web_fetch.*`, `network/ai_web_search.*` | Web search and page fetch; the fetch runs on a worker thread and connects only to addresses it has checked |
+| `assets/ai_asset_service.*`, `assets/ai_image_generator.*`, `assets/ai_audio_generator.*` | Image and speech generation |
+| `network/ai_proxy.*`, `network/ai_proxy_os.cpp` | Which HTTP proxy the assistant's requests use (system, none, custom) |
+| `network/ai_network_thread.h` | Marks the network worker threads, so their engine errors are not taken for project errors |
+| `agent/ai_history_summarizer.*` | Optional model-written summary of compressed history |
+| `agent/ai_project_memory.*` | Notes the model asks to remember in `res://godot_ai.md` |
+| `prompt/ai_prompt_builder.*`, `prompt/ai_context_collector.*`, `prompt/ai_profiler_collector.*` | System prompt assembly and editor context |
+| `prompt/ai_knowledge.*` | Loads the knowledge files (built-in defaults + override directory) |
+| `prompt/ai_system_prompt.*`, `prompt/ai_gotchas_index.*`, `prompt/ai_domain_prompts.*`, `prompt/ai_api_doc_loader.*` | Select from the knowledge base what a message needs |
+| `providers/ai_provider.*`, `providers/ai_provider_setup.*`, `providers/` | Provider interface, configuration, implementations |
+| `providers/ai_credential_store.*` | API key storage outside the settings file |
+| `common/ai_localization.h` | UI string localization table |
 | `knowledge/` | Prompts, gotchas, API notes and domain guidance as Markdown |
 | `tests/` | Unit tests |
 | `evals/` | Task set and headless runner for scoring prompt and agent changes |
@@ -419,11 +419,17 @@ Create `res://godot_ai.md` in your project to define project-specific instructio
 
 ```text
 ai_assistant/
-|- providers/     provider implementations
+|- ui/            dock, chat view, Markdown rendering, mentions, settings dialog
+|- agent/         agent loop, session, saved chats, plan, reply parsing and analysis
+|- execution/     code review and execution, safety policy, permissions, checkpoints, error monitoring
+|- prompt/        system prompt assembly, editor context, knowledge loading and selection
+|- network/       streaming client, web search and fetch, proxy, model list
+|- providers/     provider interface, implementations, catalog, API key storage
+|- assets/        image and speech generation
+|- common/        logging, localization, text matching
 |- knowledge/     prompts, gotchas, API notes, domain guidance (Markdown)
 |- tests/         unit tests (doctest)
 |- evals/         eval tasks, headless runner, driver script
-|- ai_*.h / ai_*.cpp   see the table under Architecture
 |- ai_knowledge_builders.py   embeds knowledge/ into the build
 |- register_types.*
 |- SCsub
