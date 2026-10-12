@@ -5,6 +5,8 @@
 // machine itself (runs, requests, stopping) is in ai_agent_controller.cpp.
 
 #include "ai_agent_controller.h"
+#include "../common/ai_settings.h"
+#include "../common/ai_code_text.h"
 
 #include "../assets/ai_asset_service.h"
 #include "../prompt/ai_knowledge.h"
@@ -41,7 +43,7 @@ Vector<String> AIAgentController::_parse_reply(const String &p_response, PackedS
 	for (int i = 0; i < raw_blocks.size(); i++) {
 		code_blocks.push_back(raw_blocks[i]);
 	}
-	return AIResponseAnalysis::dedupe_consecutive(code_blocks);
+	return AICodeText::dedupe_consecutive(code_blocks);
 }
 
 void AIAgentController::_emit_response(const PackedStringArray &p_text_segments, const Vector<String> &p_code_blocks, bool p_show_text, bool p_stopped) {
@@ -166,7 +168,7 @@ void AIAgentController::_handle_code(const String &p_code) {
 	// "Ask" permissions always ask. With auto-execute off everything asks,
 	// a runtime fix included: what it reacts to is text printed by the
 	// running project, which is not the user speaking.
-	const bool autorun = AIProviderSetup::get_editor_setting("ai_assistant/autorun", true);
+	const bool autorun = AISettings::get("autorun", true);
 	const AICodeRunner::Review review = code_runner.review(p_code, !autorun);
 
 	switch (review.action) {
@@ -358,7 +360,7 @@ bool AIAgentController::_start_web_request() {
 	const uint64_t serial = run_serial;
 	run.web_requests++;
 	_set_state(STATE_WEB_REQUEST);
-	if (!web_requester->start(markers)) {
+	if (!web_requester->start(markers.web_search_query, markers.fetch_url)) {
 		return serial != run_serial; // Not started; "handled" only if the run is gone.
 	}
 	if (serial != run_serial) {
@@ -377,7 +379,14 @@ void AIAgentController::_on_web_request_finished(const String &p_content) {
 		return;
 	}
 	post_notice(NOTICE_INFO, AI_L("✅ Web results received. Analyzing...", "✅ 已收到网页结果，分析中..."));
-	_send_request(web_requester->build_follow_up(p_content));
+	// The message that hands the fetched content back to the model.
+	const bool was_fetch = web_requester->was_fetch();
+	Dictionary values;
+	values["action"] = was_fetch ? "FETCH" : "SEARCH";
+	values["subject_label"] = was_fetch ? "URL" : "Query";
+	values["subject"] = web_requester->get_subject();
+	values["content"] = p_content;
+	_send_request(AIKnowledge::get_singleton()->format_prompt("web_results", values));
 }
 
 #endif // TOOLS_ENABLED

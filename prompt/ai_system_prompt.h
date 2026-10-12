@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../providers/ai_provider.h"
+
 #include "core/string/ustring.h"
 
 // The static part of the system prompt. Its text lives in
@@ -15,7 +17,7 @@ public:
 	static String build(const String &p_template, const String &p_project_instructions);
 
 	// Marks where the cacheable static content ends.
-	static constexpr const char *CACHE_BOUNDARY = "<!-- GODOTAI_CACHE_BOUNDARY -->";
+	static constexpr const char *CACHE_BOUNDARY = AIProvider::CACHE_BOUNDARY;
 	// Where the project's godot_ai.md goes in the template.
 	static constexpr const char *PROJECT_INSTRUCTIONS_PLACEHOLDER = "{{project_instructions}}";
 	static constexpr const char *PROJECT_INSTRUCTIONS_FILE = "res://godot_ai.md";

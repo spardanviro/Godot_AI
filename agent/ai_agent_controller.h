@@ -2,6 +2,7 @@
 
 #ifdef TOOLS_ENABLED
 
+#include "../common/ai_notice.h"
 #include "../execution/ai_code_runner.h"
 #include "ai_plan.h"
 #include "../prompt/ai_prompt_builder.h"
@@ -67,11 +68,12 @@ public:
 		OUTCOME_FAILED, // API error, blocked code, or retries exhausted.
 	};
 
+	// The parts below the controller report with AINoticeLevel directly.
 	enum NoticeLevel {
-		NOTICE_INFO,
-		NOTICE_SUCCESS,
-		NOTICE_WARNING,
-		NOTICE_ERROR,
+		NOTICE_INFO = AI_NOTICE_INFO,
+		NOTICE_SUCCESS = AI_NOTICE_SUCCESS,
+		NOTICE_WARNING = AI_NOTICE_WARNING,
+		NOTICE_ERROR = AI_NOTICE_ERROR,
 	};
 
 	static const int MAX_AUTO_RETRIES = 3;

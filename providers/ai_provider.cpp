@@ -1,6 +1,5 @@
 #include "ai_provider.h"
 #include "core/object/class_db.h"
-#include "../prompt/ai_system_prompt.h"
 
 void AIProvider::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_api_key", "key"), &AIProvider::set_api_key);
@@ -110,7 +109,7 @@ String AIProvider::get_stream_url() const {
 }
 
 String AIProvider::strip_cache_boundary(const String &p_prompt) {
-	String boundary = AISystemPrompt::CACHE_BOUNDARY;
+	String boundary = CACHE_BOUNDARY;
 	int idx = p_prompt.find(boundary);
 	if (idx == -1) {
 		return p_prompt;

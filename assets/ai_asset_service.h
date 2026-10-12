@@ -2,7 +2,7 @@
 
 #ifdef TOOLS_ENABLED
 
-#include "../agent/ai_response_analysis.h"
+#include "ai_asset_request.h"
 
 #include "scene/main/node.h"
 
@@ -15,9 +15,9 @@ class AIAssetService : public Node {
 	GDCLASS(AIAssetService, Node);
 
 	HTTPRequest *http_request = nullptr;
-	Vector<AIResponseAnalysis::AssetRequest> queue;
+	Vector<AIAssetRequest> queue;
 	bool request_active = false;
-	AIResponseAnalysis::AssetRequest current;
+	AIAssetRequest current;
 
 	void _start_next();
 	void _on_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
@@ -27,7 +27,7 @@ protected:
 	static void _bind_methods();
 
 public:
-	void enqueue(const AIResponseAnalysis::AssetRequest &p_request);
+	void enqueue(const AIAssetRequest &p_request);
 
 	AIAssetService();
 };

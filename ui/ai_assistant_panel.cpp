@@ -1,9 +1,13 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_assistant_panel.h"
+#include "../common/ai_settings.h"
+#include "../common/ai_code_text.h"
 
 #include "../agent/ai_chat_store.h"
 #include "ai_chat_view.h"
+#include "ai_details_dialog.h"
+#include "ai_history_list.h"
 #include "../providers/ai_credential_store.h"
 #include "../prompt/ai_knowledge.h"
 #include "../common/ai_log.h"
@@ -37,18 +41,9 @@ static const int INPUT_MIN_HEIGHT = 60;
 static const int INPUT_MAX_HEIGHT = 200;
 static const int INPUT_FALLBACK_MARGIN = 8;
 static const int ATTACHMENT_MAX_CHARS = 50000;
-static const int CODE_FONT_SIZE = 13;
-static const Size2 DETAILS_DIALOG_SIZE(700, 500);
-static const Size2 DETAILS_TEXT_MIN_SIZE(650, 400);
 static const float FILE_DIALOG_RATIO = 0.6f;
-static const int DELETE_BUTTON_WIDTH = 28;
 static const char *SCREENSHOT_DIR = "user://ai_screenshots";
 
-static const Color COLOR_DETAILS_TEXT(0.85, 0.85, 0.9);
-static const Color COLOR_DETAILS_MUTED(0.5, 0.5, 0.6);
-static const Color COLOR_DETAILS_THINKING(0.55, 0.55, 0.65);
-static const Color COLOR_CODE(0.9, 0.85, 0.7);
-static const Color COLOR_CODE_BACKGROUND(0.12, 0.12, 0.16, 0.9);
 
 // The preset buttons; their prompts are knowledge files, so they can be edited.
 static const struct {
@@ -79,8 +74,7 @@ void AIAssistantPanel::_notification(int p_what) {
 				AIAgentController::NOTICE_WARNING);
 	}
 
-	EditorSettings *es = EditorSettings::get_singleton();
-	const bool restore = !es || !es->has_setting("ai_assistant/restore_last_chat") || bool(es->get_setting("ai_assistant/restore_last_chat"));
+	const bool restore = AISettings::get("restore_last_chat", true);
 	if (restore) {
 		// Deferred so the chat view finishes its first layout pass.
 		callable_mp(this, &AIAssistantPanel::_restore_last_chat).call_deferred();
@@ -92,8 +86,7 @@ void AIAssistantPanel::_system_message(const String &p_text, AIAgentController::
 }
 
 bool AIAssistantPanel::_get_send_on_enter() const {
-	EditorSettings *es = EditorSettings::get_singleton();
-	return !es || !es->has_setting("ai_assistant/send_on_enter") || bool(es->get_setting("ai_assistant/send_on_enter"));
+	return AISettings::get("send_on_enter", true);
 }
 
 void AIAssistantPanel::_refresh_ui_texts() {
@@ -267,10 +260,10 @@ void AIAssistantPanel::_on_link_clicked(int p_kind, int p_id) {
 			_save_code_block(p_id);
 			break;
 		case AIChatView::LINK_DETAILS:
-			_show_details(chat_view->get_detail_response(p_id));
+			details_dialog->show_response(chat_view->get_detail_response(p_id), controller->get_response_parser());
 			break;
 		case AIChatView::LINK_THINKING:
-			_show_thinking(chat_view->get_thinking_text(p_id));
+			details_dialog->show_thinking(chat_view->get_thinking_text(p_id));
 			break;
 		case AIChatView::LINK_REVERT:
 			_ask_to_confirm(AI_L("Restore this checkpoint?\n\nThe scene and the project's text files go back to how they were before that step. Changes made since then — yours included — are lost.",
@@ -295,7 +288,7 @@ void AIAssistantPanel::_save_code_block(int p_index) {
 		return;
 	}
 	String file_name;
-	const String script = AIResponseAnalysis::build_saved_script(code, p_index, file_name);
+	const String script = AICodeText::build_saved_script(code, p_index, file_name);
 	const String save_path = "res://" + file_name;
 
 	Ref<FileAccess> file = FileAccess::open(save_path, FileAccess::WRITE);
@@ -331,62 +324,6 @@ void AIAssistantPanel::_revert_checkpoint(int p_checkpoint_id) {
 		detail += AI_L(" Note: large or binary files are not covered by checkpoints.", " 注意：大文件和二进制文件不在检查点范围内。");
 	}
 	_system_message(AI_L("Checkpoint restored: ", "已恢复检查点：") + description + detail, AIAgentController::NOTICE_SUCCESS);
-}
-
-void AIAssistantPanel::_show_details(const String &p_response) {
-	if (p_response.is_empty()) {
-		return;
-	}
-	const Dictionary parsed = controller->get_response_parser()->parse(p_response);
-	const PackedStringArray text_segments = PackedStringArray(parsed["text_segments"]);
-	Vector<String> code_blocks;
-	const Array raw_blocks = parsed["code_blocks"];
-	for (int i = 0; i < raw_blocks.size(); i++) {
-		code_blocks.push_back(raw_blocks[i]);
-	}
-	code_blocks = AIResponseAnalysis::dedupe_consecutive(code_blocks);
-
-	details_text->clear();
-	ai_use_code_font(details_text);
-	const AIMarkdownStyle markdown_style = ai_markdown_style(details_text->get_theme_font_size(SNAME("normal_font_size")));
-	for (int i = 0; i < text_segments.size(); i++) {
-		details_text->push_color(ai_themed(COLOR_DETAILS_TEXT));
-		details_text->append_text(AIMarkdown::to_bbcode(text_segments[i], markdown_style));
-		details_text->pop();
-		details_text->add_newline();
-	}
-	for (int i = 0; i < code_blocks.size(); i++) {
-		details_text->push_color(ai_themed(COLOR_DETAILS_MUTED));
-		details_text->add_text("--- GDScript ---");
-		details_text->pop();
-		details_text->add_newline();
-
-		details_text->push_bgcolor(COLOR_CODE_BACKGROUND);
-		details_text->push_color(ai_themed(COLOR_CODE));
-		details_text->push_font_size(CODE_FONT_SIZE);
-		details_text->add_text(code_blocks[i]);
-		details_text->pop();
-		details_text->pop();
-		details_text->pop();
-		details_text->add_newline();
-		details_text->add_newline();
-	}
-	details_dialog->set_title(AI_L("AI Response Details", "AI 回复详情"));
-	details_dialog->popup_centered(DETAILS_DIALOG_SIZE * EDSCALE);
-}
-
-void AIAssistantPanel::_show_thinking(const String &p_thinking) {
-	if (p_thinking.is_empty()) {
-		return;
-	}
-	details_text->clear();
-	details_text->push_color(ai_themed(COLOR_DETAILS_THINKING));
-	details_text->push_italics();
-	details_text->add_text(p_thinking);
-	details_text->pop();
-	details_text->pop();
-	details_dialog->set_title(TR(STR_THINKING_LABEL));
-	details_dialog->popup_centered(DETAILS_DIALOG_SIZE * EDSCALE);
 }
 
 void AIAssistantPanel::_on_input_gui_input(const Ref<InputEvent> &p_event) {
@@ -454,58 +391,20 @@ void AIAssistantPanel::on_game_session_started() {
 // =============================================================================
 
 void AIAssistantPanel::_show_history_view() {
-	_populate_history_list();
+	history_list->refresh();
 	chat_view->set_visible(false);
 	input_bar->set_visible(false);
-	history_scroll->set_visible(true);
+	history_list->set_visible(true);
 	history_visible = true;
 	history_button->set_text(TR(STR_BTN_BACK));
 }
 
 void AIAssistantPanel::_show_chat_view() {
-	history_scroll->set_visible(false);
+	history_list->set_visible(false);
 	chat_view->set_visible(true);
 	input_bar->set_visible(true);
 	history_visible = false;
 	history_button->set_text(TR(STR_BTN_HISTORY));
-}
-
-void AIAssistantPanel::_populate_history_list() {
-	while (history_container->get_child_count() > 0) {
-		Node *child = history_container->get_child(0);
-		history_container->remove_child(child);
-		memdelete(child);
-	}
-
-	const Vector<AIChatStore::Entry> chats = AIChatStore::list();
-	if (chats.is_empty()) {
-		Label *empty_label = memnew(Label);
-		empty_label->set_text(TR(STR_SYS_NO_HISTORY));
-		empty_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-		history_container->add_child(empty_label);
-		return;
-	}
-
-	for (int i = 0; i < chats.size(); i++) {
-		HBoxContainer *row = memnew(HBoxContainer);
-		history_container->add_child(row);
-
-		Button *title_button = memnew(Button);
-		title_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-		title_button->set_text(chats[i].title + "  (" + itos(chats[i].message_count) + " msgs)");
-		title_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		title_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-		title_button->set_flat(true);
-		title_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_item_clicked).bind(chats[i].path));
-		row->add_child(title_button);
-
-		Button *delete_button = memnew(Button);
-		delete_button->set_text("X");
-		delete_button->set_tooltip_text(AI_L("Delete this chat", "删除此对话"));
-		delete_button->set_custom_minimum_size(Size2(DELETE_BUTTON_WIDTH, 0) * EDSCALE);
-		delete_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_delete_pressed).bind(chats[i].path));
-		row->add_child(delete_button);
-	}
 }
 
 void AIAssistantPanel::_on_history_item_clicked(const String &p_file_path) {
@@ -544,7 +443,7 @@ void AIAssistantPanel::_on_history_item_deleted(const String &p_file_path) {
 	if (had_messages && controller->get_session().is_empty()) {
 		_system_message(TR(STR_SYS_CHAT_DELETED));
 	}
-	callable_mp(this, &AIAssistantPanel::_populate_history_list).call_deferred();
+	callable_mp(history_list, &AIHistoryList::refresh).call_deferred();
 }
 
 void AIAssistantPanel::_restore_last_chat() {
@@ -652,15 +551,12 @@ void AIAssistantPanel::_build_chat_area() {
 		preset_buttons.push_back(button);
 	}
 
-	history_scroll = memnew(ScrollContainer);
-	history_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	history_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-	history_scroll->set_visible(false);
-	add_child(history_scroll);
-
-	history_container = memnew(VBoxContainer);
-	history_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	history_scroll->add_child(history_container);
+	history_list = memnew(AIHistoryList);
+	history_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	history_list->set_visible(false);
+	history_list->connect("chat_selected", callable_mp(this, &AIAssistantPanel::_on_history_item_clicked));
+	history_list->connect("delete_requested", callable_mp(this, &AIAssistantPanel::_on_history_delete_pressed));
+	add_child(history_list);
 }
 
 void AIAssistantPanel::_build_input_bar() {
@@ -705,15 +601,8 @@ void AIAssistantPanel::_build_dialogs() {
 	permission_dialog->connect("canceled", callable_mp(this, &AIAssistantPanel::_on_permission_cancelled));
 	add_child(permission_dialog);
 
-	details_dialog = memnew(AcceptDialog);
-	details_dialog->set_ok_button_text(AI_L("Close", "关闭"));
+	details_dialog = memnew(AIDetailsDialog);
 	add_child(details_dialog);
-
-	details_text = memnew(RichTextLabel);
-	details_text->set_custom_minimum_size(DETAILS_TEXT_MIN_SIZE * EDSCALE);
-	details_text->set_selection_enabled(true);
-	details_text->set_scroll_follow(false);
-	details_dialog->add_child(details_text);
 
 	file_dialog = memnew(EditorFileDialog);
 	file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);

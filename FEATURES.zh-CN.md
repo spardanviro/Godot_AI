@@ -14,7 +14,8 @@
 - 知识层：系统提示词、各场景提示模板、395 条避坑经验、API 速查、领域提示，全部是 `knowledge/` 下的 Markdown 数据文件
 - 执行安全层：响应解析、脚本执行器、权限管理、检查点管理、错误监视、运行时错误监视
 - 扩展层：网页搜索、图像生成、音频生成
-- 质量保障：单元测试（`tests/`）、评测集与无头评测运行器（`evals/`）
+- 质量保障：单元测试（`tests/`）、评测集与无头评测运行器（`evals/`）、层次检查（`evals/check_layers.py`）
+- 分层约束：文件夹自下而上为 `common < providers < network < execution < prompt < assets < agent < ui`，只允许上层引用下层；`ai_assistant/*` 设置只经由 `common/ai_settings` 读写
 
 ## 主要功能
 

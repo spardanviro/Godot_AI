@@ -2,7 +2,6 @@
 
 #ifdef TOOLS_ENABLED
 
-#include "../agent/ai_response_analysis.h"
 #include "ai_web_fetch.h"
 #include "ai_web_search.h"
 
@@ -12,9 +11,9 @@
 
 class Timer;
 
-// Fetches the web search or page a reply asked for and turns the result into
-// the follow-up message for the model. One request at a time; when and whether
-// a request may start is the controller's decision.
+// Fetches the web search or page a reply asked for. One request at a time;
+// when and whether a request may start, and what is made of the result, is
+// the caller's decision.
 class AIWebRequester : public Node {
 	GDCLASS(AIWebRequester, Node);
 
@@ -43,13 +42,15 @@ protected:
 	static void _bind_methods();
 
 public:
-	// Starts the search (preferred) or fetch the markers ask for. Returns false
-	// — after emitting a notice saying why — if the URL is not allowed or the
-	// request could not be sent. On true, "finished" follows.
-	bool start(const AIResponseAnalysis::Markers &p_markers);
+	// Starts a search for p_search_query or, if that is empty, a fetch of
+	// p_fetch_url. Returns false — after emitting a notice saying why — if the
+	// URL is not allowed or the request could not be sent. On true, "finished"
+	// follows.
+	bool start(const String &p_search_query, const String &p_fetch_url);
 	void cancel();
-	// The message that hands the fetched content back to the model.
-	String build_follow_up(const String &p_content) const;
+	// What the last request was: a page fetch or a search, and of what.
+	bool was_fetch() const { return is_fetch; }
+	String get_subject() const { return subject; }
 
 	AIWebRequester();
 	~AIWebRequester();

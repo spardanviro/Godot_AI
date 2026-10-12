@@ -8,8 +8,9 @@
 
 #include "scene/gui/box_container.h"
 
-class AcceptDialog;
 class AIChatView;
+class AIDetailsDialog;
+class AIHistoryList;
 class AIMentionAutocomplete;
 class AIRuntimeWatch;
 class AISettingsDialog;
@@ -49,8 +50,7 @@ class AIAssistantPanel : public VBoxContainer {
 	Button *stop_button = nullptr;
 
 	// History view (replaces the chat view while visible).
-	ScrollContainer *history_scroll = nullptr;
-	VBoxContainer *history_container = nullptr;
+	AIHistoryList *history_list = nullptr;
 	bool history_visible = false;
 
 	// Dialogs.
@@ -61,8 +61,7 @@ class AIAssistantPanel : public VBoxContainer {
 	// deleting a chat): asks first, then runs confirm_action.
 	ConfirmationDialog *confirm_dialog = nullptr;
 	Callable confirm_action;
-	AcceptDialog *details_dialog = nullptr;
-	RichTextLabel *details_text = nullptr;
+	AIDetailsDialog *details_dialog = nullptr;
 	EditorFileDialog *file_dialog = nullptr;
 
 	// --- User actions ---
@@ -83,8 +82,6 @@ class AIAssistantPanel : public VBoxContainer {
 	void _update_input_height();
 	void _save_code_block(int p_index);
 	void _revert_checkpoint(int p_checkpoint_id);
-	void _show_details(const String &p_response);
-	void _show_thinking(const String &p_thinking);
 
 	// --- Controller events ---
 	void _on_state_changed(int p_state);
@@ -94,7 +91,6 @@ class AIAssistantPanel : public VBoxContainer {
 	// --- History view ---
 	void _show_history_view();
 	void _show_chat_view();
-	void _populate_history_list();
 	void _on_history_item_clicked(const String &p_file_path);
 	void _on_history_item_deleted(const String &p_file_path);
 	void _on_history_delete_pressed(const String &p_file_path);

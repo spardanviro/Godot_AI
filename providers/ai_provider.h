@@ -89,6 +89,9 @@ public:
 	virtual PackedStringArray parse_models_list(const String &p_response_body) const;
 	virtual String select_best_model(const PackedStringArray &p_models) const;
 
+	// Marks, inside a system prompt, where the content that is the same on
+	// every turn ends. A provider with prompt caching splits there.
+	static constexpr const char *CACHE_BOUNDARY = "<!-- GODOTAI_CACHE_BOUNDARY -->";
 	// Strip the cache boundary marker from a system prompt.
 	// Call this in every provider that doesn't implement native prompt caching
 	// so the HTML comment never leaks into the API payload.

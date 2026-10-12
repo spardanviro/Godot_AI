@@ -1,6 +1,8 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_agent_controller.h"
+#include "../common/ai_settings.h"
+#include "../common/ai_code_text.h"
 
 #include "../assets/ai_asset_service.h"
 #include "ai_chat_store.h"
@@ -290,7 +292,7 @@ bool AIAgentController::start_runtime_fix(const String &p_errors, const String &
 
 	// Give the model the scripts the errors point at.
 	String scripts_section;
-	const Vector<String> script_paths = AIResponseAnalysis::extract_script_paths(p_errors);
+	const Vector<String> script_paths = AICodeText::extract_script_paths(p_errors);
 	for (int i = 0; i < script_paths.size(); i++) {
 		Ref<FileAccess> file = FileAccess::open(script_paths[i], FileAccess::READ);
 		if (file.is_valid()) {
@@ -622,9 +624,9 @@ String AIAgentController::add_attachment(const String &p_path, const String &p_c
 // =============================================================================
 
 void AIAgentController::reload_settings() {
-	compression_config.keep_recent = AIProviderSetup::get_editor_setting("ai_assistant/compression_keep_recent", compression_config.keep_recent);
-	compression_config.threshold_pct = AIProviderSetup::get_editor_setting("ai_assistant/compression_threshold_pct", compression_config.threshold_pct);
-	compression_use_ai_summary = AIProviderSetup::get_editor_setting("ai_assistant/compression_use_ai_summary", false);
+	compression_config.keep_recent = AISettings::get("compression_keep_recent", compression_config.keep_recent);
+	compression_config.threshold_pct = AISettings::get("compression_threshold_pct", compression_config.threshold_pct);
+	compression_use_ai_summary = AISettings::get("compression_use_ai_summary", false);
 	code_runner.reload_permissions();
 	if (provider_overridden) {
 		return;

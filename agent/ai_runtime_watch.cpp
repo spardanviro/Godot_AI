@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_runtime_watch.h"
+#include "../common/ai_settings.h"
 
 #include "../providers/ai_provider_setup.h"
 
@@ -144,7 +145,7 @@ void AIRuntimeWatch::_on_poll() {
 	if (!controller) {
 		return;
 	}
-	if (!bool(AIProviderSetup::get_editor_setting("ai_assistant/runtime_fix", true))) {
+	if (!bool(AISettings::get("runtime_fix", true))) {
 		// Switched off: leave the running game alone and forget what was seen.
 		if (was_playing || handler_installed) {
 			_remove_error_handler();

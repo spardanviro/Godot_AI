@@ -1,9 +1,9 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_web_requester.h"
+#include "../common/ai_notice.h"
+#include "ai_url_policy.h"
 
-#include "../agent/ai_agent_controller.h"
-#include "../prompt/ai_knowledge.h"
 #include "../common/ai_log.h"
 #include "ai_network_thread.h"
 
@@ -50,10 +50,10 @@ void AIWebRequester::_join_worker() {
 	poll_timer->stop();
 }
 
-bool AIWebRequester::start(const AIResponseAnalysis::Markers &p_markers) {
+bool AIWebRequester::start(const String &p_search_query, const String &p_fetch_url) {
 	_join_worker();
-	is_fetch = p_markers.web_search_query.is_empty();
-	subject = is_fetch ? p_markers.fetch_url : p_markers.web_search_query;
+	is_fetch = p_search_query.is_empty();
+	subject = is_fetch ? p_fetch_url : p_search_query;
 
 	options = AIWebFetch::Options();
 	options.should_stop = &AIWebRequester::_should_stop;
@@ -71,15 +71,15 @@ bool AIWebRequester::start(const AIResponseAnalysis::Markers &p_markers) {
 	// the worker checks again, along with what the host resolves to and every
 	// redirect on the way.
 	String reason;
-	if (!AIResponseAnalysis::is_public_web_url(url, reason)) {
+	if (!AIUrlPolicy::is_public_web_url(url, reason)) {
 		AI_WARN("Web request rejected (" + reason + "): " + _loggable(url));
-		_notify(AIAgentController::NOTICE_WARNING, AI_L("Web request skipped: ", "已跳过网络请求：") + reason + ".");
+		_notify(AI_NOTICE_WARNING, AI_L("Web request skipped: ", "已跳过网络请求：") + reason + ".");
 		return false;
 	}
 	if (is_fetch) {
-		_notify(AIAgentController::NOTICE_INFO, String(U"🌐 ") + AI_L("Fetching: ", "正在抓取：") + url + "...");
+		_notify(AI_NOTICE_INFO, String(U"🌐 ") + AI_L("Fetching: ", "正在抓取：") + url + "...");
 	} else {
-		_notify(AIAgentController::NOTICE_INFO, String(U"🔍 ") + AI_L("Searching: ", "正在搜索：") + subject + "...");
+		_notify(AI_NOTICE_INFO, String(U"🔍 ") + AI_L("Searching: ", "正在搜索：") + subject + "...");
 	}
 
 	result = AIWebFetch::Result();
@@ -103,10 +103,10 @@ void AIWebRequester::_on_poll() {
 	String content;
 	if (!result.ok) {
 		AI_WARN("Web request failed (" + result.error + "): " + _loggable(url));
-		_notify(AIAgentController::NOTICE_WARNING, AI_L("Web request failed: ", "网络请求失败：") + result.error + ".");
+		_notify(AI_NOTICE_WARNING, AI_L("Web request failed: ", "网络请求失败：") + result.error + ".");
 	} else if (result.response_code != 200) {
 		AI_ERR("Web request failed: HTTP " + itos(result.response_code));
-		_notify(AIAgentController::NOTICE_WARNING, AI_L("Web request failed (HTTP ", "网络请求失败 (HTTP ") + itos(result.response_code) + ").");
+		_notify(AI_NOTICE_WARNING, AI_L("Web request failed (HTTP ", "网络请求失败 (HTTP ") + itos(result.response_code) + ").");
 	} else {
 		const String body = String::utf8((const char *)result.body.ptr(), result.body.size());
 		if (!is_fetch) {
@@ -119,20 +119,11 @@ void AIWebRequester::_on_poll() {
 			content = body;
 		}
 		if (content.is_empty()) {
-			_notify(AIAgentController::NOTICE_WARNING, AI_L("No useful content found.", "未找到有用内容。"));
+			_notify(AI_NOTICE_WARNING, AI_L("No useful content found.", "未找到有用内容。"));
 		}
 	}
 	result = AIWebFetch::Result();
 	emit_signal(SNAME("finished"), content);
-}
-
-String AIWebRequester::build_follow_up(const String &p_content) const {
-	Dictionary values;
-	values["action"] = is_fetch ? "FETCH" : "SEARCH";
-	values["subject_label"] = is_fetch ? "URL" : "Query";
-	values["subject"] = subject;
-	values["content"] = p_content;
-	return AIKnowledge::get_singleton()->format_prompt("web_results", values);
 }
 
 AIWebRequester::AIWebRequester() {

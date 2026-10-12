@@ -1,6 +1,6 @@
 #include "ai_web_fetch.h"
+#include "ai_url_policy.h"
 
-#include "../agent/ai_response_analysis.h"
 
 #include "core/crypto/crypto.h"
 #include "core/io/http_client.h"
@@ -82,7 +82,7 @@ bool AIWebFetch::parse_url(const String &p_url, Target &r_target) {
 		target.host = target.host.left(target.host.length() - 1);
 	}
 	// The address that gets checked must be the address that gets used.
-	if (target.host.is_empty() || target.host != AIResponseAnalysis::get_url_host(p_url)) {
+	if (target.host.is_empty() || target.host != AIUrlPolicy::get_url_host(p_url)) {
 		return false;
 	}
 
@@ -136,7 +136,7 @@ bool AIWebFetch::pick_addresses(const Vector<String> &p_resolved, const Options 
 	Vector<String> ipv6;
 	for (int i = 0; i < p_resolved.size(); i++) {
 		const String &address = p_resolved[i];
-		const bool allowed = p_options.is_address_allowed ? p_options.is_address_allowed(address) : !AIResponseAnalysis::is_private_address(address);
+		const bool allowed = p_options.is_address_allowed ? p_options.is_address_allowed(address) : !AIUrlPolicy::is_private_address(address);
 		if (!allowed) {
 			r_reason = "the host resolves to a local or private address";
 			return false;
@@ -299,7 +299,7 @@ AIWebFetch::Result AIWebFetch::get(const String &p_url, const Options &p_options
 
 	while (true) {
 		Target target;
-		if (!AIResponseAnalysis::is_public_web_url(url, result.error)) {
+		if (!AIUrlPolicy::is_public_web_url(url, result.error)) {
 			return result;
 		}
 		if (!parse_url(url, target)) {

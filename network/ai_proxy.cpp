@@ -1,11 +1,11 @@
 #include "ai_proxy.h"
+#include "../common/ai_settings.h"
+#include "ai_url_policy.h"
 
-#include "../agent/ai_response_analysis.h"
 
 #include "core/os/os.h"
 
 #ifdef TOOLS_ENABLED
-#include "editor/settings/editor_settings.h"
 #include "scene/main/http_request.h"
 #endif
 
@@ -80,7 +80,7 @@ bool AIProxy::is_local_host(const String &p_host) {
 		return true;
 	}
 	// An address literal in a local range. Names are never resolved here.
-	return host.is_valid_ip_address() && AIResponseAnalysis::is_private_address(host);
+	return host.is_valid_ip_address() && AIUrlPolicy::is_private_address(host);
 }
 
 AIProxyConfig AIProxy::choose(const String &p_mode, const String &p_custom_address, const String &p_editor_proxy, const String &p_environment_proxy, const String &p_os_proxy) {
@@ -101,12 +101,8 @@ AIProxyConfig AIProxy::choose(const String &p_mode, const String &p_custom_addre
 #ifdef TOOLS_ENABLED
 
 static String _editor_proxy() {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (!es || !es->has_setting("network/http_proxy/host")) {
-		return String();
-	}
-	const String host = es->get_setting("network/http_proxy/host");
-	const int port = es->has_setting("network/http_proxy/port") ? int(es->get_setting("network/http_proxy/port")) : -1;
+	const String host = AISettings::get_editor("network/http_proxy/host", "");
+	const int port = AISettings::get_editor("network/http_proxy/port", -1);
 	return host.is_empty() || port <= 0 ? String() : host + ":" + itos(port);
 }
 
@@ -127,20 +123,11 @@ AIProxyConfig AIProxy::preview(const String &p_mode, const String &p_custom_addr
 }
 
 AIProxyConfig AIProxy::get_configured() {
-	EditorSettings *es = EditorSettings::get_singleton();
-	String mode = MODE_SYSTEM;
-	String address;
-	if (es && es->has_setting("ai_assistant/proxy_mode")) {
-		mode = es->get_setting("ai_assistant/proxy_mode");
-	}
-	if (es && es->has_setting("ai_assistant/proxy_address")) {
-		address = es->get_setting("ai_assistant/proxy_address");
-	}
-	return preview(mode, address);
+	return preview(AISettings::get("proxy_mode", MODE_SYSTEM), AISettings::get("proxy_address", ""));
 }
 
 AIProxyConfig AIProxy::for_url(const String &p_url) {
-	if (is_local_host(AIResponseAnalysis::get_url_host(p_url))) {
+	if (is_local_host(AIUrlPolicy::get_url_host(p_url))) {
 		return AIProxyConfig();
 	}
 	return get_configured();

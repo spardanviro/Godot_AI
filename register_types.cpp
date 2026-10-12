@@ -23,6 +23,8 @@
 #include "ui/ai_mention_autocomplete.h"
 #include "network/ai_model_list_fetcher.h"
 #include "ui/ai_model_selector.h"
+#include "ui/ai_details_dialog.h"
+#include "ui/ai_history_list.h"
 #include "network/ai_web_requester.h"
 #include "prompt/ai_knowledge.h"
 #include "agent/ai_runtime_watch.h"
@@ -69,6 +71,8 @@ void initialize_ai_assistant_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_INTERNAL_CLASS(AIMentionAutocomplete);
 		GDREGISTER_INTERNAL_CLASS(AIModelListFetcher);
 		GDREGISTER_INTERNAL_CLASS(AIModelSelector);
+		GDREGISTER_INTERNAL_CLASS(AIDetailsDialog);
+		GDREGISTER_INTERNAL_CLASS(AIHistoryList);
 		// Exposed so headless scripts (the eval runner) can drive a conversation.
 		GDREGISTER_CLASS(AIAgentController);
 		GDREGISTER_CLASS(AISettingsDialog);

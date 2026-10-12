@@ -19,8 +19,6 @@ public:
 	// One log line describing the provider; never includes the key itself.
 	static String describe(const Ref<AIProvider> &p_provider);
 
-	static Variant get_editor_setting(const String &p_name, const Variant &p_default);
-
 	static constexpr double DEFAULT_TEMPERATURE = 0.7;
 	// Whether requests carry the temperature from the settings. Off unless
 	// the user asked for it: current reasoning models reject the parameter

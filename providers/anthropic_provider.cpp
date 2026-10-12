@@ -1,7 +1,6 @@
 #include "anthropic_provider.h"
 #include "core/object/class_db.h"
 #include "core/io/json.h"
-#include "../prompt/ai_system_prompt.h"
 
 void AnthropicProvider::_bind_methods() {
 }
@@ -202,7 +201,7 @@ String AnthropicProvider::build_stream_request_body(const String &p_system_promp
 	// cache_control so Anthropic can cache it across requests, reducing both
 	// latency and input token cost.
 	// Content after the boundary is dynamic (editor context, performance data).
-	const String boundary = AISystemPrompt::CACHE_BOUNDARY;
+	const String boundary = CACHE_BOUNDARY;
 	int boundary_pos = p_system_prompt.find(boundary);
 	if (boundary_pos > 0) {
 		String static_part  = p_system_prompt.left(boundary_pos);

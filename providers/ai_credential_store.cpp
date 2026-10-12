@@ -1,4 +1,5 @@
 #include "ai_credential_store.h"
+#include "../common/ai_settings.h"
 
 #include "ai_provider.h"
 
@@ -11,7 +12,6 @@
 
 #ifdef TOOLS_ENABLED
 #include "editor/file_system/editor_paths.h"
-#include "editor/settings/editor_settings.h"
 #endif
 
 String AICredentialStore::storage_path_override;
@@ -291,18 +291,14 @@ bool AICredentialStore::set_stored_api_key(const String &p_provider_id, const St
 int AICredentialStore::migrate_from_editor_settings() {
 	int moved = 0;
 #ifdef TOOLS_ENABLED
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (!es || get_storage_path().is_empty()) {
+	if (!AISettings::is_available() || get_storage_path().is_empty()) {
 		return 0;
 	}
 
 	// Moves one plain-text setting into the store. The setting is only blanked
 	// once the key has been written and read back intact.
 	auto move_setting = [&](const String &p_setting, const String &p_provider_id) {
-		if (!es->has_setting(p_setting)) {
-			return;
-		}
-		const String plain = String(es->get_setting(p_setting)).strip_edges();
+		const String plain = String(AISettings::get(p_setting, "")).strip_edges();
 		if (plain.is_empty()) {
 			return;
 		}
@@ -312,20 +308,20 @@ int AICredentialStore::migrate_from_editor_settings() {
 				return;
 			}
 		}
-		es->set_setting(p_setting, "");
+		AISettings::set(p_setting, "");
 		moved++;
 	};
 
 	const Vector<String> providers = AIProvider::get_provider_ids();
 	for (int i = 0; i < providers.size(); i++) {
-		move_setting("ai_assistant/api_key_" + providers[i], providers[i]);
+		move_setting("api_key_" + providers[i], providers[i]);
 	}
 	// The pre-multi-provider single key belonged to whichever provider was active.
-	if (es->has_setting("ai_assistant/provider")) {
-		move_setting("ai_assistant/api_key", String(es->get_setting("ai_assistant/provider")));
+	if (AISettings::has("provider")) {
+		move_setting("api_key", String(AISettings::get("provider", "")));
 	}
 	if (moved > 0) {
-		EditorSettings::save();
+		AISettings::save();
 	}
 #endif
 	return moved;

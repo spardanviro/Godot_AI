@@ -1,8 +1,8 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_permission_manager.h"
+#include "../common/ai_settings.h"
 #include "core/object/class_db.h"
-#include "editor/settings/editor_settings.h"
 
 void AIPermissionManager::_bind_methods() {
 }
@@ -57,15 +57,10 @@ AIPermissionManager::Level AIPermissionManager::get_permission(Category p_catego
 }
 
 void AIPermissionManager::load_from_settings() {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (!es) {
-		return;
-	}
-
 	for (int i = 0; i < PERM_MAX; i++) {
 		String key = get_setting_key((Category)i);
-		if (!key.is_empty() && es->has_setting(key)) {
-			const int level = es->get_setting(key);
+		if (!key.is_empty() && AISettings::has(key)) {
+			const int level = AISettings::get(key, (int)permissions[i]);
 			if (level >= LEVEL_ALLOW && level <= LEVEL_DENY) {
 				permissions[i] = (Level)level;
 			}
@@ -74,18 +69,13 @@ void AIPermissionManager::load_from_settings() {
 }
 
 void AIPermissionManager::save_to_settings() {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (!es) {
-		return;
-	}
-
 	for (int i = 0; i < PERM_MAX; i++) {
 		String key = get_setting_key((Category)i);
 		if (!key.is_empty()) {
-			es->set_setting(key, (int)permissions[i]);
+			AISettings::set(key, (int)permissions[i]);
 		}
 	}
-	es->save();
+	AISettings::save();
 }
 
 // Speculative risk classifier — fast path before per-category permission checks.

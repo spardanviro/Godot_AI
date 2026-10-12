@@ -233,11 +233,14 @@ Whether a request may start, whether code may run and what Stop means all follow
 |------|------|
 | `ui/ai_assistant_plugin.*` | Editor plugin entry point |
 | `ui/ai_assistant_panel.*` | The dock: layout, user actions, dialogs |
+| `ui/ai_details_dialog.*`, `ui/ai_history_list.*` | The window behind a "Details" / "Thinking" link; the list of saved chats |
 | `ui/ai_chat_view.*` | Chat transcript, streaming display, clickable links |
 | `ui/ai_markdown.*` | Markdown to RichTextLabel BBCode, whole or as a stream; escapes everything the model wrote |
 | `ui/ai_mention_autocomplete.*` | `@` completion popup for scene nodes and project files |
 | `ui/ai_mention_text_edit.*`, `ui/ai_mention_highlighter.*` | Mention-capable input field with inline chips |
-| `ui/ai_settings_dialog.*`, `ui/ai_settings_dialog_model.cpp`, `ui/ai_settings_dialog_layout.cpp` | Settings window (tabs: model, general, permissions, advanced): reading and writing the `ai_assistant/*` settings; provider, key and model handling; widgets and captions |
+| `ui/ai_settings_dialog.*`, `ui/ai_settings_dialog_model.cpp`, `ui/ai_settings_dialog_layout.cpp` | Settings window (tabs: model, general, permissions, advanced): showing and saving the settings; widgets and captions |
+| `providers/ai_provider_settings.*` | The provider part of the settings while it is edited, without widgets: endpoint per provider, typed and removed keys, the output cap to suggest |
+| `common/ai_settings.*` | The one place that reads and writes the `ai_assistant/*` settings; tests give it other values |
 | `ui/ai_model_selector.*`, `network/ai_model_list_fetcher.*` | Model name field with a pick list; live model list from the provider's API |
 | `providers/ai_provider_catalog.h`, `providers/ai_provider_catalog.cpp` | Display names and known models per provider |
 | `agent/ai_agent_controller.*`, `agent/ai_agent_controller_replies.cpp` | Agent loop as an explicit state machine; signals instead of UI calls |
@@ -245,12 +248,17 @@ Whether a request may start, whether code may run and what Stop means all follow
 | `agent/ai_chat_store.*` | Saved chats (`user://ai_assistant_chats`) |
 | `network/ai_stream_client.*`, `network/ai_stream_protocol.*` | Streaming HTTP client; SSE decoding, UTF-8 boundaries, `<think>` tag splitting |
 | `execution/ai_code_runner.*` | Review gate and execution with checkpoints and error monitoring |
-| `execution/ai_script_executor.*` | Wraps, checks and runs generated GDScript as an `EditorScript` |
+| `execution/ai_script_executor.*` | Compiles and runs generated GDScript as an `EditorScript` |
+| `execution/ai_safety_policy.*` | What generated code may not contain, checked on its text and its tokens |
+| `execution/ai_script_wrapper.*`, `execution/ai_code_fixes.*` | The `EditorScript` wrapper; repairs for mistakes models keep making |
 | `execution/ai_permission_manager.*` | Rule-based execution gating |
 | `execution/ai_checkpoint_manager.*` | Checkpoint and restore support |
 | `execution/ai_error_monitor.*` | Tracks editor/runtime errors around AI execution |
 | `agent/ai_runtime_watch.*` | Detects runtime errors of the running game and requests fixes |
-| `agent/ai_response_parser.*`, `agent/ai_response_analysis.*` | Code blocks, side-effect markers, plan steps, URL and path policy |
+| `agent/ai_response_parser.*`, `agent/ai_response_analysis.*` | Code blocks; side-effect markers and the checks on what they carry |
+| `network/ai_url_policy.*` | Which addresses a model-supplied URL may point at |
+| `assets/ai_asset_request.*` | A generation request and the check on its save path |
+| `common/ai_code_text.*`, `common/ai_notice.h` | Summaries and script paths read out of code and error text; notice levels |
 | `agent/ai_plan.*` | PLAN-mode steps and their Markdown checklist |
 | `network/ai_web_requester.*`, `network/ai_web_fetch.*`, `network/ai_web_search.*` | Web search and page fetch; the fetch runs on a worker thread and connects only to addresses it has checked |
 | `assets/ai_asset_service.*`, `assets/ai_image_generator.*`, `assets/ai_audio_generator.*` | Image and speech generation |
@@ -313,9 +321,23 @@ On Windows each stored key is sealed with DPAPI, so it can only be read by the s
 
 Keys found in the settings file by an older version are moved into the store the first time the panel loads, and the settings entries are blanked. The settings dialog never shows a stored key: the field is empty and only takes a new key to replace the stored one.
 
+## Layers
+
+The folders form a stack, lowest first:
+
+```text
+common < providers < network < execution < prompt < assets < agent < ui
+```
+
+A folder includes headers from its own folder and from the ones before it, never from one after it. The editor's settings are reached through `common/ai_settings.cpp` only (the `ui` folder also registers them with the editor). `evals/check_layers.py` checks both rules and names every `#include` that breaks one:
+
+```bash
+python evals/check_layers.py
+```
+
 ## Tests
 
-Unit tests cover the logic that does not need a running editor: the response parser, side-effect markers, URL and path policy, the safety policy and risk tiers, gotcha / domain / API-doc selection, the knowledge file formats and overrides, Markdown rendering, history compression and overflow recovery, SSE decoding, the providers' request and response handling, and the credential store.
+Unit tests cover the logic that does not need a running editor: the response parser, side-effect markers, URL and path policy, the safety policy and risk tiers, gotcha / domain / API-doc selection, the knowledge file formats and overrides, Markdown rendering, the settings and the provider settings model, history compression and overflow recovery, SSE decoding, the providers' request and response handling, and the credential store.
 
 ```bash
 scons platform=windows target=editor tests=yes
@@ -426,7 +448,7 @@ ai_assistant/
 |- network/       streaming client, web search and fetch, proxy, model list
 |- providers/     provider interface, implementations, catalog, API key storage
 |- assets/        image and speech generation
-|- common/        logging, localization, text matching
+|- common/        settings access, logging, localization, notice levels, code text helpers
 |- knowledge/     prompts, gotchas, API notes, domain guidance (Markdown)
 |- tests/         unit tests (doctest)
 |- evals/         eval tasks, headless runner, driver script

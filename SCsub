@@ -25,5 +25,5 @@ env_ai.CommandNoCache(
 )
 
 env_ai.add_source_files(env.modules_sources, "*.cpp")
-for folder in ("ui", "agent", "execution", "prompt", "network", "providers", "assets"):
+for folder in ("common", "ui", "agent", "execution", "prompt", "network", "providers", "assets"):
     env_ai.add_source_files(env.modules_sources, folder + "/*.cpp")

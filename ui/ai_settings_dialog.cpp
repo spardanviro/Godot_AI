@@ -1,8 +1,8 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_settings_dialog.h"
+#include "../common/ai_settings.h"
 
-#include "../providers/ai_credential_store.h"
 #include "../common/ai_log.h"
 #include "../network/ai_model_list_fetcher.h"
 #include "ai_model_selector.h"
@@ -26,7 +26,7 @@
 #include "scene/gui/tab_container.h"
 
 // The value "max tokens" has before the user (or we) ever changed it.
-static const int UNSET_MAX_TOKENS = 4096;
+static const int UNSET_MAX_TOKENS = AIProviderSettings::UNSET_MAX_TOKENS;
 static const int DEFAULT_KEEP_RECENT = 6;
 static const float DEFAULT_THRESHOLD = 0.70f;
 static const char *LANGUAGE_IDS[] = { "en", "zh" };
@@ -41,7 +41,7 @@ static const Size2 DIALOG_SIZE(560, 440);
 static const float MAX_SCREEN_RATIO = 0.85f;
 
 static Variant _setting(const char *p_name, const Variant &p_default) {
-	return AIProviderSetup::get_editor_setting(String("ai_assistant/") + p_name, p_default);
+	return AISettings::get(p_name, p_default);
 }
 
 void AISettingsDialog::_bind_methods() {
@@ -119,11 +119,9 @@ void AISettingsDialog::_load_settings() {
 	// field only ever holds what is typed now; empty means "keep the stored key".
 	_forget_unsaved_keys();
 
-	const int provider_index = AIProviderCatalog::find(_setting("provider", ""));
-	provider_option->select(provider_index);
-	endpoints.clear();
-	endpoints[AIProviderCatalog::get_id(provider_index)] = _setting("api_endpoint", "");
-	_show_provider(provider_index);
+	provider_settings.load();
+	provider_option->select(provider_settings.get_provider_index());
+	_show_provider();
 
 	custom_temperature_check->set_pressed(AIProviderSetup::uses_custom_temperature());
 	temperature_spin->set_value(_setting("temperature", AIProviderSetup::DEFAULT_TEMPERATURE));
@@ -142,7 +140,7 @@ void AISettingsDialog::_load_settings() {
 
 	for (int i = 0; i < AIPermissionManager::PERM_MAX; i++) {
 		const AIPermissionManager::Category category = (AIPermissionManager::Category)i;
-		const int level = AIProviderSetup::get_editor_setting(AIPermissionManager::get_setting_key(category), (int)AIPermissionManager::get_default_level(category));
+		const int level = AISettings::get(AIPermissionManager::get_setting_key(category), (int)AIPermissionManager::get_default_level(category));
 		if (level >= AIPermissionManager::LEVEL_ALLOW && level <= AIPermissionManager::LEVEL_DENY) {
 			permission_options[i]->select(level);
 		}
@@ -177,52 +175,35 @@ void AISettingsDialog::_on_confirmed() {
 		return;
 	}
 
-	// API keys go to the credential store, never to the editor settings file.
-	// A provider without a typed key keeps the key it has, unless its removal
-	// was asked for.
-	for (const String &provider_id : keys_to_clear) {
-		if (!AICredentialStore::set_stored_api_key(provider_id, String())) {
-			AI_ERR("Could not remove the API key for " + provider_id + ".");
-		}
-	}
-	for (const KeyValue<String, String> &typed : typed_api_keys) {
-		const String key = typed.value.strip_edges();
-		if (!key.is_empty() && !AICredentialStore::set_stored_api_key(typed.key, key)) {
-			AI_ERR("Could not store the API key for " + typed.key + ".");
-		}
-	}
-	_forget_unsaved_keys();
 	model_list_fetcher->cancel();
+	provider_settings.save(model_selector->get_model(), (int)max_tokens_spin->get_value());
+	_forget_unsaved_keys();
 
-	es->set_setting("ai_assistant/provider", AIProviderCatalog::get_id(provider_option->get_selected()));
-	es->set_setting("ai_assistant/model", model_selector->get_model());
-	es->set_setting("ai_assistant/api_endpoint", endpoint_edit->get_text().strip_edges());
-	es->set_setting("ai_assistant/max_tokens", (int)max_tokens_spin->get_value());
-	es->set_setting("ai_assistant/custom_temperature", custom_temperature_check->is_pressed());
-	es->set_setting("ai_assistant/temperature", (float)temperature_spin->get_value());
+	AISettings::set("custom_temperature", custom_temperature_check->is_pressed());
+	AISettings::set("temperature", (float)temperature_spin->get_value());
 
 	const int language_index = language_option->get_selected();
 	if (language_index >= 0 && language_index < LANGUAGE_COUNT) {
-		es->set_setting("ai_assistant/language", LANGUAGE_IDS[language_index]);
+		AISettings::set("language", LANGUAGE_IDS[language_index]);
 		language_at_open = LANGUAGE_IDS[language_index];
 	}
-	es->set_setting("ai_assistant/send_on_enter", send_on_enter_check->is_pressed());
-	es->set_setting("ai_assistant/autorun", autorun_check->is_pressed());
-	es->set_setting("ai_assistant/restore_last_chat", restore_last_chat_check->is_pressed());
-	es->set_setting("ai_assistant/runtime_fix", runtime_fix_check->is_pressed());
-	es->set_setting("ai_assistant/compression_keep_recent", (int)compression_keep_recent_spin->get_value());
-	es->set_setting("ai_assistant/compression_threshold_pct", (float)compression_threshold_spin->get_value() / 100.0f);
-	es->set_setting("ai_assistant/compression_use_ai_summary", compression_ai_summary_check->is_pressed());
+	AISettings::set("send_on_enter", send_on_enter_check->is_pressed());
+	AISettings::set("autorun", autorun_check->is_pressed());
+	AISettings::set("restore_last_chat", restore_last_chat_check->is_pressed());
+	AISettings::set("runtime_fix", runtime_fix_check->is_pressed());
+	AISettings::set("compression_keep_recent", (int)compression_keep_recent_spin->get_value());
+	AISettings::set("compression_threshold_pct", (float)compression_threshold_spin->get_value() / 100.0f);
+	AISettings::set("compression_use_ai_summary", compression_ai_summary_check->is_pressed());
 
 	for (int i = 0; i < AIPermissionManager::PERM_MAX; i++) {
-		es->set_setting(AIPermissionManager::get_setting_key((AIPermissionManager::Category)i), permission_options[i]->get_selected());
+		AISettings::set(AIPermissionManager::get_setting_key((AIPermissionManager::Category)i), permission_options[i]->get_selected());
 	}
 
-	es->set_setting("ai_assistant/proxy_mode", _get_proxy_mode());
-	es->set_setting("ai_assistant/proxy_address", proxy_address_edit->get_text().strip_edges());
-	es->set_setting("ai_assistant/image_model", image_model_edit->get_text().strip_edges());
-	es->set_setting("ai_assistant/speech_model", speech_model_edit->get_text().strip_edges());
-	es->set_setting("ai_assistant/knowledge_dir", knowledge_dir_edit->get_text().strip_edges());
+	AISettings::set("proxy_mode", _get_proxy_mode());
+	AISettings::set("proxy_address", proxy_address_edit->get_text().strip_edges());
+	AISettings::set("image_model", image_model_edit->get_text().strip_edges());
+	AISettings::set("speech_model", speech_model_edit->get_text().strip_edges());
+	AISettings::set("knowledge_dir", knowledge_dir_edit->get_text().strip_edges());
 	es->save();
 
 	// The panel re-reads everything it renders from the settings.
@@ -230,8 +211,7 @@ void AISettingsDialog::_on_confirmed() {
 }
 
 void AISettingsDialog::_forget_unsaved_keys() {
-	typed_api_keys.clear();
-	keys_to_clear.clear();
+	provider_settings.forget_unsaved_keys();
 	api_key_edit->set_text(String());
 	show_key_button->set_pressed(false);
 	_update_api_key_state();
@@ -244,7 +224,7 @@ void AISettingsDialog::_on_canceled() {
 	// everything else was never written.
 	EditorSettings *es = EditorSettings::get_singleton();
 	if (es && String(_setting("language", LANGUAGE_IDS[0])) != language_at_open) {
-		es->set_setting("ai_assistant/language", language_at_open);
+		AISettings::set("language", language_at_open);
 		_update_ui_texts();
 		emit_signal(SNAME("language_changed"));
 	}
@@ -255,7 +235,7 @@ void AISettingsDialog::_on_language_changed(int p_index) {
 	// Cancel puts the old language back.
 	EditorSettings *es = EditorSettings::get_singleton();
 	if (es && p_index >= 0 && p_index < LANGUAGE_COUNT) {
-		es->set_setting("ai_assistant/language", LANGUAGE_IDS[p_index]);
+		AISettings::set("language", LANGUAGE_IDS[p_index]);
 	}
 	_update_ui_texts();
 	emit_signal(SNAME("language_changed"));

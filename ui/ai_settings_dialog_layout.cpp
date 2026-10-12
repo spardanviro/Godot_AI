@@ -153,6 +153,7 @@ void AISettingsDialog::_build_model_tab(VBoxContainer *p_parent) {
 
 	endpoint_edit = memnew(LineEdit);
 	endpoint_edit->set_name("EndpointEdit");
+	endpoint_edit->connect("text_changed", callable_mp(this, &AISettingsDialog::_on_endpoint_changed));
 	label_endpoint = _add_row(p_parent, endpoint_edit);
 
 	max_tokens_spin = _make_spin_box(256, 65536, 256, 4096);

@@ -33,4 +33,11 @@ public:
 	// Ticks the current step off in the checklist file. Returns false if there
 	// is no file or no unchecked step left.
 	bool mark_current_step_done(String &r_step_label);
+
+	// --- The checklist as text ---
+	// Lines of a plan that start with "N." or "N)".
+	static Vector<String> parse_plan_steps(const String &p_plan_text);
+	static String build_plan_markdown(const Vector<String> &p_steps, const String &p_generated_at);
+	// Ticks the first unchecked "- [ ] " box. Returns false if there is none.
+	static bool mark_first_unchecked_step(String &r_markdown, String &r_step_label);
 };

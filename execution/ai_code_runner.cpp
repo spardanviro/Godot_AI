@@ -1,9 +1,9 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_code_runner.h"
+#include "../common/ai_code_text.h"
 
 #include "../common/ai_log.h"
-#include "../agent/ai_response_analysis.h"
 
 #include "editor/editor_interface.h"
 
@@ -136,7 +136,7 @@ AICodeRunner::Result AICodeRunner::execute(const String &p_code) {
 	// script ran, and what the code itself announces is the better summary.
 	const String output = result.output.strip_edges();
 	if (output.is_empty() || output == PLAIN_SUCCESS_OUTPUT) {
-		result.summary = AIResponseAnalysis::summarize_code(p_code);
+		result.summary = AICodeText::summarize_code(p_code);
 	} else {
 		result.summary = output.replace("\n", "  |  ");
 	}

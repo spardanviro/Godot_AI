@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ai_proxy.h"
+#include "ai_url_policy.h"
 
 #include "core/io/ip_address.h"
 #include "core/string/ustring.h"
@@ -44,7 +45,7 @@ public:
 		void *should_stop_userdata = nullptr;
 
 		// Test seams. Null: the system resolver, and the policy of
-		// AIResponseAnalysis::is_private_address().
+		// AIUrlPolicy::is_private_address().
 		Vector<String> (*resolve)(const String &p_host) = nullptr;
 		bool (*is_address_allowed)(const String &p_address) = nullptr;
 	};

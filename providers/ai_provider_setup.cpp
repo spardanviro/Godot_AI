@@ -1,18 +1,12 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_provider_setup.h"
+#include "../common/ai_settings.h"
 
 #include "ai_credential_store.h"
 
-#include "editor/settings/editor_settings.h"
-
 // The value "max tokens" has before the user (or we) ever changed it.
 static const int UNSET_MAX_TOKENS = 4096;
-
-Variant AIProviderSetup::get_editor_setting(const String &p_name, const Variant &p_default) {
-	EditorSettings *es = EditorSettings::get_singleton();
-	return es && es->has_setting(p_name) ? es->get_setting(p_name) : p_default;
-}
 
 Ref<AIProvider> AIProviderSetup::from_values(const String &p_provider_id, const String &p_model, const String &p_endpoint, const String &p_api_key) {
 	Ref<AIProvider> provider = AIProvider::create(p_provider_id);
@@ -29,33 +23,30 @@ Ref<AIProvider> AIProviderSetup::from_values(const String &p_provider_id, const 
 
 Ref<AIProvider> AIProviderSetup::from_editor_settings() {
 	Ref<AIProvider> provider = from_values(
-			get_editor_setting("ai_assistant/provider", ""),
-			get_editor_setting("ai_assistant/model", ""),
-			get_editor_setting("ai_assistant/api_endpoint", ""),
+			AISettings::get("provider", ""),
+			AISettings::get("model", ""),
+			AISettings::get("api_endpoint", ""),
 			String());
 
 	// An untouched max_tokens follows the model's recommendation, and the
 	// settings are updated so the dialog shows what is actually used.
-	int max_tokens = get_editor_setting("ai_assistant/max_tokens", UNSET_MAX_TOKENS);
+	int max_tokens = AISettings::get("max_tokens", UNSET_MAX_TOKENS);
 	const int recommended = provider->get_recommended_max_tokens();
 	if (max_tokens == UNSET_MAX_TOKENS && recommended != UNSET_MAX_TOKENS) {
 		max_tokens = recommended;
-		if (EditorSettings::get_singleton()) {
-			EditorSettings::get_singleton()->set_setting("ai_assistant/max_tokens", max_tokens);
-		}
+		AISettings::set("max_tokens", max_tokens);
 	}
 	provider->set_max_tokens(max_tokens);
-	provider->set_temperature(get_editor_setting("ai_assistant/temperature", DEFAULT_TEMPERATURE));
+	provider->set_temperature(AISettings::get("temperature", DEFAULT_TEMPERATURE));
 	provider->set_send_temperature(uses_custom_temperature());
 	return provider;
 }
 
 bool AIProviderSetup::uses_custom_temperature() {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (es && es->has_setting("ai_assistant/custom_temperature")) {
-		return es->get_setting("ai_assistant/custom_temperature");
+	if (AISettings::has("custom_temperature")) {
+		return AISettings::get("custom_temperature", false);
 	}
-	const double saved = get_editor_setting("ai_assistant/temperature", DEFAULT_TEMPERATURE);
+	const double saved = AISettings::get("temperature", DEFAULT_TEMPERATURE);
 	return !Math::is_equal_approx(saved, DEFAULT_TEMPERATURE);
 }
 

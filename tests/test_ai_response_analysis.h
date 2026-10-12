@@ -1,6 +1,10 @@
 #pragma once
 
 #include "../agent/ai_response_analysis.h"
+#include "../assets/ai_asset_request.h"
+#include "../agent/ai_plan.h"
+#include "../common/ai_code_text.h"
+#include "../network/ai_url_policy.h"
 #include "../agent/ai_response_parser.h"
 
 #include "core/io/ip_address.h"
@@ -114,8 +118,8 @@ TEST_CASE("[AIAssistant][Markers] a reply without markers asks for nothing") {
 TEST_CASE("[AIAssistant][Policy] public web URLs are allowed") {
 	String reason;
 
-	CHECK(AIResponseAnalysis::is_public_web_url("https://docs.godotengine.org/en/stable/", reason));
-	CHECK(AIResponseAnalysis::is_public_web_url("http://example.com:8080/page?x=1", reason));
+	CHECK(AIUrlPolicy::is_public_web_url("https://docs.godotengine.org/en/stable/", reason));
+	CHECK(AIUrlPolicy::is_public_web_url("http://example.com:8080/page?x=1", reason));
 }
 
 TEST_CASE("[AIAssistant][Policy] local, private and non-http URLs are rejected") {
@@ -144,7 +148,7 @@ TEST_CASE("[AIAssistant][Policy] local, private and non-http URLs are rejected")
 
 	for (int i = 0; rejected[i]; i++) {
 		String reason;
-		CHECK_MESSAGE(!AIResponseAnalysis::is_public_web_url(rejected[i], reason), rejected[i]);
+		CHECK_MESSAGE(!AIUrlPolicy::is_public_web_url(rejected[i], reason), rejected[i]);
 		CHECK_FALSE(reason.is_empty());
 	}
 }
@@ -152,8 +156,8 @@ TEST_CASE("[AIAssistant][Policy] local, private and non-http URLs are rejected")
 TEST_CASE("[AIAssistant][Policy] 172.x addresses outside the private range are public") {
 	String reason;
 
-	CHECK(AIResponseAnalysis::is_public_web_url("http://172.15.0.1/", reason));
-	CHECK(AIResponseAnalysis::is_public_web_url("http://172.32.0.1/", reason));
+	CHECK(AIUrlPolicy::is_public_web_url("http://172.15.0.1/", reason));
+	CHECK(AIUrlPolicy::is_public_web_url("http://172.32.0.1/", reason));
 }
 
 TEST_CASE("[AIAssistant][Policy] resolved addresses in private and reserved ranges are recognised") {
@@ -173,10 +177,10 @@ TEST_CASE("[AIAssistant][Policy] resolved addresses in private and reserved rang
 	};
 
 	for (int i = 0; private_addresses[i]; i++) {
-		CHECK_MESSAGE(AIResponseAnalysis::is_private_address(private_addresses[i]), private_addresses[i]);
+		CHECK_MESSAGE(AIUrlPolicy::is_private_address(private_addresses[i]), private_addresses[i]);
 	}
 	for (int i = 0; public_addresses[i]; i++) {
-		CHECK_MESSAGE(!AIResponseAnalysis::is_private_address(public_addresses[i]), String(public_addresses[i]));
+		CHECK_MESSAGE(!AIUrlPolicy::is_private_address(public_addresses[i]), String(public_addresses[i]));
 	}
 }
 
@@ -187,34 +191,34 @@ TEST_CASE("[AIAssistant][Policy] an address is judged the same however the resol
 		// What IP::resolve_hostname() hands back for this address.
 		const String resolved = String(IPAddress(private_addresses[i]));
 
-		CHECK_MESSAGE(AIResponseAnalysis::is_private_address(resolved), resolved);
+		CHECK_MESSAGE(AIUrlPolicy::is_private_address(resolved), resolved);
 	}
-	CHECK_FALSE(AIResponseAnalysis::is_private_address(String(IPAddress("2606:4700::1111"))));
-	CHECK_FALSE(AIResponseAnalysis::is_private_address(String(IPAddress("::ffff:8.8.8.8"))));
+	CHECK_FALSE(AIUrlPolicy::is_private_address(String(IPAddress("2606:4700::1111"))));
+	CHECK_FALSE(AIUrlPolicy::is_private_address(String(IPAddress("::ffff:8.8.8.8"))));
 }
 
 TEST_CASE("[AIAssistant][Policy] get_url_host strips user info, port and trailing dots") {
-	CHECK(AIResponseAnalysis::get_url_host("https://user:pw@Example.COM.:8443/path?x#y") == "example.com");
-	CHECK(AIResponseAnalysis::get_url_host("ftp://example.com/") == "");
+	CHECK(AIUrlPolicy::get_url_host("https://user:pw@Example.COM.:8443/path?x#y") == "example.com");
+	CHECK(AIUrlPolicy::get_url_host("ftp://example.com/") == "");
 }
 
 TEST_CASE("[AIAssistant][Policy] oversized URLs are rejected") {
 	String reason;
-	const String url = "https://example.com/?q=" + String("a").repeat(AIResponseAnalysis::MAX_URL_LENGTH);
+	const String url = "https://example.com/?q=" + String("a").repeat(AIUrlPolicy::MAX_URL_LENGTH);
 
-	CHECK_FALSE(AIResponseAnalysis::is_public_web_url(url, reason));
+	CHECK_FALSE(AIUrlPolicy::is_public_web_url(url, reason));
 }
 
 TEST_CASE("[AIAssistant][Policy] asset paths must stay inside the project") {
-	CHECK(AIResponseAnalysis::is_safe_asset_path(""));
-	CHECK(AIResponseAnalysis::is_safe_asset_path("res://art/hero.png"));
-	CHECK_FALSE(AIResponseAnalysis::is_safe_asset_path("res://../outside.png"));
-	CHECK_FALSE(AIResponseAnalysis::is_safe_asset_path("C:/Windows/system32/x.png"));
-	CHECK_FALSE(AIResponseAnalysis::is_safe_asset_path("user://x.png"));
+	CHECK(AIAssetRequest::is_safe_path(""));
+	CHECK(AIAssetRequest::is_safe_path("res://art/hero.png"));
+	CHECK_FALSE(AIAssetRequest::is_safe_path("res://../outside.png"));
+	CHECK_FALSE(AIAssetRequest::is_safe_path("C:/Windows/system32/x.png"));
+	CHECK_FALSE(AIAssetRequest::is_safe_path("user://x.png"));
 	// Generation must not be able to overwrite scripts or project files.
-	CHECK_FALSE(AIResponseAnalysis::is_safe_asset_path("res://project.godot"));
-	CHECK_FALSE(AIResponseAnalysis::is_safe_asset_path("res://player.gd"));
-	CHECK(AIResponseAnalysis::is_safe_asset_path("res://audio/hello.mp3"));
+	CHECK_FALSE(AIAssetRequest::is_safe_path("res://project.godot"));
+	CHECK_FALSE(AIAssetRequest::is_safe_path("res://player.gd"));
+	CHECK(AIAssetRequest::is_safe_path("res://audio/hello.mp3"));
 }
 
 TEST_CASE("[AIAssistant][Policy] memory notes become one short line without headings") {
@@ -247,7 +251,7 @@ TEST_CASE("[AIAssistant][Intent] task requests are not conversational") {
 // --- Plans ---
 
 TEST_CASE("[AIAssistant][Plan] numbered lines become steps and everything else is ignored") {
-	const Vector<String> steps = AIResponseAnalysis::parse_plan_steps(
+	const Vector<String> steps = AIPlan::parse_plan_steps(
 			"Here is the plan:\n\n1. Create the player scene\n  2) Add a camera\n- a bullet\n3 no separator\n10. Wire up input\n");
 
 	REQUIRE(steps.size() == 3);
@@ -260,14 +264,14 @@ TEST_CASE("[AIAssistant][Plan] steps are ticked off one at a time, in order") {
 	Vector<String> steps;
 	steps.push_back("1. First");
 	steps.push_back("2. Second");
-	String markdown = AIResponseAnalysis::build_plan_markdown(steps, "2026-01-01T10:00:00");
+	String markdown = AIPlan::build_plan_markdown(steps, "2026-01-01T10:00:00");
 
 	String first_label;
-	const bool marked_first = AIResponseAnalysis::mark_first_unchecked_step(markdown, first_label);
+	const bool marked_first = AIPlan::mark_first_unchecked_step(markdown, first_label);
 	String second_label;
-	const bool marked_second = AIResponseAnalysis::mark_first_unchecked_step(markdown, second_label);
+	const bool marked_second = AIPlan::mark_first_unchecked_step(markdown, second_label);
 	String none_label;
-	const bool marked_third = AIResponseAnalysis::mark_first_unchecked_step(markdown, none_label);
+	const bool marked_third = AIPlan::mark_first_unchecked_step(markdown, none_label);
 
 	CHECK(marked_first);
 	CHECK(first_label == "1. First");
@@ -281,13 +285,13 @@ TEST_CASE("[AIAssistant][Plan] steps are ticked off one at a time, in order") {
 // --- Summaries and extraction ---
 
 TEST_CASE("[AIAssistant][Analysis] summarize_code prefers the script's own last print") {
-	CHECK(AIResponseAnalysis::summarize_code("print(\"start\")\nnode.add_child(x)\nprint(\"Player created\")") == "Player created");
-	CHECK(AIResponseAnalysis::summarize_code("var n = Node.new()\nn.name = \"Enemy\"\nroot.add_child(n)") == "Added node 'Enemy' to the scene.");
-	CHECK(AIResponseAnalysis::summarize_code("var x = 1") == "Code executed successfully.");
+	CHECK(AICodeText::summarize_code("print(\"start\")\nnode.add_child(x)\nprint(\"Player created\")") == "Player created");
+	CHECK(AICodeText::summarize_code("var n = Node.new()\nn.name = \"Enemy\"\nroot.add_child(n)") == "Added node 'Enemy' to the scene.");
+	CHECK(AICodeText::summarize_code("var x = 1") == "Code executed successfully.");
 }
 
 TEST_CASE("[AIAssistant][Analysis] extract_script_paths finds each script once, without line numbers") {
-	const Vector<String> paths = AIResponseAnalysis::extract_script_paths(
+	const Vector<String> paths = AICodeText::extract_script_paths(
 			"Invalid call. Nonexistent function 'foo'\n    at: res://player.gd:42 @ _ready()\n"
 			"Error in \"res://enemies/boss.gd\"\n"
 			"again res://player.gd:7\n"
@@ -301,7 +305,7 @@ TEST_CASE("[AIAssistant][Analysis] extract_script_paths finds each script once, 
 TEST_CASE("[AIAssistant][Analysis] build_saved_script keeps a complete script and names it after its base class") {
 	String file_name;
 
-	const String script = AIResponseAnalysis::build_saved_script("# player\nextends CharacterBody2D\n\nfunc _ready():\n\tpass", 3, file_name);
+	const String script = AICodeText::build_saved_script("# player\nextends CharacterBody2D\n\nfunc _ready():\n\tpass", 3, file_name);
 
 	CHECK(script == "# player\nextends CharacterBody2D\n\nfunc _ready():\n\tpass");
 	CHECK(file_name == "characterbody2d_script_3.gd");
@@ -310,7 +314,7 @@ TEST_CASE("[AIAssistant][Analysis] build_saved_script keeps a complete script an
 TEST_CASE("[AIAssistant][Analysis] build_saved_script wraps editor code so the saved file parses") {
 	String file_name;
 
-	const String script = AIResponseAnalysis::build_saved_script("print(\"hi\")\nget_scene().add_child(Node.new())", 0, file_name);
+	const String script = AICodeText::build_saved_script("print(\"hi\")\nget_scene().add_child(Node.new())", 0, file_name);
 
 	CHECK(script == "@tool\nextends EditorScript\n\nfunc _run():\n\tprint(\"hi\")\n\tget_scene().add_child(Node.new())\n");
 	CHECK(file_name == "ai_editor_script_0.gd");
@@ -323,7 +327,7 @@ TEST_CASE("[AIAssistant][Analysis] dedupe_consecutive drops immediate repeats on
 	blocks.push_back("b");
 	blocks.push_back("a");
 
-	const Vector<String> unique = AIResponseAnalysis::dedupe_consecutive(blocks);
+	const Vector<String> unique = AICodeText::dedupe_consecutive(blocks);
 
 	REQUIRE(unique.size() == 3);
 	CHECK(unique[0] == "a");

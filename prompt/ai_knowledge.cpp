@@ -1,4 +1,5 @@
 #include "ai_knowledge.h"
+#include "../common/ai_settings.h"
 
 #include "ai_knowledge_data.gen.h"
 
@@ -9,7 +10,6 @@
 
 #ifdef TOOLS_ENABLED
 #include "editor/file_system/editor_paths.h"
-#include "editor/settings/editor_settings.h"
 #endif
 
 static const char *SYSTEM_PROMPT_FILE = "system_prompt.md";
@@ -47,12 +47,9 @@ String AIKnowledge::resolve_override_dir() {
 		return from_env;
 	}
 #ifdef TOOLS_ENABLED
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (es && es->has_setting("ai_assistant/knowledge_dir")) {
-		const String from_setting = String(es->get_setting("ai_assistant/knowledge_dir")).strip_edges();
-		if (!from_setting.is_empty()) {
-			return from_setting;
-		}
+	const String from_setting = String(AISettings::get("knowledge_dir", "")).strip_edges();
+	if (!from_setting.is_empty()) {
+		return from_setting;
 	}
 	if (EditorPaths::get_singleton()) {
 		const String default_dir = EditorPaths::get_singleton()->get_config_dir().path_join("ai_assistant").path_join("knowledge");

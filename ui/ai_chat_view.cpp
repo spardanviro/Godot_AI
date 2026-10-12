@@ -1,6 +1,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_chat_view.h"
+#include "../common/ai_code_text.h"
 
 #include "../agent/ai_agent_controller.h"
 #include "../common/ai_log.h"
@@ -553,7 +554,7 @@ void AIChatView::show_history(const Array &p_history, const Ref<AIResponseParser
 		for (int j = 0; j < raw_blocks.size(); j++) {
 			blocks.push_back(raw_blocks[j]);
 		}
-		blocks = AIResponseAnalysis::dedupe_consecutive(blocks);
+		blocks = AICodeText::dedupe_consecutive(blocks);
 
 		// One message, however many code blocks cut its text into segments.
 		const String reply_text = String("\n\n").join(text_segments).strip_edges();
@@ -571,8 +572,8 @@ void AIChatView::show_history(const Array &p_history, const Ref<AIResponseParser
 		text->push_color(ai_themed(COLOR_SUCCESS));
 		// The history does not say whether the code ran (in ASK mode it does
 		// not), so the fallback summary, which says it did, is not used here.
-		const String summary = AIResponseAnalysis::summarize_code(blocks[blocks.size() - 1]);
-		const bool says_nothing = summary == AIResponseAnalysis::summarize_code(String());
+		const String summary = AICodeText::summarize_code(blocks[blocks.size() - 1]);
+		const bool says_nothing = summary == AICodeText::summarize_code(String());
 		text->add_text(says_nothing ? AI_L("Code", "代码") + " (" + itos(blocks.size()) + ")" : summary);
 		text->pop();
 		text->add_text("  ");

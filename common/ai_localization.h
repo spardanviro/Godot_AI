@@ -3,7 +3,7 @@
 #ifdef TOOLS_ENABLED
 
 #include "core/string/ustring.h"
-#include "editor/settings/editor_settings.h"
+#include "ai_settings.h"
 
 // Simple localization for Godot AI assistant UI.
 // Supports: "en" (English), "zh" (Chinese).
@@ -140,11 +140,7 @@ public:
 
 private:
 	static String _get_language() {
-		EditorSettings *es = EditorSettings::get_singleton();
-		if (es && es->has_setting("ai_assistant/language")) {
-			return es->get_setting("ai_assistant/language");
-		}
-		return "en";
+		return AISettings::get("language", "en");
 	}
 
 	static String _get_en(StringID p_id) {

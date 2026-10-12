@@ -131,6 +131,12 @@ Requests   41 (11 automatic retries)
 
 ## Checking the knowledge files against the engine
 
+`check_layers.py` checks that the module's folders only include downwards and that the editor's settings are read in one place (see "Layers" in the main README). It needs nothing but the sources:
+
+```bash
+python check_layers.py
+```
+
 `check_knowledge_refs.py` reads every `Class.member` the knowledge files mention and looks it up in the engine's class documentation (inheritance included). It catches renamed and misremembered API names; it cannot judge prose.
 
 ```bash

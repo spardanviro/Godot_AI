@@ -3,10 +3,8 @@
 #ifdef TOOLS_ENABLED
 
 #include "../execution/ai_permission_manager.h"
-#include "../providers/ai_provider.h"
+#include "../providers/ai_provider_settings.h"
 
-#include "core/templates/hash_map.h"
-#include "core/templates/hash_set.h"
 #include "scene/gui/dialogs.h"
 
 class AIModelListFetcher;
@@ -20,9 +18,10 @@ class SpinBox;
 class TabContainer;
 class VBoxContainer;
 
-// The "Godot AI Settings" window: shows the ai_assistant/* editor settings on
-// four tabs (model, general, permissions, advanced), writes them back on OK
-// and stores API keys in AICredentialStore. Cancel discards everything,
+// The "Godot AI Settings" window: shows the assistant's settings on four tabs
+// (model, general, permissions, advanced) and writes them back on OK. What is
+// being edited about the provider — its endpoint, its API key — is held by
+// AIProviderSettings; the dialog shows it. Cancel discards everything,
 // including a language switch tried out in the dialog. Emits language_changed
 // when the interface language (or anything else the panel renders text from)
 // may have changed.
@@ -98,15 +97,7 @@ class AISettingsDialog : public ConfirmationDialog {
 
 	AIModelListFetcher *model_list_fetcher = nullptr;
 
-	// Keys typed in this session of the dialog, by provider id. Stored keys
-	// are never loaded into the dialog; see _load_settings().
-	HashMap<String, String> typed_api_keys;
-	// The endpoint field's content per provider id, so that looking at
-	// another provider and coming back does not lose a custom endpoint.
-	HashMap<String, String> endpoints;
-	// Providers whose stored key is removed on OK.
-	HashSet<String> keys_to_clear;
-	int current_provider = 0; // Index into AIProviderCatalog.
+	AIProviderSettings provider_settings;
 	// The user changed max tokens by hand since the dialog was loaded; the
 	// model list arriving later must not replace what they entered.
 	bool max_tokens_edited = false;
@@ -139,9 +130,9 @@ class AISettingsDialog : public ConfirmationDialog {
 	void _on_open_knowledge_dir_pressed();
 
 	// --- Provider, key and model (ai_settings_dialog_model.cpp) ---
-	Ref<AIProvider> _make_provider(const String &p_api_key) const;
-	// Shows a provider's key field, endpoint hint and known models.
-	void _show_provider(int p_index);
+	// Shows the selected provider's key field, endpoint and known models.
+	void _show_provider();
+	void _on_endpoint_changed(const String &p_text);
 	void _on_provider_changed(int p_index);
 	void _on_api_key_changed(const String &p_text);
 	void _on_show_key_toggled(bool p_shown);
