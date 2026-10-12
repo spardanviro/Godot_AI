@@ -284,6 +284,7 @@ private:
 	String _generate_asset(const AIToolCall &p_call, bool &r_ok);
 	String _remember(const AIToolCall &p_call, bool &r_ok);
 	bool _start_script_tool(const AIToolCall &p_call);
+	String _script_question(const String &p_review_message) const;
 	void _execute_script_tool(const String &p_code);
 	String _get_mode_prompt_id() const;
 	void _on_stream_poll();

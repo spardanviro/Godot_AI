@@ -57,6 +57,9 @@ class AIAssistantPanel : public VBoxContainer {
 	AISettingsDialog *settings_dialog = nullptr;
 	bool settings_reload_pending = false; // Settings changed while a run was in flight.
 	ConfirmationDialog *permission_dialog = nullptr;
+	Label *permission_text = nullptr;
+	// The code a permission prompt is about, whole and scrollable.
+	TextEdit *permission_code = nullptr;
 	// For actions that cannot be taken back (restoring a checkpoint,
 	// deleting a chat): asks first, then runs confirm_action.
 	ConfirmationDialog *confirm_dialog = nullptr;
@@ -85,7 +88,7 @@ class AIAssistantPanel : public VBoxContainer {
 
 	// --- Controller events ---
 	void _on_state_changed(int p_state);
-	void _on_permission_requested(const String &p_text);
+	void _on_permission_requested(const String &p_text, const String &p_code);
 	void _on_session_changed();
 
 	// --- History view ---

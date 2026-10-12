@@ -211,7 +211,7 @@ void AIAgentController::_handle_code(const String &p_code) {
 			}
 			run.code = review.code;
 			_set_state(STATE_AWAITING_PERMISSION);
-			emit_signal(SNAME("permission_requested"), review.message);
+			emit_signal(SNAME("permission_requested"), _script_question(review.message), review.code);
 		} break;
 		case AICodeRunner::ACTION_RUN: {
 			_execute(review.code);

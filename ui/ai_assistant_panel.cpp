@@ -41,6 +41,12 @@ static const int INPUT_MIN_HEIGHT = 60;
 static const int INPUT_MAX_HEIGHT = 200;
 static const int INPUT_FALLBACK_MARGIN = 8;
 static const int ATTACHMENT_MAX_CHARS = 50000;
+// The permission prompt: how wide its text is, and how much of the code it
+// shows at once before the view scrolls.
+static const int PERMISSION_TEXT_WIDTH = 520;
+static const int PERMISSION_CODE_WIDTH = 720;
+static const int PERMISSION_CODE_MIN_LINES = 4;
+static const int PERMISSION_CODE_MAX_LINES = 20;
 static const float FILE_DIALOG_RATIO = 0.6f;
 static const char *SCREENSHOT_DIR = "user://ai_screenshots";
 
@@ -373,8 +379,20 @@ void AIAssistantPanel::_on_state_changed(int p_state) {
 	}
 }
 
-void AIAssistantPanel::_on_permission_requested(const String &p_text) {
-	permission_dialog->set_text(p_text);
+void AIAssistantPanel::_on_permission_requested(const String &p_text, const String &p_code) {
+	permission_text->set_text(p_text);
+	const String code = p_code.strip_edges();
+	permission_code->set_visible(!code.is_empty());
+	if (!code.is_empty()) {
+		permission_code->add_theme_font_override(SceneStringName(font), get_theme_font(SNAME("source"), EditorStringName(EditorFonts)));
+		permission_code->set_text(code);
+		permission_code->set_v_scroll(0);
+		permission_code->set_h_scroll(0);
+		// As tall as the code, up to a limit; beyond it the view scrolls.
+		const int lines = CLAMP(permission_code->get_line_count() + 1, PERMISSION_CODE_MIN_LINES, PERMISSION_CODE_MAX_LINES);
+		permission_code->set_custom_minimum_size(Size2(PERMISSION_CODE_WIDTH * EDSCALE, lines * permission_code->get_line_height()));
+	}
+	permission_dialog->reset_size();
 	permission_dialog->popup_centered();
 }
 
@@ -597,6 +615,17 @@ void AIAssistantPanel::_build_input_bar() {
 
 void AIAssistantPanel::_build_dialogs() {
 	permission_dialog = memnew(ConfirmationDialog);
+	VBoxContainer *permission_box = memnew(VBoxContainer);
+	permission_dialog->add_child(permission_box);
+	permission_text = memnew(Label);
+	permission_text->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	permission_text->set_custom_minimum_size(Size2(PERMISSION_TEXT_WIDTH * EDSCALE, 0));
+	permission_box->add_child(permission_text);
+	permission_code = memnew(TextEdit);
+	permission_code->set_editable(false);
+	permission_code->set_context_menu_enabled(false);
+	permission_code->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	permission_box->add_child(permission_code);
 	permission_dialog->connect("confirmed", callable_mp(this, &AIAssistantPanel::_on_permission_confirmed));
 	permission_dialog->connect("canceled", callable_mp(this, &AIAssistantPanel::_on_permission_cancelled));
 	add_child(permission_dialog);

@@ -68,7 +68,8 @@ void AIAgentController::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("execution_finished", PropertyInfo(Variant::DICTIONARY, "report")));
 	// { text_segments, steps, file }
 	ADD_SIGNAL(MethodInfo("plan_ready", PropertyInfo(Variant::DICTIONARY, "plan")));
-	ADD_SIGNAL(MethodInfo("permission_requested", PropertyInfo(Variant::STRING, "text")));
+	// code: the code the question is about, whole; empty when it is about a tool call.
+	ADD_SIGNAL(MethodInfo("permission_requested", PropertyInfo(Variant::STRING, "text"), PropertyInfo(Variant::STRING, "code")));
 	ADD_SIGNAL(MethodInfo("session_changed"));
 	// The model looked something up: `name(arguments)` and whether it worked.
 	// kind is an AIToolSpec::Kind.

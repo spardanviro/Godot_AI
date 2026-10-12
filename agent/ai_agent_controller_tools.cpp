@@ -26,24 +26,6 @@ static const int RUN_SCENE_DEFAULT_SEC = 3;
 static const int RUN_SCENE_MAX_SEC = 10;
 static const int RUN_SCENE_ERROR_COUNT = 20;
 static const char *TOOL_SCREENSHOT_PATH = "user://ai_screenshots/tool_screenshot.png";
-// The code of a fallback script is shown to the user who has to allow it.
-static const int SCRIPT_PROMPT_LINES = 30;
-static const int SCRIPT_PROMPT_CHARS = 2400;
-
-// As much of a script as a confirmation dialog can show, and how much is missing.
-static String _script_excerpt(const String &p_code) {
-	const PackedStringArray lines = p_code.strip_edges().split("\n");
-	String excerpt;
-	int shown = 0;
-	while (shown < lines.size() && shown < SCRIPT_PROMPT_LINES && excerpt.length() + lines[shown].length() <= SCRIPT_PROMPT_CHARS) {
-		excerpt += lines[shown].replace("\t", "    ") + "\n";
-		shown++;
-	}
-	if (shown < lines.size()) {
-		excerpt += vformat(AI_L("... and %d more lines.\n", "…… 另有 %d 行未显示。\n"), lines.size() - shown);
-	}
-	return excerpt;
-}
 
 // Whether this request offers tools: the provider speaks them, the user has
 // not turned them off, and this model has not refused them before.
@@ -213,7 +195,7 @@ bool AIAgentController::_start_tool(const AIToolCall &p_call) {
 		run.tool_awaiting_permission = true;
 		_set_state(STATE_AWAITING_PERMISSION);
 		emit_signal(SNAME("permission_requested"),
-				AI_L("The assistant wants to:\n\n", "助手想要执行：\n\n") + AIToolbox::describe_call(p_call) + (what.is_empty() ? String() : "\n\n" + what));
+				AI_L("The assistant wants to:\n\n", "助手想要执行：\n\n") + AIToolbox::describe_call(p_call) + (what.is_empty() ? String() : "\n\n" + what), String());
 		return false;
 	}
 	return _execute_tool(p_call);
@@ -459,6 +441,18 @@ String AIAgentController::_remember(const AIToolCall &p_call, bool &r_ok) {
 // text, and code can build at run time what they look for. So what decides
 // is the user: the code is shown, and runs only once they have allowed it.
 // The outcome is handed back as the tool's result instead of driving a retry.
+// What the user is asked about code that needs their word. The review's own
+// question is kept when it says something (what the code will touch); its
+// generic one blames the auto-execute setting, which is not why a model
+// that has the tools is asked.
+String AIAgentController::_script_question(const String &p_review_message) const {
+	const bool autorun = AISettings::get("autorun", true);
+	if (autorun && p_review_message == TR(STR_PERM_EXECUTE_CONFIRM)) {
+		return AI_L("Run this code?", "是否运行这段代码？");
+	}
+	return p_review_message;
+}
+
 bool AIAgentController::_start_script_tool(const AIToolCall &p_call) {
 	Dictionary arguments;
 	AIToolbox::parse_arguments(p_call.arguments, arguments);
@@ -484,9 +478,11 @@ bool AIAgentController::_start_script_tool(const AIToolCall &p_call) {
 				run.tool_awaiting_permission = true;
 				_set_state(STATE_AWAITING_PERMISSION);
 					const String description = String(arguments.get("description", "")).strip_edges();
+					// The whole of it: what the user allows is what they could read.
 					emit_signal(SNAME("permission_requested"),
 							AI_L("The assistant wants to run this code in the editor:\n\n", "助手想在编辑器中运行这段代码：\n\n") +
-									(description.is_empty() ? String() : description + "\n\n") + _script_excerpt(review.code) + "\n" + review.message);
+									(description.is_empty() ? String() : description + "\n\n") + _script_question(review.message),
+							review.code);
 					return false;
 			}
 			break;
