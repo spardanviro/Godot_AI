@@ -108,6 +108,24 @@ Safety policy for editor-executed code (checked on the token stream, so comments
 
 This is static analysis, not a sandbox. It cannot see values assembled at run time: a path or method name built from pieces passes the check. Review generated code before running it on a machine or project you care about, and keep auto-execute off if you want to approve each run.
 
+### Tools
+
+With a provider that speaks tool calls — all five do — the model works on the project by calling typed tools instead of writing code to be run. Turn it off with *Settings > General > Tools*; a model or endpoint that rejects tool calls is detected on its first request and used the old way from then on.
+
+| Kind | Tools | |
+|------|-------|-|
+| Look | `get_scene_tree`, `get_node_properties`, `read_file`, `list_files`, `get_errors` | Change nothing and need no permission. The only tools offered in ASK and PLAN modes. |
+| Edit | `create_node`, `instantiate_scene`, `set_node_properties`, `rename_node`, `delete_node`, `connect_signal`, `attach_script`, `write_file`, `save_scene` | Each falls under one permission category (*Settings > Permissions*): allowed, asked about, or refused, per tool call. |
+| Host | `run_scene`, `take_screenshot`, `run_editor_script` | Run the game for a few seconds and report its errors; show the viewport to the model; run arbitrary editor code. |
+
+- **Undo.** Every scene change a tool makes is one action of the editor's undo history, named after what it did: Ctrl+Z takes it back like a change made by hand. Before the first change for a message a checkpoint is taken, and the transcript gets a link that reverts everything that follows, files included.
+- **Values.** Arguments are JSON; engine values are written as GDScript writes them (`"Vector2(100, 50)"`), as a list of components (`[100, 50]`) or as a colour code. A resource is a `res://` path or is created in place: `{"$resource": "RectangleShape2D", "size": "Vector2(32, 32)"}`.
+- **Files.** `read_file` and `write_file` stay inside `res://`, skip hidden folders, and do not touch `export_presets.cfg` (signing keys) or files the editor owns (`.tscn`, `.import`, `project.godot`). A script that does not parse is not written.
+- **`run_editor_script`** is the fallback for what no tool does (project settings, input actions, animations). It goes through the same gate as a code block — syntax, safety policy, permissions — and its outcome is the tool's result.
+- **Errors are results.** A tool never fails the run: what went wrong is handed back as text for the model to act on. A message may take at most 8 rounds of tool calls.
+
+A reply with a `gdscript` code block is still executed as before, so models and endpoints without tool calls keep working.
+
 ### Permission system
 
 Execution permissions are categorized and configurable per operation type:
@@ -244,6 +262,10 @@ Whether a request may start, whether code may run and what Stop means all follow
 | `ui/ai_model_selector.*`, `network/ai_model_list_fetcher.*` | Model name field with a pick list; live model list from the provider's API |
 | `providers/ai_provider_catalog.h`, `providers/ai_provider_catalog.cpp` | Display names and known models per provider |
 | `agent/ai_agent_controller.*`, `agent/ai_agent_controller_replies.cpp` | Agent loop as an explicit state machine; signals instead of UI calls |
+| `agent/ai_agent_controller_tools.cpp` | The tool round: permissions, checkpoint, tools that wait (running the game) or need the user |
+| `tools/ai_toolbox.*`, `tools/ai_tool_specs.cpp`, `tools/ai_edit_tools.cpp` | The tools: what the model is told about them, the ones that look, the ones that edit (as undoable editor actions) |
+| `tools/ai_tool_values.*` | Tool arguments (JSON) to engine values and resources |
+| `common/ai_tool_types.h` | Tool specification, tool call, and the assembly of a call from stream fragments |
 | `agent/ai_session.*` | Conversation history, context compression, overflow recovery, attachment de-duplication |
 | `agent/ai_chat_store.*` | Saved chats (`user://ai_assistant_chats`) |
 | `network/ai_stream_client.*`, `network/ai_stream_protocol.*` | Streaming HTTP client; SSE decoding, UTF-8 boundaries, `<think>` tag splitting |
@@ -326,7 +348,7 @@ Keys found in the settings file by an older version are moved into the store the
 The folders form a stack, lowest first:
 
 ```text
-common < providers < network < execution < prompt < assets < agent < ui
+common < providers < network < execution < prompt < assets < tools < agent < ui
 ```
 
 A folder includes headers from its own folder and from the ones before it, never from one after it. The editor's settings are reached through `common/ai_settings.cpp` only (the `ui` folder also registers them with the editor). `evals/check_layers.py` checks both rules and names every `#include` that breaks one:
@@ -337,7 +359,7 @@ python evals/check_layers.py
 
 ## Tests
 
-Unit tests cover the logic that does not need a running editor: the response parser, side-effect markers, URL and path policy, the safety policy and risk tiers, gotcha / domain / API-doc selection, the knowledge file formats and overrides, Markdown rendering, the settings and the provider settings model, history compression and overflow recovery, SSE decoding, the providers' request and response handling, and the credential store.
+Unit tests cover the logic that does not need a running editor: the response parser, side-effect markers, URL and path policy, the safety policy and risk tiers, gotcha / domain / API-doc selection, the knowledge file formats and overrides, Markdown rendering, the settings and the provider settings model, the tools (on a scene built in the test) and each provider's tool-call format, history compression and overflow recovery, SSE decoding, the providers' request and response handling, and the credential store.
 
 ```bash
 scons platform=windows target=editor tests=yes
@@ -448,6 +470,7 @@ ai_assistant/
 |- network/       streaming client, web search and fetch, proxy, model list
 |- providers/     provider interface, implementations, catalog, API key storage
 |- assets/        image and speech generation
+|- tools/         the tools a model calls: look, edit, and their argument conversion
 |- common/        settings access, logging, localization, notice levels, code text helpers
 |- knowledge/     prompts, gotchas, API notes, domain guidance (Markdown)
 |- tests/         unit tests (doctest)

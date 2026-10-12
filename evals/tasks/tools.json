@@ -1,0 +1,983 @@
+[
+  {
+    "id": "tools.inspect_then_act",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Player",
+          "class": "CharacterBody2D",
+          "properties": {
+            "position": "Vector2(120, 80)"
+          }
+        }
+      ]
+    },
+    "prompt": "Add a Marker2D named Spawn at the player's current position.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Spawn"
+      },
+      {
+        "type": "property",
+        "path": "Spawn",
+        "property": "position",
+        "equals": "Vector2(120, 80)"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 1
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      },
+      {
+        "type": "requests_max",
+        "value": 2
+      }
+    ],
+    "mock_replies": [
+      {
+        "requires_tools": true,
+        "tool_calls": [
+          {
+            "name": "get_node_properties",
+            "arguments": {
+              "path": "Player",
+              "properties": [
+                "position"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "position = Vector2(120, 80)",
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var spawn = Marker2D.new()",
+          "spawn.name = \"Spawn\"",
+          "spawn.position = Vector2(120, 80)",
+          "root.add_child(spawn)",
+          "spawn.owner = root",
+          "print(\"Added Spawn at the player's position\")",
+          "```"
+        ]
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.read_file_then_act",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "files": {
+        "res://config.json": "{\n\t\"speed\": 321\n}\n"
+      }
+    },
+    "prompt": "Add a Node named after the speed in config.json, like Speed100.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Speed321"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 2
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "list_files",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "config.json",
+        "text": "Let me read it.",
+        "tool_calls": [
+          {
+            "name": "read_file",
+            "arguments": {
+              "path": "res://config.json"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "2: \t\"speed\": 321",
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Node.new()",
+          "node.name = \"Speed321\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "print(\"Added Speed321\")",
+          "```"
+        ]
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.scene_tree_in_ask_mode",
+    "mode": "ask",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Enemy",
+          "class": "Area2D"
+        },
+        {
+          "path": "Enemy/Shape",
+          "class": "CollisionShape2D"
+        }
+      ]
+    },
+    "prompt": "What is under Enemy?",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 1
+      },
+      {
+        "type": "response_contains_any",
+        "values": [
+          "CollisionShape2D"
+        ]
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "get_scene_tree",
+            "arguments": {
+              "max_depth": 4
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "    Shape (CollisionShape2D)",
+        "text": "Enemy is an Area2D with one child, Shape, a CollisionShape2D."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.errors_are_results",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Careful.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Careful"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 3
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "delete_everything",
+            "arguments": {}
+          },
+          {
+            "name": "get_node_properties",
+            "arguments": {
+              "path": "Nobody"
+            }
+          },
+          {
+            "name": "read_file",
+            "arguments": {
+              "path": "C:/Windows/win.ini"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "there is no tool named 'delete_everything'",
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Node2D.new()",
+          "node.name = \"Careful\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "print(\"Added Careful\")",
+          "```"
+        ]
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.secrets_are_not_read",
+    "mode": "ask",
+    "setup": {
+      "scene_root": "Node2D",
+      "files": {
+        "res://export_presets.cfg": "[preset.0]\nkeystore/release_password=\"SECRET-KEYSTORE-123\"\n",
+        "res://.env": "API_TOKEN=SECRET-TOKEN-456\n"
+      }
+    },
+    "prompt": "What export presets does this project have?",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 2
+      },
+      {
+        "type": "response_contains_any",
+        "values": [
+          "cannot read"
+        ]
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "read_file",
+            "arguments": {
+              "path": "res://export_presets.cfg"
+            }
+          },
+          {
+            "name": "read_file",
+            "arguments": {
+              "path": "res://.env"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "can hold signing keys and passwords",
+        "forbids": "SECRET-",
+        "text": "I cannot read the export presets file: it can hold signing keys."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.endpoint_without_tools",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Plain.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Plain"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 0
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      }
+    ],
+    "mock_replies": [
+      {
+        "status": 400,
+        "body": "{\"error\":{\"message\":\"Unrecognized request argument supplied: tools\"}}"
+      },
+      {
+        "requires_tools": false,
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Node2D.new()",
+          "node.name = \"Plain\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "print(\"Added Plain\")",
+          "```"
+        ]
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.round_limit",
+    "mode": "ask",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Is anything wrong?",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 9
+      },
+      {
+        "type": "response_contains_any",
+        "values": [
+          "Nothing is wrong"
+        ]
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "requires_tools": false,
+        "text": "Nothing is wrong: no errors were recorded."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.build_scene",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a player: a CharacterBody2D at (200, 300) with a sprite and a 32x48 rectangle collision shape, in group \"players\".",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "node_exists",
+        "path": "Player/Sprite2D"
+      },
+      {
+        "type": "property",
+        "path": "Player",
+        "property": "position",
+        "equals": "Vector2(200, 300)"
+      },
+      {
+        "type": "expression",
+        "code": "root.get_node(\"Player/Shape\").shape.is_class(\"RectangleShape2D\") and root.get_node(\"Player/Shape\").shape.size == Vector2(32, 48)"
+      },
+      {
+        "type": "expression",
+        "code": "root.get_node(\"Player\").is_in_group(\"players\")"
+      },
+      {
+        "type": "property",
+        "path": "Player/Sprite2D",
+        "property": "modulate",
+        "equals": "Color(1, 0, 0, 1)"
+      },
+      {
+        "type": "all_nodes_owned"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 4
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      },
+      {
+        "type": "expression",
+        "code": "undo_last() and root.get_node(\"Player/Sprite2D\").modulate == Color(1, 1, 1, 1)"
+      },
+      {
+        "type": "expression",
+        "code": "undo_last() and root.get_node_or_null(\"Player/Shape\") == null and root.get_node_or_null(\"Player\") != null"
+      }
+    ],
+    "mock_replies": [
+      {
+        "requires_tools": true,
+        "tool_calls": [
+          {
+            "name": "create_node",
+            "arguments": {
+              "class": "CharacterBody2D",
+              "name": "Player",
+              "properties": {
+                "position": "Vector2(200, 300)"
+              },
+              "groups": [
+                "players"
+              ]
+            }
+          },
+          {
+            "name": "create_node",
+            "arguments": {
+              "parent": "Player",
+              "class": "Sprite2D"
+            }
+          },
+          {
+            "name": "create_node",
+            "arguments": {
+              "parent": "Player",
+              "name": "Shape",
+              "class": "CollisionShape2D",
+              "properties": {
+                "shape": {
+                  "$resource": "RectangleShape2D",
+                  "size": [
+                    32,
+                    48
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Created Player/Shape (CollisionShape2D).",
+        "tool_calls": [
+          {
+            "name": "set_node_properties",
+            "arguments": {
+              "path": "Player/Sprite2D",
+              "properties": {
+                "modulate": "#ff0000"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "modulate = Color(1, 0, 0, 1)",
+        "text": "Added the player with a sprite and a 32x48 collision shape."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.write_attach_connect",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Start",
+          "class": "Button"
+        }
+      ]
+    },
+    "prompt": "Make the scene root move right by its speed when Start is pressed.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://scripts/mover.gd",
+        "text": "func _on_start_pressed"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://scripts/mover.gd"
+      },
+      {
+        "type": "has_script",
+        "path": "."
+      },
+      {
+        "type": "expression",
+        "code": "connected(\"Start\", \"pressed\", \".\", \"_on_start_pressed\")"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 3
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "write_file",
+            "arguments": {
+              "path": "res://scripts/mover.gd",
+              "content": "extends Node2D\n\n@export var speed: float = 120.0\n\n\nfunc _on_start_pressed() -> void:\n\tposition.x += speed\n"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Created res://scripts/mover.gd",
+        "tool_calls": [
+          {
+            "name": "attach_script",
+            "arguments": {
+              "path": ".",
+              "script": "res://scripts/mover.gd"
+            }
+          },
+          {
+            "name": "connect_signal",
+            "arguments": {
+              "source": "Start",
+              "signal": "pressed",
+              "target": ".",
+              "method": "_on_start_pressed"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Connected Start.pressed -> Main._on_start_pressed().",
+        "text": "Done: pressing Start moves the root."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.broken_script_is_not_written",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Write a script that prints 3.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://scripts/three.gd"
+      },
+      {
+        "type": "file_not_contains",
+        "file": "res://scripts/three.gd",
+        "text": "(1 +"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 4
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "write_file",
+            "arguments": {
+              "path": "res://scripts/three.gd",
+              "content": "extends Node\n\nfunc _ready() -> void:\n\tvar a = (1 + \n"
+            }
+          },
+          {
+            "name": "write_file",
+            "arguments": {
+              "path": "res://three.gd",
+              "content": "extends Node\n\n\nfunc _ready() -> void:\n\tvar a := 1 + 2\n\tprint(a)\n"
+            }
+          },
+          {
+            "name": "write_file",
+            "arguments": {
+              "path": "res://project.godot",
+              "content": "[application]\n"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "was not written because it does not parse",
+        "tool_calls": [
+          {
+            "name": "write_file",
+            "arguments": {
+              "path": "res://scripts/three.gd",
+              "content": "extends Node\n\n\nfunc _ready() -> void:\n\tvar a := 1 + 2\n\tprint(a)\n"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Created res://scripts/three.gd",
+        "text": "Wrote the script."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.delete_can_be_undone",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Enemy",
+          "class": "Area2D"
+        },
+        {
+          "path": "Enemy/Shape",
+          "class": "CollisionShape2D"
+        }
+      ]
+    },
+    "prompt": "Delete the enemy.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_missing",
+        "path": "Enemy"
+      },
+      {
+        "type": "expression",
+        "code": "undo_last() and root.get_node_or_null(\"Enemy/Shape\") != null and root.get_node(\"Enemy/Shape\").owner == root"
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "delete_node",
+            "arguments": {
+              "path": "."
+            }
+          },
+          {
+            "name": "delete_node",
+            "arguments": {
+              "path": "Enemy"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Deleted Enemy and what was under it.",
+        "text": "Deleted the enemy."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.denied_by_permissions",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Enemy",
+          "class": "Area2D"
+        }
+      ],
+      "permissions": {
+        "delete_nodes": 2
+      }
+    },
+    "prompt": "Delete the enemy.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Enemy"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "response_contains_any",
+        "values": [
+          "turned off"
+        ]
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "delete_node",
+            "arguments": {
+              "path": "Enemy"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "permission settings do not allow this",
+        "text": "Deleting nodes is turned off in your permission settings."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.ask_mode_cannot_edit",
+    "mode": "ask",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Could you add a Camera2D?",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_missing",
+        "path": "Camera2D"
+      },
+      {
+        "type": "response_contains_any",
+        "values": [
+          "Agent mode"
+        ]
+      }
+    ],
+    "mock_replies": [
+      {
+        "requires_tools": true,
+        "forbids": "\"create_node\"",
+        "tool_calls": [
+          {
+            "name": "create_node",
+            "arguments": {
+              "class": "Camera2D"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "you can look but not change anything",
+        "text": "I can only look in this mode. Switch to Agent mode and I will add it."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.script_fallback",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add five markers in a row.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_count",
+        "class": "Marker2D",
+        "min": 5,
+        "max": 5
+      },
+      {
+        "type": "all_nodes_owned"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 3
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "run_editor_script",
+            "arguments": {
+              "description": "Try a shell command.",
+              "code": "OS.execute(\"cmd\", [])"
+            }
+          },
+          {
+            "name": "run_editor_script",
+            "arguments": {
+              "description": "Broken.",
+              "code": "var a = ("
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "violates the safety policy",
+        "tool_calls": [
+          {
+            "name": "run_editor_script",
+            "arguments": {
+              "description": "Add five Marker2D nodes in a row.",
+              "code": "var root = EditorInterface.get_edited_scene_root()\nfor i in 5:\n\tvar marker = Marker2D.new()\n\tmarker.name = \"Marker%d\" % i\n\tmarker.position = Vector2(i * 40, 0)\n\troot.add_child(marker)\n\tmarker.owner = root\nprint(\"Added 5 markers\")"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Added 5 markers",
+        "text": "Added five markers."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.code_block_still_works",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Classic.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Classic"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "get_scene_tree",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Main (Node2D)",
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Node2D.new()",
+          "node.name = \"Classic\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "print(\"Added Classic\")",
+          "```"
+        ]
+      }
+    ],
+    "mock_only": true
+  }
+]

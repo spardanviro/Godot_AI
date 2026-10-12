@@ -41,6 +41,41 @@ String OpenAICompatibleProvider::_get_base_url() const {
 	return base;
 }
 
+// A history message in the form the API takes. Ordinary messages already
+// are; the two kinds of a tool round are rewritten.
+Dictionary OpenAICompatibleProvider::_to_wire_message(const Dictionary &p_message) {
+	if (p_message.has("tool_calls")) {
+		Array calls;
+		const Array stored = p_message["tool_calls"];
+		for (int i = 0; i < stored.size(); i++) {
+			const Dictionary call = stored[i];
+			Dictionary function;
+			function["name"] = call.get("name", "");
+			function["arguments"] = call.get("arguments", "{}");
+			Dictionary entry;
+			entry["id"] = call.get("id", "");
+			entry["type"] = "function";
+			entry["function"] = function;
+			calls.push_back(entry);
+		}
+		Dictionary message;
+		message["role"] = "assistant";
+		// Text beside the calls is optional; an empty string is refused by some servers.
+		const String content = p_message.get("content", "");
+		message["content"] = content.is_empty() ? Variant() : Variant(content);
+		message["tool_calls"] = calls;
+		return message;
+	}
+	if (String(p_message.get("role", "")) == "tool") {
+		Dictionary message;
+		message["role"] = "tool";
+		message["tool_call_id"] = p_message.get("tool_call_id", "");
+		message["content"] = p_message.get("content", "");
+		return message;
+	}
+	return p_message;
+}
+
 String OpenAICompatibleProvider::_build_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message, bool p_stream) const {
 	Dictionary body;
 	body["model"] = _get_effective_model();
@@ -61,7 +96,29 @@ String OpenAICompatibleProvider::_build_body(const String &p_system_prompt, cons
 	messages.push_back(sys_msg);
 
 	for (int i = 0; i < p_messages.size(); i++) {
-		messages.push_back(p_messages[i]);
+		messages.push_back(_to_wire_message(p_messages[i]));
+	}
+
+	if (!tools.is_empty()) {
+		Array offered;
+		for (const AIToolSpec &tool : tools) {
+			Dictionary function;
+			function["name"] = tool.name;
+			function["description"] = tool.description;
+			function["parameters"] = tool.parameters;
+			Dictionary entry;
+			entry["type"] = "function";
+			entry["function"] = function;
+			offered.push_back(entry);
+		}
+		body["tools"] = offered;
+	}
+
+	// After a tool round there is nothing new from the user: the model
+	// carries on from the results.
+	if (p_user_message.is_empty() && pending_image_png_b64.is_empty() && !tools.is_empty()) {
+		body["messages"] = messages;
+		return JSON::stringify(body, "", false);
 	}
 
 	Dictionary user_msg;
@@ -263,6 +320,30 @@ Dictionary OpenAICompatibleProvider::parse_stream_delta_ex(const String &p_data)
 	// thinking tokens in "reasoning_content".
 	result["thinking"] = _string_or_empty(delta, "reasoning_content");
 	result["content"] = _string_or_empty(delta, "content");
+
+	// Tool calls arrive in fragments: the id and the name once, the
+	// arguments a few characters at a time.
+	const Variant calls = delta.get("tool_calls", Variant());
+	if (calls.get_type() == Variant::ARRAY) {
+		Array fragments;
+		const Array listed = calls;
+		for (int i = 0; i < listed.size(); i++) {
+			if (listed[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			const Dictionary call = listed[i];
+			const Variant function = call.get("function", Variant());
+			Dictionary fragment;
+			fragment["index"] = call.get("index", i);
+			fragment["id"] = _string_or_empty(call, "id");
+			fragment["name"] = function.get_type() == Variant::DICTIONARY ? _string_or_empty(function, "name") : String();
+			fragment["arguments"] = function.get_type() == Variant::DICTIONARY ? _string_or_empty(function, "arguments") : String();
+			fragments.push_back(fragment);
+		}
+		if (!fragments.is_empty()) {
+			result["tool_calls"] = fragments;
+		}
+	}
 	return result;
 }
 

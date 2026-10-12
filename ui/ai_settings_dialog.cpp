@@ -81,6 +81,8 @@ void AISettingsDialog::register_default_settings() {
 	ensure("compression_keep_recent", DEFAULT_KEEP_RECENT);
 	ensure("compression_threshold_pct", DEFAULT_THRESHOLD);
 	ensure("compression_use_ai_summary", false);
+	// Read-only look-up tools for providers that speak tool calls.
+	ensure("use_tools", true);
 	ensure("proxy_mode", AIProxy::MODE_SYSTEM);
 	ensure("proxy_address", "");
 	// Empty: the generators' built-in defaults.
@@ -133,6 +135,7 @@ void AISettingsDialog::_load_settings() {
 	autorun_check->set_pressed(_setting("autorun", true));
 	restore_last_chat_check->set_pressed(_setting("restore_last_chat", true));
 	runtime_fix_check->set_pressed(_setting("runtime_fix", true));
+	use_tools_check->set_pressed(_setting("use_tools", true));
 	compression_keep_recent_spin->set_value(_setting("compression_keep_recent", DEFAULT_KEEP_RECENT));
 	// Round, don't truncate: 0.58f * 100 is 57.99..., which would drift down on every save.
 	compression_threshold_spin->set_value(Math::round(float(_setting("compression_threshold_pct", DEFAULT_THRESHOLD)) * 100.0f));
@@ -191,6 +194,7 @@ void AISettingsDialog::_on_confirmed() {
 	AISettings::set("autorun", autorun_check->is_pressed());
 	AISettings::set("restore_last_chat", restore_last_chat_check->is_pressed());
 	AISettings::set("runtime_fix", runtime_fix_check->is_pressed());
+	AISettings::set("use_tools", use_tools_check->is_pressed());
 	AISettings::set("compression_keep_recent", (int)compression_keep_recent_spin->get_value());
 	AISettings::set("compression_threshold_pct", (float)compression_threshold_spin->get_value() / 100.0f);
 	AISettings::set("compression_use_ai_summary", compression_ai_summary_check->is_pressed());

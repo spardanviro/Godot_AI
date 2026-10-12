@@ -34,6 +34,7 @@ protected:
 	bool _is_third_party_endpoint() const;
 	// The endpoint without a trailing "/chat/completions" or "/models".
 	String _get_base_url() const;
+	static Dictionary _to_wire_message(const Dictionary &p_message);
 	String _build_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message, bool p_stream) const;
 	// Returns the first choice's "message" (p_delta false) or "delta" (true).
 	static bool _get_first_choice(const String &p_json, bool p_delta, Dictionary &r_out, String *r_error = nullptr);
@@ -44,6 +45,7 @@ public:
 	virtual Vector<String> get_headers() const override;
 
 	virtual String get_stream_url() const override;
+	virtual bool supports_tools() const override { return true; }
 	virtual String get_models_list_url() const override;
 	virtual Vector<String> get_models_list_headers() const override;
 	virtual PackedStringArray parse_models_list(const String &p_response_body) const override;

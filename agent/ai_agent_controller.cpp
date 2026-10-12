@@ -52,6 +52,7 @@ void AIAgentController::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("reload_settings"), &AIAgentController::reload_settings);
 	ClassDB::bind_method(D_METHOD("configure_provider", "provider_id", "model", "endpoint", "api_key"), &AIAgentController::configure_provider);
 	ClassDB::bind_method(D_METHOD("set_auto_approve", "enabled"), &AIAgentController::set_auto_approve);
+	ClassDB::bind_method(D_METHOD("set_tools_enabled", "enabled"), &AIAgentController::set_tools_enabled);
 	ClassDB::bind_method(D_METHOD("set_pending_screenshot", "image_path"), &AIAgentController::set_pending_screenshot);
 
 	ADD_SIGNAL(MethodInfo("state_changed", PropertyInfo(Variant::INT, "state")));
@@ -69,6 +70,11 @@ void AIAgentController::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("plan_ready", PropertyInfo(Variant::DICTIONARY, "plan")));
 	ADD_SIGNAL(MethodInfo("permission_requested", PropertyInfo(Variant::STRING, "text")));
 	ADD_SIGNAL(MethodInfo("session_changed"));
+	// The model looked something up: `name(arguments)` and whether it worked.
+	// kind is an AIToolSpec::Kind.
+	ADD_SIGNAL(MethodInfo("tool_called", PropertyInfo(Variant::STRING, "call"), PropertyInfo(Variant::BOOL, "ok"), PropertyInfo(Variant::INT, "kind")));
+	// Tools are about to change something for this message; the checkpoint to revert to.
+	ADD_SIGNAL(MethodInfo("tools_checkpoint", PropertyInfo(Variant::INT, "checkpoint_id")));
 	// { kind, mode, outcome, requests, retries, executions, executed_ok, error, response }
 	ADD_SIGNAL(MethodInfo("run_finished", PropertyInfo(Variant::DICTIONARY, "report")));
 
@@ -122,6 +128,8 @@ void AIAgentController::_report_run(RunOutcome p_outcome) {
 	report["requests"] = run.requests;
 	report["retries"] = run.retries;
 	report["executions"] = run.executions;
+	report["tool_calls"] = run.tool_calls;
+	report["tool_edits"] = run.tool_edits;
 	report["executed_ok"] = run.executions > 0 && run.last_execution_ok;
 	report["error"] = run.last_error;
 	report["response"] = run.response;
@@ -230,6 +238,16 @@ void AIAgentController::stop() {
 		case STATE_IDLE:
 			break;
 		case STATE_STREAMING:
+			if (run.tool_waiting_for_game) {
+				// A tool is letting the game run; nothing else is in flight.
+				tool_wait_timer->stop();
+				run.tool_waiting_for_game = false;
+				if (EditorInterface::get_singleton()->is_playing_scene()) {
+					EditorInterface::get_singleton()->stop_playing_scene();
+				}
+				_end_run(OUTCOME_STOPPED);
+				break;
+			}
 			// Recorded here, not inferred from how the request ends: the reply
 			// may already be complete, or the server may answer with an error,
 			// and neither may lead to code running or another request going out.
@@ -243,6 +261,11 @@ void AIAgentController::stop() {
 			// one of its signals); the handling stops at its next step.
 			break;
 		case STATE_AWAITING_PERMISSION:
+			if (run.tool_awaiting_permission) {
+				run.tool_awaiting_permission = false;
+				_end_run(OUTCOME_STOPPED);
+				break;
+			}
 			confirm_permission(false);
 			break;
 		case STATE_VERIFYING:
@@ -273,6 +296,10 @@ bool AIAgentController::execute_plan() {
 
 void AIAgentController::confirm_permission(bool p_allowed) {
 	if (state != STATE_AWAITING_PERMISSION) {
+		return;
+	}
+	if (run.tool_awaiting_permission) {
+		_resume_tool_after_permission(p_allowed);
 		return;
 	}
 	const String code = run.code;
@@ -308,7 +335,7 @@ bool AIAgentController::start_runtime_fix(const String &p_errors, const String &
 
 	_begin_run(RUN_RUNTIME_FIX, MODE_AGENT, String());
 	run.restart_scene_path = p_scene_path;
-	_send_request(AIKnowledge::get_singleton()->format_prompt("runtime_fix", values));
+	_send_request(AIKnowledge::get_singleton()->format_prompt(_edits_with_tools() ? "runtime_fix_tools" : "runtime_fix", values));
 	return true;
 }
 
@@ -318,7 +345,7 @@ bool AIAgentController::start_runtime_fix(const String &p_errors, const String &
 
 String AIAgentController::_get_mode_prompt_id() const {
 	if (run.kind == RUN_PLAN_STEP) {
-		return "mode_plan_step";
+		return _edits_with_tools() ? "mode_plan_step_tools" : "mode_plan_step";
 	}
 	if (run.kind == RUN_USER_TURN && run.mode == MODE_ASK) {
 		return "mode_ask";
@@ -329,7 +356,7 @@ String AIAgentController::_get_mode_prompt_id() const {
 	return String();
 }
 
-bool AIAgentController::_send_request(const String &p_message, bool p_resend) {
+bool AIAgentController::_send_request(const String &p_message, bool p_resend, bool p_continue) {
 	// One request at a time, by construction: every caller is a transition of
 	// the state machine, and none of them runs while the stream is busy.
 	ERR_FAIL_COND_V(stream.is_busy(), false);
@@ -351,13 +378,27 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend) {
 	// Pick up edits to the knowledge files without a restart.
 	AIKnowledge::get_singleton()->reload_if_changed();
 
-	const String system_prompt = prompt_builder.build_system_prompt(_get_mode_prompt_id(), p_message);
+	// A continuation after a tool round has no message of its own: it is
+	// about what the request before it was about.
+	if (!p_continue) {
+		run.request_message = p_message;
+	}
+	provider->set_tools(_offers_tools() ? _tool_specs() : Vector<AIToolSpec>());
+	// With the editing tools on offer the prompt teaches those, not how to
+	// write code blocks to be run.
+	const bool edits_with_tools = provider->has_tools() && _may_edit_with_tools();
+	String system_prompt = prompt_builder.build_system_prompt(_get_mode_prompt_id(), run.request_message, edits_with_tools);
+	if (provider->has_tools()) {
+		system_prompt += "\n" + AIKnowledge::get_singleton()->get_prompt(_may_edit_with_tools() ? "tools" : "tools_read_only") + "\n";
+	}
 	last_system_prompt_tokens = AISession::estimate_tokens(system_prompt);
 	AI_LOG("System prompt: " + itos(system_prompt.length()) + " chars (~" + itos(last_system_prompt_tokens) + " tokens)");
 
-	String full_message = p_message;
+	const String tool_image = run.tool_image_b64;
+	run.tool_image_b64 = String();
+	String full_message = p_continue ? (tool_image.is_empty() ? String() : String("[The screenshot you asked for.]")) : p_message;
 	bool screenshot_dropped = false;
-	if (!p_resend) {
+	if (!p_resend && !p_continue) {
 		// The image is kept for the run: the text of the message says a
 		// screenshot is attached, so a resend has to attach it again.
 		run.request_image_b64 = String();
@@ -378,8 +419,8 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend) {
 	}
 
 	AIStreamClient::Request request;
-	provider->set_pending_image(run.request_image_b64);
-	request.body = provider->build_stream_request_body(system_prompt, session.build_api_messages(), full_message);
+	provider->set_pending_image(p_continue ? tool_image : run.request_image_b64);
+	request.body = provider->build_stream_request_body(system_prompt, session.build_api_messages(provider->has_tools()), full_message);
 	provider->set_pending_image(String());
 	request.url = provider->get_stream_url();
 	request.headers = provider->get_headers();
@@ -387,7 +428,9 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend) {
 	request.proxy = AIProxy::for_url(request.url);
 	AI_LOG("Request: " + _redact_url_key(request.url) + " (" + itos(request.body.length()) + " chars)");
 
-	session.push_user(full_message, run.request_display, run.request_automatic);
+	if (!p_continue) {
+		session.push_user(full_message, run.request_display, run.request_automatic);
+	}
 	run.requests++;
 
 	stream.start(request);
@@ -468,6 +511,12 @@ void AIAgentController::_on_stream_poll() {
 					run.untrusted_reason = AI_L("The model returned only its reasoning and no answer, so nothing was run.", "模型只返回了推理过程而没有给出回答，因此没有执行任何代码。");
 				}
 			}
+			// The reply asks to look something up first. Only a whole reply
+			// is taken at its word; a cut-off one may have lost half a call.
+			if (!result.tool_calls.is_empty() && run.untrusted_reason.is_empty()) {
+				_handle_tool_calls(result.content, result.thinking, result.tool_calls);
+				break;
+			}
 			if (response.strip_edges().is_empty()) {
 				// Nothing to keep: an empty assistant turn would poison the history.
 				_handle_stream_error(result.blocked ? String("The provider withheld the reply (content filter).") : String("The model returned an empty reply."));
@@ -481,7 +530,7 @@ void AIAgentController::_on_stream_poll() {
 
 void AIAgentController::_handle_stream_error(const String &p_error) {
 	AI_ERR("Streaming error: " + p_error);
-	if (_try_overflow_retry(p_error) || _try_retry_without_temperature(p_error)) {
+	if (_try_overflow_retry(p_error) || _try_retry_without_temperature(p_error) || _try_retry_without_tools(p_error)) {
 		return;
 	}
 	// The request was never answered: take it back, or the next message would
@@ -627,6 +676,9 @@ void AIAgentController::reload_settings() {
 	compression_config.keep_recent = AISettings::get("compression_keep_recent", compression_config.keep_recent);
 	compression_config.threshold_pct = AISettings::get("compression_threshold_pct", compression_config.threshold_pct);
 	compression_use_ai_summary = AISettings::get("compression_use_ai_summary", false);
+	if (!tools_overridden) {
+		tools_enabled = AISettings::get("use_tools", true);
+	}
 	code_runner.reload_permissions();
 	if (provider_overridden) {
 		return;
@@ -646,6 +698,12 @@ bool AIAgentController::is_eval_run() {
 	// it could, the answer was fixed before any of it ran.
 	static const bool eval_run = OS::get_singleton()->has_environment("GODOT_AI_EVAL_TASK");
 	return eval_run;
+}
+
+void AIAgentController::set_tools_enabled(bool p_enabled) {
+	ERR_FAIL_COND_MSG(!is_eval_run(), "set_tools_enabled() is only available to the eval runner.");
+	tools_enabled = p_enabled;
+	tools_overridden = true;
 }
 
 void AIAgentController::set_auto_approve(bool p_enabled) {
@@ -678,6 +736,11 @@ AIAgentController::AIAgentController() {
 	add_child(verify_timer);
 
 	web_requester = memnew(AIWebRequester);
+	toolbox.set_error_monitor(code_runner.get_error_monitor());
+	tool_wait_timer = memnew(Timer);
+	tool_wait_timer->set_one_shot(true);
+	tool_wait_timer->connect("timeout", callable_mp(this, &AIAgentController::_on_tool_wait_timeout));
+	add_child(tool_wait_timer);
 	web_requester->connect("finished", callable_mp(this, &AIAgentController::_on_web_request_finished));
 	web_requester->connect("notice", callable_mp(this, &AIAgentController::_on_child_notice));
 	add_child(web_requester);

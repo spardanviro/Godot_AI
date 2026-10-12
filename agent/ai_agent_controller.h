@@ -11,6 +11,7 @@
 #include "ai_response_parser.h"
 #include "ai_session.h"
 #include "../network/ai_stream_client.h"
+#include "../tools/ai_toolbox.h"
 
 #include "core/templates/hash_set.h"
 #include "scene/main/node.h"
@@ -78,6 +79,8 @@ public:
 
 	static const int MAX_AUTO_RETRIES = 3;
 	static const int MAX_WEB_REQUESTS_PER_RUN = 3;
+	// Rounds of tool calls one message may take before the model has to answer.
+	static const int MAX_TOOL_ROUNDS_PER_RUN = 8;
 
 	// --- Actions ---
 	// Starts a turn. p_message is what the model receives (mentions expanded);
@@ -123,6 +126,8 @@ public:
 	// editor was started as an eval run (see is_eval_run()). They are bound
 	// to scripting, and generated code runs in the same editor.
 	void set_auto_approve(bool p_enabled);
+	// Whether the look-up tools are offered, whatever the setting says.
+	void set_tools_enabled(bool p_enabled);
 	// True when this process was launched by evals/run_evals.py. Decided
 	// once, when the first controller is created.
 	static bool is_eval_run();
@@ -153,6 +158,20 @@ private:
 		int retries = 0; // Follow-ups asked of the model without user involvement.
 		bool overflow_retry_used = false; // One "context too long" recovery per request.
 		int web_requests = 0;
+		int tool_rounds = 0;
+		int tool_calls = 0;
+		int tool_edits = 0; // Tools (or scripts run as one) that changed something.
+		// The calls of the round being worked through, and which one is next.
+		Vector<AIToolCall> tool_queue;
+		int tool_index = 0;
+		bool tool_awaiting_permission = false; // The permission prompt is about tool_queue[tool_index].
+		String tool_script_code; // run_editor_script: the reviewed code, while the user decides.
+		bool tool_checkpoint_taken = false; // One checkpoint per run, before its first change.
+		bool tool_waiting_for_game = false; // run_scene: the game is running, the timer is on.
+		int tool_game_errors_before = 0;
+		String tool_image_b64; // A screenshot a tool took, to show with the next request.
+		bool tools_off = false; // No tools for the rest of this run: the model has to answer.
+		String request_message; // What the last request was about; a continuation is about the same.
 		String request_image_b64; // Screenshot sent with the last request; kept for a resend.
 		String untrusted_reason; // Why the reply being handled may not be executed; empty if it may.
 		// How the last request appears in the transcript; kept for a resend.
@@ -190,14 +209,21 @@ private:
 	AICodeRunner code_runner;
 	AIPromptBuilder prompt_builder;
 	AIStreamClient stream;
+	AIToolbox toolbox;
 	Timer *stream_poll_timer = nullptr;
 	Timer *verify_timer = nullptr;
+	Timer *tool_wait_timer = nullptr;
 	AIWebRequester *web_requester = nullptr;
 	// These two run beside the conversation and are not part of the state machine.
 	AIHistorySummarizer *history_summarizer = nullptr;
 	AIAssetService *asset_service = nullptr;
 
 	// Settings.
+	bool tools_enabled = true;
+	bool tools_overridden = false; // By the eval runner; the setting is then not read.
+	// "provider/model" of what answered a request that offered tools with an
+	// error about them; not offered tools again.
+	HashSet<String> models_without_tools;
 	AISession::CompressionConfig compression_config;
 	bool compression_use_ai_summary = false;
 	bool auto_approve = false;
@@ -232,12 +258,33 @@ private:
 	// --- Requests ---
 	// p_resend: p_message is a request that already went out once (it was
 	// rejected and is being sent again), with its attachments in the text.
-	bool _send_request(const String &p_message, bool p_resend = false);
+	// p_continue: after a tool round. Nothing new is said to the model; it
+	// carries on from the results (p_message is ignored).
+	bool _send_request(const String &p_message, bool p_resend = false, bool p_continue = false);
+	// --- Tools (ai_agent_controller_tools.cpp) ---
+	bool _offers_tools() const;
+	bool _may_edit_with_tools() const;
+	// The model is to change the project with tools, not with a code block.
+	bool _edits_with_tools() const;
+	Vector<AIToolSpec> _tool_specs() const;
+	void _handle_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls);
+	void _run_tool_queue();
+	bool _start_tool(const AIToolCall &p_call);
+	bool _execute_tool(const AIToolCall &p_call);
+	void _finish_tool(const String &p_result, bool p_ok);
+	void _ensure_tool_checkpoint();
+	void _resume_tool_after_permission(bool p_allowed);
+	String _take_tool_screenshot(bool &r_ok);
+	bool _start_run_scene(const AIToolCall &p_call);
+	void _on_tool_wait_timeout();
+	bool _start_script_tool(const AIToolCall &p_call);
+	void _execute_script_tool(const String &p_code);
 	String _get_mode_prompt_id() const;
 	void _on_stream_poll();
 	void _handle_stream_error(const String &p_error);
 	bool _try_overflow_retry(const String &p_error);
 	bool _try_retry_without_temperature(const String &p_error);
+	bool _try_retry_without_tools(const String &p_error);
 
 	// --- Replies (ai_agent_controller_replies.cpp) ---
 	// A one-entry dictionary of template values.

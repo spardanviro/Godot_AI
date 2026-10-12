@@ -18,11 +18,12 @@ public:
 	// The part that depends only on the knowledge base and the message: base
 	// prompt, optional mode instructions (a prompts/ id, or ""), and the
 	// domain guidance, API notes and gotchas the message calls for.
-	static String build_knowledge_prompt(const String &p_mode_prompt_id, const String &p_message);
+	// p_tools: the model changes the project with tools (see AISystemPrompt).
+	static String build_knowledge_prompt(const String &p_mode_prompt_id, const String &p_message, bool p_tools = false);
 
 	// The full system prompt: the above plus scene, selection, open scripts,
 	// performance and recent errors.
-	String build_system_prompt(const String &p_mode_prompt_id, const String &p_message) const;
+	String build_system_prompt(const String &p_mode_prompt_id, const String &p_message, bool p_tools = false) const;
 
 	// Source of the scripts being edited, re-injected after history compression.
 	String get_open_scripts_snapshot() const;

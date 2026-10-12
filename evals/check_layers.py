@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 # Lowest first.
-LAYERS = ["common", "providers", "network", "execution", "prompt", "assets", "agent", "ui"]
+LAYERS = ["common", "providers", "network", "execution", "prompt", "assets", "tools", "agent", "ui"]
 
 MODULE_INCLUDE = re.compile(r'^\s*#include "\.\./(\w+)/([\w.]+)"', re.MULTILINE)
 EDITOR_SETTINGS_INCLUDE = '#include "editor/settings/editor_settings.h"'

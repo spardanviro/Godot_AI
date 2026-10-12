@@ -11,7 +11,14 @@ public:
 	// The base prompt with the project's res://godot_ai.md (if any) inserted.
 	// Everything in it is stable between turns, so providers with prompt
 	// caching can treat it as the cacheable prefix.
-	static String get_base_prompt();
+	// p_tools: the variant for a model that works with tools instead of
+	// writing code blocks to be run.
+	static String get_base_prompt(bool p_tools = false);
+
+	// The template holds both variants: what is only for one of them sits
+	// between marker lines (SCRIPT-ONLY / TOOLS-ONLY). Returns the text of
+	// one variant, without the markers (pure).
+	static String select_variant(const String &p_template, bool p_tools);
 
 	// Inserts the project instructions into a prompt template (pure).
 	static String build(const String &p_template, const String &p_project_instructions);

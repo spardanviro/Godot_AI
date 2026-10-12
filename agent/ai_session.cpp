@@ -50,6 +50,35 @@ void AISession::push_assistant(const String &p_content, const String &p_thinking
 	full.push_back(msg);
 }
 
+void AISession::push_assistant_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls) {
+	Dictionary msg = _make_message("assistant", p_content);
+	if (!p_thinking.is_empty()) {
+		msg["thinking"] = p_thinking;
+	}
+	Array calls;
+	for (const AIToolCall &call : p_calls) {
+		Dictionary entry;
+		entry["id"] = call.id;
+		entry["name"] = call.name;
+		entry["arguments"] = call.arguments.strip_edges().is_empty() ? String("{}") : call.arguments;
+		if (!call.provider_data.is_empty()) {
+			entry["provider_data"] = call.provider_data;
+		}
+		calls.push_back(entry);
+	}
+	msg["tool_calls"] = calls;
+	working.push_back(msg);
+	full.push_back(msg);
+}
+
+void AISession::push_tool_result(const AIToolCall &p_call, const String &p_result) {
+	Dictionary msg = _make_message("tool", p_result);
+	msg["tool_call_id"] = p_call.id;
+	msg["name"] = p_call.name;
+	working.push_back(msg);
+	full.push_back(msg);
+}
+
 bool AISession::pop_last_user(String &r_content) {
 	if (working.is_empty()) {
 		return false;
@@ -66,7 +95,44 @@ bool AISession::pop_last_user(String &r_content) {
 	return true;
 }
 
-Array AISession::build_api_messages() const {
+// The "tool" messages that directly follow working[p_index].
+static Array _tool_results_after(const Array &p_working, int p_index) {
+	Array results;
+	for (int i = p_index + 1; i < p_working.size(); i++) {
+		const Dictionary message = p_working[i];
+		if (String(message.get("role", "")) != "tool") {
+			break;
+		}
+		results.push_back(message);
+	}
+	return results;
+}
+
+// Whether every call of the round has its result, so the round can be sent
+// in the provider's own tool format.
+static bool _is_whole_round(const Array &p_calls, const Array &p_results) {
+	if (p_calls.is_empty() || p_calls.size() != p_results.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_calls.size(); i++) {
+		const String id = Dictionary(p_calls[i]).get("id", "");
+		if (id.is_empty() || String(Dictionary(p_results[i]).get("tool_call_id", "")) != id) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static String _tool_results_as_text(const Array &p_results) {
+	String text = "[Tool results]";
+	for (int i = 0; i < p_results.size(); i++) {
+		const Dictionary result = p_results[i];
+		text += "\n--- " + String(result.get("name", "tool")) + " ---\n" + String(result.get("content", ""));
+	}
+	return text;
+}
+
+Array AISession::build_api_messages(bool p_native_tools) const {
 	Array messages;
 	if (!summary.is_empty()) {
 		messages.push_back(_make_message("user", "[CONTEXT SUMMARY - Previous conversation compressed]\n" + summary + summary_attachment));
@@ -75,7 +141,45 @@ Array AISession::build_api_messages() const {
 	for (int i = 0; i < working.size(); i++) {
 		// Stored messages carry local-only keys; APIs reject unknown fields.
 		const Dictionary stored = working[i];
-		messages.push_back(_make_message(stored.get("role", "user"), stored.get("content", "")));
+		const String role = stored.get("role", "user");
+		const String content = stored.get("content", "");
+
+		if (role == "assistant" && stored.has("tool_calls")) {
+			const Array calls = stored["tool_calls"];
+			const Array results = _tool_results_after(working, i);
+			if (p_native_tools && _is_whole_round(calls, results)) {
+				Dictionary message = _make_message("assistant", content);
+				message["tool_calls"] = calls;
+				messages.push_back(message);
+				for (int r = 0; r < results.size(); r++) {
+					const Dictionary result = results[r];
+					Dictionary tool_message = _make_message("tool", result.get("content", ""));
+					tool_message["tool_call_id"] = result.get("tool_call_id", "");
+					tool_message["name"] = result.get("name", "");
+					messages.push_back(tool_message);
+				}
+			} else {
+				String text = content;
+				for (int c = 0; c < calls.size(); c++) {
+					const Dictionary call = calls[c];
+					text += String(text.is_empty() ? "" : "\n") + "[Called tool " + String(call.get("name", "")) + " " + String(call.get("arguments", "{}")) + "]";
+				}
+				messages.push_back(_make_message("assistant", text));
+				if (!results.is_empty()) {
+					messages.push_back(_make_message("user", _tool_results_as_text(results)));
+				}
+			}
+			i += results.size();
+			continue;
+		}
+		if (role == "tool") {
+			// A result whose call is gone (compressed away): keep what it said.
+			Array orphan;
+			orphan.push_back(stored);
+			messages.push_back(_make_message("user", _tool_results_as_text(orphan)));
+			continue;
+		}
+		messages.push_back(_make_message(role, content));
 	}
 	return messages;
 }
@@ -155,6 +259,11 @@ static Vector<String> _collect_res_paths(const String &p_content) {
 	return paths;
 }
 
+static int stored_tool_calls(const Dictionary &p_message) {
+	const Variant calls = p_message.get("tool_calls", Variant());
+	return calls.get_type() == Variant::ARRAY ? Array(calls).size() : 0;
+}
+
 String AISession::summarize_message(const Dictionary &p_message) {
 	const String role = p_message.get("role", "");
 	const String content = p_message.get("content", "");
@@ -174,6 +283,15 @@ String AISession::summarize_message(const Dictionary &p_message) {
 			}
 		}
 		return "User: " + _truncate(request.strip_edges(), SUMMARY_TEXT_LIMIT);
+	}
+
+	if (role == "assistant" && stored_tool_calls(p_message) > 0 && content.strip_edges().is_empty()) {
+		PackedStringArray names;
+		const Array calls = p_message["tool_calls"];
+		for (int i = 0; i < calls.size(); i++) {
+			names.push_back(Dictionary(calls[i]).get("name", ""));
+		}
+		return "AI: [looked up: " + String(", ").join(names) + "]";
 	}
 
 	if (role == "assistant") {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../common/ai_tool_types.h"
+
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
 #include "core/variant/array.h"
@@ -48,13 +50,24 @@ public:
 	// something the user said. Both stay local and are never sent.
 	void push_user(const String &p_content, const String &p_display = String(), bool p_automatic = false);
 	void push_assistant(const String &p_content, const String &p_thinking = String());
+	// A tool round: the reply that asked for tools (its text may be empty),
+	// then one result per call.
+	void push_assistant_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls);
+	void push_tool_result(const AIToolCall &p_call, const String &p_result);
 	// Takes back the last message if it is a user message (to resend it after a
 	// recoverable API error). Returns false if there is nothing to take back.
 	bool pop_last_user(String &r_content);
 
 	// History as the API expects it: the summary (if any) as a leading
 	// user/assistant pair, then role + content of every working message.
-	Array build_api_messages() const;
+	//
+	// Tool rounds: with p_native_tools they are passed on as they were
+	// stored — the assistant message with "tool_calls", each result as a
+	// "tool" message with "tool_call_id" — for a provider that speaks tool
+	// calls. Without it, and for a round that is no longer whole (compression
+	// cut it, a result is missing), they are written out as ordinary text
+	// that any provider accepts.
+	Array build_api_messages(bool p_native_tools = false) const;
 
 	// --- Compression ---
 	// Rough token count: CJK characters count 1 each, everything else 1 per 4.

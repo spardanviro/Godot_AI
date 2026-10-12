@@ -194,6 +194,10 @@ void AISettingsDialog::_build_general_tab(VBoxContainer *p_parent) {
 	runtime_fix_check->set_name("RuntimeFixCheck");
 	label_runtime_fix = _add_row(p_parent, runtime_fix_check, false);
 
+	use_tools_check = _make_check_box(true);
+	use_tools_check->set_name("UseToolsCheck");
+	label_use_tools = _add_row(p_parent, use_tools_check, false);
+
 	label_compression = _add_section_title(p_parent);
 
 	// Step 2: messages come in user/assistant pairs, so an even count keeps
@@ -314,6 +318,10 @@ void AISettingsDialog::_update_ui_texts() {
 	label_restore_last_chat->set_text(TR(STR_SETTINGS_RESTORE_LAST_CHAT));
 	restore_last_chat_check->set_text(TR(STR_SETTINGS_RESTORE_LAST_CHAT_DESC));
 	label_runtime_fix->set_text(AI_L("Runtime fix:", "运行时修复："));
+	label_use_tools->set_text(AI_L("Tools:", "工具："));
+	use_tools_check->set_text(AI_L("Let the model work with tools instead of writing code to run", "让模型用工具操作，而不是写代码去执行"));
+	use_tools_check->set_tooltip_text(AI_L("The model inspects and changes the project with typed tools: look at the scene and files, add and change nodes, write scripts, run the scene. Each change can be undone and follows your permission settings. In ASK and PLAN modes only the tools that look are offered. Turned off automatically for a model or endpoint that rejects tool calls; with it off, the model writes code blocks that are run, as before.",
+			"模型通过有类型的工具查看和修改项目：查看场景与文件、增改节点、写脚本、运行场景。每次修改都可撤销，并遵循你的权限设置。ASK 与 PLAN 模式下只提供查看类工具。模型或端点不支持工具调用时会自动停用；关闭后，模型像以前一样写代码块来执行。"));
 	runtime_fix_check->set_text(AI_L("Fix errors of the running game automatically", "游戏运行报错时自动修复"));
 	runtime_fix_check->set_tooltip_text(AI_L("When the running game reports script errors, stop it, ask the model for a fix and run the game again. With auto-execute off, each fix waits for your approval.", "运行中的游戏报出脚本错误时，停止运行、请模型修复并重新运行。关闭“自动执行”时，每次修复都会先等你确认。"));
 	label_compression->set_text(AI_L("Context compression", "上下文压缩"));

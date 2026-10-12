@@ -30,10 +30,10 @@ AIPromptBuilder::AIPromptBuilder() {
 	profiler_collector.instantiate();
 }
 
-String AIPromptBuilder::build_knowledge_prompt(const String &p_mode_prompt_id, const String &p_message) {
+String AIPromptBuilder::build_knowledge_prompt(const String &p_mode_prompt_id, const String &p_message, bool p_tools) {
 	// The base prompt is the same for every request and comes first, so that
 	// providers can cache it; what changes (mode, topic, project) follows.
-	String prompt = AISystemPrompt::get_base_prompt();
+	String prompt = AISystemPrompt::get_base_prompt(p_tools);
 	if (!p_mode_prompt_id.is_empty()) {
 		prompt += "\n\n" + AIKnowledge::get_singleton()->get_prompt(p_mode_prompt_id) + "\n";
 	}
@@ -52,11 +52,11 @@ String AIPromptBuilder::build_knowledge_prompt(const String &p_mode_prompt_id, c
 	return prompt;
 }
 
-String AIPromptBuilder::build_system_prompt(const String &p_mode_prompt_id, const String &p_message) const {
+String AIPromptBuilder::build_system_prompt(const String &p_mode_prompt_id, const String &p_message, bool p_tools) const {
 	static const char *performance_words[] = { "performance", "optimize", "fps", "性能", "优化", nullptr };
 	static const char *error_words[] = { "error", "fix", "bug", "warning", "debug", "错误", "修复", "警告", nullptr };
 
-	String prompt = build_knowledge_prompt(p_mode_prompt_id, p_message);
+	String prompt = build_knowledge_prompt(p_mode_prompt_id, p_message, p_tools);
 	prompt += context_collector->build_context_prompt();
 
 	const String performance = context_collector->get_performance_snapshot();

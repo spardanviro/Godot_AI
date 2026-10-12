@@ -49,6 +49,7 @@ class AISettingsDialog : public ConfirmationDialog {
 	CheckBox *autorun_check = nullptr;
 	CheckBox *restore_last_chat_check = nullptr;
 	CheckBox *runtime_fix_check = nullptr;
+	CheckBox *use_tools_check = nullptr;
 	SpinBox *compression_keep_recent_spin = nullptr;
 	SpinBox *compression_threshold_spin = nullptr;
 	CheckBox *compression_ai_summary_check = nullptr;
@@ -81,6 +82,7 @@ class AISettingsDialog : public ConfirmationDialog {
 	Label *label_auto_execute = nullptr;
 	Label *label_restore_last_chat = nullptr;
 	Label *label_runtime_fix = nullptr;
+	Label *label_use_tools = nullptr;
 	Label *label_compression = nullptr;
 	Label *label_compression_keep_recent = nullptr;
 	Label *label_compression_threshold = nullptr;

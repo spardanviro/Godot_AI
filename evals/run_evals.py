@@ -53,6 +53,8 @@ MOCK_PROVIDER = "openai"
 # Sent instead of a reply that requires an image when the request has none;
 # it contains no code, so the task's checks fail.
 MOCK_NO_IMAGE_REPLY = "The request did not carry the screenshot."
+# Likewise for a reply that depends on what the request must (not) contain.
+MOCK_UNMET_REPLY = "The request did not meet what this reply requires: "
 MOCK_MODEL = "mock-model"
 MOCK_API_KEY = "mock-key"
 MOCK_DELTA_CHARS = 24  # Characters of reply text per streamed delta event.
@@ -68,6 +70,14 @@ logger = logging.getLogger("evals")
 # {"requires_image": true, "text": "..."} streams the text only if the
 # request carries an image, and {"finish": "length", "text": "..."} ends the
 # stream the way a reply cut off at the output limit ends.
+#
+# Tool calls: {"tool_calls": [{"name": "...", "arguments": {...}}]} streams
+# calls instead of (or after) the text. What the next request must look like
+# is stated on the reply that answers it; if it does not hold, a sentence
+# without code is sent instead, so the task's checks fail:
+#   "requires_tools": true / false   the request offers tools / does not
+#   "requires_tool_result": "text"   a tool result in it contains the text
+#   "forbids": "text"                the text appears nowhere in it
 MockReply = str | dict[str, Any]
 
 
@@ -97,6 +107,7 @@ class TaskResult:
     status: str  # "passed", "failed", or why there is no verdict ("timeout", "crashed", ...)
     requests: int = 0
     retries: int = 0
+    tool_calls: int = 0
     duration_sec: float = 0.0
     failed_checks: list[str] = field(default_factory=list)
     log_tail: str = ""
@@ -119,6 +130,7 @@ class RunConfig:
     knowledge_dir: str
     timeout_sec: float
     use_editor_config: bool
+    no_tools: bool
     keep_projects: bool
     work_dir: Path
 
@@ -223,9 +235,19 @@ class MockModelServer:
                     self.wfile.write(error_body)
                     return
                 finish_reason = reply.get("finish", "stop") if isinstance(reply, dict) else "stop"
+                tool_calls: list[dict[str, Any]] = []
                 if isinstance(reply, dict):
                     has_image = b'"image_url"' in request_body
-                    reply = reply["text"] if has_image or not reply.get("requires_image") else MOCK_NO_IMAGE_REPLY
+                    unmet = _unmet_requirement(reply, request_body)
+                    if unmet:
+                        reply = MOCK_UNMET_REPLY + unmet
+                    elif reply.get("requires_image") and not has_image:
+                        reply = MOCK_NO_IMAGE_REPLY
+                    else:
+                        tool_calls = list(reply.get("tool_calls", []))
+                        reply = reply.get("text", "")
+                if tool_calls:
+                    finish_reason = "tool_calls"
 
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -234,7 +256,7 @@ class MockModelServer:
                 # Deltas end mid-word and the bytes go out in chunks that end
                 # mid-character, as they do with a real API under load.
                 last = {"choices": [{"delta": {}, "finish_reason": finish_reason}]}
-                stream = _build_event_stream(reply) + b"data: " + json.dumps(last).encode("utf-8") + b"\n\n" + b"data: [DONE]\n\n"
+                stream = _build_event_stream(reply) + _build_tool_call_events(tool_calls) + b"data: " + json.dumps(last).encode("utf-8") + b"\n\n" + b"data: [DONE]\n\n"
                 for start in range(0, len(stream), MOCK_CHUNK_BYTES):
                     self.wfile.write(stream[start : start + MOCK_CHUNK_BYTES])
                     self.wfile.flush()
@@ -254,6 +276,41 @@ def _build_event_stream(text: str) -> bytes:
     return bytes(events)
 
 
+def _build_tool_call_events(tool_calls: list[dict[str, Any]]) -> bytes:
+    """Tool calls as a provider streams them: id and name once, the arguments in fragments."""
+    events = bytearray()
+
+    def add(fragment: dict[str, Any]) -> None:
+        event = {"choices": [{"delta": {"tool_calls": [fragment]}}]}
+        events.extend(b"data: " + json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n")
+
+    for index, call in enumerate(tool_calls):
+        add({"index": index, "id": f"call_{index}", "type": "function", "function": {"name": call["name"], "arguments": ""}})
+        arguments = json.dumps(call.get("arguments", {}), ensure_ascii=False)
+        for start in range(0, len(arguments), MOCK_DELTA_CHARS):
+            add({"index": index, "function": {"arguments": arguments[start : start + MOCK_DELTA_CHARS]}})
+    return bytes(events)
+
+
+def _unmet_requirement(reply: dict[str, Any], request_body: bytes) -> str:
+    """What a reply requires of the request it answers and the request lacks; "" if nothing."""
+    try:
+        request = json.loads(request_body)
+    except ValueError:
+        return "a JSON body"
+    if "requires_tools" in reply and bool(request.get("tools")) != bool(reply["requires_tools"]):
+        return "tools offered" if reply["requires_tools"] else "no tools offered"
+    wanted = reply.get("requires_tool_result")
+    if wanted:
+        results = [str(message.get("content", "")) for message in request.get("messages", []) if message.get("role") == "tool"]
+        if not any(wanted in result for result in results):
+            return f"a tool result containing {wanted!r}"
+    forbidden = reply.get("forbids")
+    if forbidden and forbidden in request_body.decode("utf-8", errors="replace"):
+        return f"no {forbidden!r} anywhere"
+    return ""
+
+
 # --- Running a task ----------------------------------------------------------
 
 
@@ -264,6 +321,8 @@ def _task_environment(config: RunConfig, task: Task, task_dir: Path, mock_server
     env["GODOT_AI_EVAL_TIMEOUT"] = str(config.timeout_sec)
     if config.knowledge_dir:
         env["GODOT_AI_KNOWLEDGE_DIR"] = config.knowledge_dir
+    if config.no_tools:
+        env["GODOT_AI_EVAL_TOOLS"] = "0"
 
     if mock_server is not None:
         env["GODOT_AI_EVAL_PROVIDER"] = MOCK_PROVIDER
@@ -278,6 +337,7 @@ def _task_environment(config: RunConfig, task: Task, task_dir: Path, mock_server
         env["GODOT_AI_EVAL_ENDPOINT"] = config.endpoint
 
     if not config.use_editor_config:
+        env["GODOT_AI_EVAL_ISOLATED"] = "1"
         # A private editor configuration, so the run does not depend on (or
         # touch) the developer's own settings and chat history.
         for variable, folder in (("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata"),
@@ -319,6 +379,7 @@ def run_task(config: RunConfig, task: Task, mock_server: MockModelServer | None,
         result.passed = bool(data.get("passed", False))
         result.requests = int(data.get("requests", 0))
         result.retries = int(data.get("retries", 0))
+        result.tool_calls = int(data.get("tool_calls", 0))
         result.failed_checks = [f"{check['type']}: {check['detail']}" for check in data.get("checks", []) if not check["passed"]]
         if data.get("error"):
             result.failed_checks.insert(0, str(data["error"]))
@@ -347,6 +408,7 @@ def merge_runs(runs: list[TaskResult]) -> TaskResult:
                         status=worst.status, failed_checks=worst.failed_checks, log_tail=worst.log_tail)
     merged.requests = sum(run.requests for run in runs)
     merged.retries = sum(run.retries for run in runs)
+    merged.tool_calls = sum(run.tool_calls for run in runs)
     merged.duration_sec = sum(run.duration_sec for run in runs)
     merged.runs = len(verdicts)
     merged.passes = sum(run.passes for run in runs)
@@ -378,6 +440,7 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
         "first_try_rate": first_try / total if total else 0.0,
         "requests": sum(result.requests for result in results),
         "retries": sum(result.retries for result in results),
+        "tool_calls": sum(result.tool_calls for result in results),
         "categories": categories,
     }
 
@@ -394,7 +457,7 @@ def render_report(results: list[TaskResult], summary: dict[str, Any], baseline: 
     lines.append("")
     lines.append(f"Passed     {summary['passed']}/{summary['total']} ({summary['pass_rate']:.0%})")
     lines.append(f"First try  {summary['first_try']}/{summary['total']} ({summary['first_try_rate']:.0%})")
-    lines.append(f"Requests   {summary['requests']} ({summary['retries']} automatic retries)")
+    lines.append(f"Requests   {summary['requests']} ({summary['retries']} automatic retries, {summary['tool_calls']} tool calls)")
     if summary["infra_failures"]:
         without_verdict = ", ".join(f"{result.id} ({result.status})" if not result.runs else result.id for result in results if result.infra_failures)
         lines.append(f"No verdict {summary['infra_failures']} run(s), not counted above: {without_verdict}")
@@ -439,6 +502,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--model", default="", help="Model id. Default: the provider's default.")
     parser.add_argument("--endpoint", default="", help="API endpoint override.")
     parser.add_argument("--knowledge-dir", default="", help="Folder of knowledge files to try instead of the built-in ones.")
+    parser.add_argument("--no-tools", action="store_true",
+                        help="Do not offer the model the look-up tools: the baseline to compare a run with tools against.")
     parser.add_argument("--filter", default="", help="Only run tasks whose id contains this text.")
     parser.add_argument("--jobs", type=int, default=2, help="Tasks to run in parallel (default: 2).")
     parser.add_argument("--repeat", type=int, default=1,
@@ -476,7 +541,7 @@ def main() -> int:
     work_dir = Path(tempfile.mkdtemp(prefix="godot_ai_evals_"))
     config = RunConfig(godot=args.godot.resolve(), mock=args.mock, provider=args.provider, model=args.model,
                        endpoint=args.endpoint, knowledge_dir=str(Path(args.knowledge_dir).resolve()) if args.knowledge_dir else "",
-                       timeout_sec=args.timeout, use_editor_config=args.use_editor_config,
+                       timeout_sec=args.timeout, use_editor_config=args.use_editor_config, no_tools=args.no_tools,
                        keep_projects=args.keep_projects, work_dir=work_dir)
 
     mock_server = MockModelServer(tasks) if args.mock else None

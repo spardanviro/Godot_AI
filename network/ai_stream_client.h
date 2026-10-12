@@ -37,6 +37,8 @@ public:
 		bool truncated = false;
 		// The provider withheld (part of) the reply.
 		bool blocked = false;
+		// Tools the reply asks to have run before it goes on.
+		Vector<AIToolCall> tool_calls;
 	};
 
 	// Returns false (and does nothing) while a request is in flight.
@@ -62,6 +64,7 @@ private:
 	Result result;
 	bool finished = false;
 	bool stop_requested = false;
+	AIToolCallAccumulator tool_calls; // Worker only, until the request ends.
 
 	static void _thread_func(void *p_userdata);
 	void _run();

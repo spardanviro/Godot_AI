@@ -48,6 +48,11 @@ public:
 	// p_level is an AIAgentController::NoticeLevel.
 	void append_notice(int p_level, const String &p_text);
 	void append_separator();
+	// One muted line for something the model looked up: `name(arguments)`.
+	// p_kind is an AIToolSpec::Kind.
+	void append_tool_call(const String &p_call, bool p_ok, int p_kind = 0);
+	// The link that takes back what the tools changed for this message.
+	void append_tools_checkpoint(int p_checkpoint_id);
 
 	// --- The reply in flight ---
 	// p_show_content: write the answer as it arrives (otherwise only the

@@ -121,7 +121,7 @@ void AIAgentController::_handle_text_only(const PackedStringArray &p_text_segmen
 		return;
 	}
 
-	const bool expects_code = run.mode != MODE_ASK && !run.response.strip_edges().is_empty() &&
+	const bool expects_code = run.mode != MODE_ASK && run.tool_calls == 0 && !run.response.strip_edges().is_empty() &&
 			!run.markers.has_web_request() && !run.explanation_invited &&
 			(run.kind != RUN_USER_TURN || !AIResponseAnalysis::is_conversational_input(run.user_input));
 
@@ -143,6 +143,8 @@ void AIAgentController::_handle_text_only(const PackedStringArray &p_text_segmen
 		return;
 	}
 	_dispatch_side_effects();
+	// A fix made with tools went in like one made with code: run the scene again.
+	run.settled_clean = run.settled_clean || run.tool_edits > 0;
 	_settle();
 }
 
@@ -329,7 +331,7 @@ void AIAgentController::_start_plan_step() {
 	values["step_text"] = step_text;
 
 	_begin_run(RUN_PLAN_STEP, MODE_AGENT, String());
-	_send_request(AIKnowledge::get_singleton()->format_prompt("plan_step", values));
+	_send_request(AIKnowledge::get_singleton()->format_prompt(_edits_with_tools() ? "plan_step_tools" : "plan_step", values));
 }
 
 void AIAgentController::_mark_plan_step_done() {

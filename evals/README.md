@@ -131,6 +131,24 @@ Requests   41 (11 automatic retries)
 
 ## Checking the knowledge files against the engine
 
+### Tool calls
+
+`tasks/tools.json` holds the tasks for tool calling; in a mock run each one scripts the model's side of the exchange. A canned reply can carry tool calls and state what the request it answers must look like:
+
+```json
+{ "requires_tool_result": "position = Vector2(120, 80)",
+  "tool_calls": [ { "name": "set_node_properties", "arguments": { "path": "Player", "properties": { "visible": false } } } ] }
+```
+
+`requires_tools` (true / false), `requires_tool_result` and `forbids` are checked against the request; if one does not hold, a sentence without code is sent instead, so the task fails. Checks `tool_calls_equal` / `tool_calls_min` count the calls; in an `expression` check, `undo_last()` steps the scene's undo history back and `connected(source, signal, target, method)` tests a saved connection.
+
+To measure what the tools are worth with a real model, run the same tasks with and without them:
+
+```bash
+python run_evals.py --godot <editor> --provider deepseek --no-tools --out without.json
+python run_evals.py --godot <editor> --provider deepseek --baseline without.json
+```
+
 `check_layers.py` checks that the module's folders only include downwards and that the editor's settings are read in one place (see "Layers" in the main README). It needs nothing but the sources:
 
 ```bash

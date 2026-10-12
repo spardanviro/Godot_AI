@@ -8,6 +8,7 @@
 #include "../agent/ai_response_analysis.h"
 #include "../network/ai_stream_client.h"
 #include "ai_theme.h"
+#include "../tools/ai_toolbox.h"
 
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
@@ -178,6 +179,20 @@ void AIChatView::append_separator() {
 	text->push_color(ai_themed(COLOR_SEPARATOR));
 	text->add_text(String::utf8("────────────────────────────────────────"));
 	text->pop();
+	text->add_newline();
+}
+
+void AIChatView::append_tool_call(const String &p_call, bool p_ok, int p_kind) {
+	const String icon = p_kind == AIToolSpec::KIND_READ ? String(U"🔎 ") : (p_kind == AIToolSpec::KIND_EDIT ? String(U"✏ ") : String(U"▶ "));
+	const Color color = !p_ok ? COLOR_WARNING : (p_kind == AIToolSpec::KIND_READ ? COLOR_MUTED : COLOR_SUCCESS);
+	text->push_color(ai_themed(color));
+	text->add_text(icon + p_call + (p_ok ? String() : AI_L(" — failed", " — 失败")));
+	text->pop();
+	text->add_newline();
+}
+
+void AIChatView::append_tools_checkpoint(int p_checkpoint_id) {
+	_append_link(LINK_REVERT, p_checkpoint_id, AI_L("[Revert what follows]", "[撤销以下修改]"), COLOR_LINK_REVERT);
 	text->add_newline();
 }
 
@@ -530,7 +545,17 @@ void AIChatView::show_history(const Array &p_history, const Ref<AIResponseParser
 			continue;
 		}
 		if (role != "assistant") {
-			continue;
+			continue; // Tool results are for the model.
+		}
+		if (message.has("tool_calls")) {
+			const Array calls = message["tool_calls"];
+			for (int j = 0; j < calls.size(); j++) {
+				const Dictionary stored = calls[j];
+				AIToolCall call;
+				call.name = stored.get("name", "");
+				call.arguments = stored.get("arguments", "");
+				append_tool_call(AIToolbox::describe_call(call), true, AIToolSpec::KIND_READ);
+			}
 		}
 
 		String thinking = message.get("thinking", "");

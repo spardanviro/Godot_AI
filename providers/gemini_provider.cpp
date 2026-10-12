@@ -50,6 +50,74 @@ String GeminiProvider::get_request_url() const {
 	return endpoint + m + ":generateContent";
 }
 
+static Dictionary _arguments_object(const String &p_arguments) {
+	Ref<JSON> json;
+	json.instantiate();
+	if (json->parse(p_arguments) == OK && json->get_data().get_type() == Variant::DICTIONARY) {
+		return json->get_data();
+	}
+	return Dictionary();
+}
+
+// History in Gemini's form: roles are "user" and "model", content is a list
+// of parts. A tool round is a model turn with functionCall parts — each with
+// the thought signature it arrived with, which the API insists on getting
+// back — and one user turn with a functionResponse per call.
+static Array _to_wire_contents(const Array &p_messages) {
+	Array contents;
+	for (int i = 0; i < p_messages.size(); i++) {
+		const Dictionary message = p_messages[i];
+		const String role = message.get("role", "user");
+		Array parts;
+
+		if (message.has("tool_calls")) {
+			const String text = message.get("content", "");
+			if (!text.strip_edges().is_empty()) {
+				Dictionary text_part;
+				text_part["text"] = text;
+				parts.push_back(text_part);
+			}
+			const Array calls = message["tool_calls"];
+			for (int c = 0; c < calls.size(); c++) {
+				const Dictionary call = calls[c];
+				Dictionary function_call;
+				function_call["name"] = call.get("name", "");
+				function_call["args"] = _arguments_object(call.get("arguments", "{}"));
+				Dictionary part;
+				part["functionCall"] = function_call;
+				const String signature = call.get("provider_data", "");
+				if (!signature.is_empty()) {
+					part["thoughtSignature"] = signature;
+				}
+				parts.push_back(part);
+			}
+		} else if (role == "tool") {
+			for (; i < p_messages.size() && String(Dictionary(p_messages[i]).get("role", "")) == "tool"; i++) {
+				const Dictionary stored = p_messages[i];
+				Dictionary response;
+				response["result"] = stored.get("content", "");
+				Dictionary function_response;
+				function_response["name"] = stored.get("name", "");
+				function_response["response"] = response;
+				Dictionary part;
+				part["functionResponse"] = function_response;
+				parts.push_back(part);
+			}
+			i--;
+		} else {
+			Dictionary part;
+			part["text"] = message.get("content", "");
+			parts.push_back(part);
+		}
+
+		Dictionary content;
+		content["role"] = role == "assistant" ? "model" : "user";
+		content["parts"] = parts;
+		contents.push_back(content);
+	}
+	return contents;
+}
+
 String GeminiProvider::build_request_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message) const {
 	Dictionary body;
 
@@ -63,27 +131,27 @@ String GeminiProvider::build_request_body(const String &p_system_prompt, const A
 	body["systemInstruction"] = sys_instruction;
 
 	// Contents (history + user message).
-	Array contents;
+	Array contents = _to_wire_contents(p_messages);
 
-	for (int i = 0; i < p_messages.size(); i++) {
-		Dictionary msg = p_messages[i];
-		Dictionary content;
-		String role = msg.get("role", "user");
-		content["role"] = (role == "assistant") ? "model" : "user";
-
-		Dictionary part;
-		part["text"] = msg.get("content", "");
-		Array parts;
-		parts.push_back(part);
-		content["parts"] = parts;
-		contents.push_back(content);
+	if (!tools.is_empty()) {
+		Array declarations;
+		for (const AIToolSpec &tool : tools) {
+			Dictionary declaration;
+			declaration["name"] = tool.name;
+			declaration["description"] = tool.description;
+			// The full JSON Schema form; "parameters" takes a narrower dialect.
+			declaration["parametersJsonSchema"] = tool.parameters;
+			declarations.push_back(declaration);
+		}
+		Dictionary tool_group;
+		tool_group["functionDeclarations"] = declarations;
+		Array offered;
+		offered.push_back(tool_group);
+		body["tools"] = offered;
 	}
 
-	// User message.
-	Dictionary user_content;
-	user_content["role"] = "user";
-	Dictionary user_part;
-	user_part["text"] = p_user_message;
+	// User message. After a tool round there is none: the model carries on
+	// from the results, and a screenshot a tool took joins them.
 	Array user_parts;
 	if (!pending_image_png_b64.is_empty()) {
 		Dictionary inline_data;
@@ -93,9 +161,30 @@ String GeminiProvider::build_request_body(const String &p_system_prompt, const A
 		image_part["inline_data"] = inline_data;
 		user_parts.push_back(image_part);
 	}
-	user_parts.push_back(user_part);
-	user_content["parts"] = user_parts;
-	contents.push_back(user_content);
+	const bool after_tool_round = !tools.is_empty() && !contents.is_empty() &&
+			Dictionary(Array(Dictionary(contents[contents.size() - 1])["parts"])[0]).has("functionResponse");
+	if (after_tool_round && (p_user_message.is_empty() || !pending_image_png_b64.is_empty())) {
+		if (!p_user_message.is_empty()) {
+			Dictionary text_part;
+			text_part["text"] = p_user_message;
+			user_parts.push_back(text_part);
+		}
+		if (!user_parts.is_empty()) {
+			Dictionary last = contents[contents.size() - 1];
+			Array parts = last["parts"];
+			parts.append_array(user_parts);
+			last["parts"] = parts;
+			contents[contents.size() - 1] = last;
+		}
+	} else {
+		Dictionary user_part;
+		user_part["text"] = p_user_message;
+		user_parts.push_back(user_part);
+		Dictionary user_content;
+		user_content["role"] = "user";
+		user_content["parts"] = user_parts;
+		contents.push_back(user_content);
+	}
 
 	body["contents"] = contents;
 
@@ -354,8 +443,20 @@ Dictionary GeminiProvider::parse_stream_delta_ex(const String &p_data) const {
 	Array parts = content["parts"];
 	String content_text;
 	String thinking_text;
+	Array tool_calls;
 	for (int i = 0; i < parts.size(); i++) {
 		Dictionary part = parts[i];
+		if (part.get("functionCall", Variant()).get_type() == Variant::DICTIONARY) {
+			// A call arrives in one piece, with a signature that has to be sent back.
+			const Dictionary function_call = part["functionCall"];
+			Dictionary fragment;
+			fragment["whole"] = true;
+			fragment["name"] = function_call.get("name", "");
+			fragment["arguments"] = JSON::stringify(function_call.get("args", Dictionary()), "", false);
+			fragment["provider_data"] = part.get("thoughtSignature", "");
+			tool_calls.push_back(fragment);
+			continue;
+		}
 		if (part.has("text")) {
 			// Gemini uses "thought": true for thinking parts.
 			if (part.has("thought") && bool(part["thought"])) {
@@ -368,6 +469,9 @@ Dictionary GeminiProvider::parse_stream_delta_ex(const String &p_data) const {
 
 	result["content"] = content_text;
 	result["thinking"] = thinking_text;
+	if (!tool_calls.is_empty()) {
+		result["tool_calls"] = tool_calls;
+	}
 	return result;
 }
 

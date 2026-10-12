@@ -635,6 +635,8 @@ void AIAssistantPanel::_connect_controller() {
 	controller->connect("response_received", callable_mp(chat_view, &AIChatView::show_response));
 	controller->connect("execution_finished", callable_mp(chat_view, &AIChatView::show_execution));
 	controller->connect("plan_ready", callable_mp(chat_view, &AIChatView::show_plan));
+	controller->connect("tool_called", callable_mp(chat_view, &AIChatView::append_tool_call));
+	controller->connect("tools_checkpoint", callable_mp(chat_view, &AIChatView::append_tools_checkpoint));
 	// ...except what needs the rest of the dock.
 	controller->connect("state_changed", callable_mp(this, &AIAssistantPanel::_on_state_changed));
 	controller->connect("permission_requested", callable_mp(this, &AIAssistantPanel::_on_permission_requested));

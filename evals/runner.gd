@@ -44,6 +44,7 @@ func _main() -> void:
 	await _wait_for_editor()
 	await _apply_setup(_task.get("setup", {}))
 
+	_apply_permissions(_task.get("setup", {}).get("permissions", {}))
 	_controller = ClassDB.instantiate("AIAgentController")
 	root.add_child(_controller)
 	_controller.reload_settings()
@@ -53,6 +54,9 @@ func _main() -> void:
 				OS.get_environment("GODOT_AI_EVAL_ENDPOINT"), OS.get_environment("GODOT_AI_EVAL_API_KEY"))
 	# Nobody is there to click "allow"; denied categories and blocked code are still refused.
 	_controller.set_auto_approve(true)
+	# The baseline a run with the look-up tools is compared against.
+	if OS.get_environment("GODOT_AI_EVAL_TOOLS") == "0":
+		_controller.set_tools_enabled(false)
 	if _task.get("setup", {}).get("screenshot", false):
 		_controller.set_pending_screenshot(_make_screenshot())
 	_controller.run_finished.connect(func(report: Dictionary) -> void: _runs.append(report))
@@ -90,6 +94,7 @@ func _main() -> void:
 	result["runs"] = _runs
 	result["requests"] = _sum("requests")
 	result["retries"] = _sum("retries")
+	result["tool_calls"] = _sum("tool_calls")
 	result["executions"] = _sum("executions")
 	result["notices"] = _notices
 	result["response"] = "\n\n".join(_responses)
@@ -159,6 +164,20 @@ func _make_screenshot() -> String:
 	var path := "user://eval_screenshot.png"
 	image.save_png(path)
 	return path
+
+
+## setup.permissions = { "delete_nodes": 2 }: levels (0 allow, 1 ask, 2 deny) by
+## category. They are editor settings, so they are only written when the run
+## has an editor configuration of its own.
+func _apply_permissions(permissions: Dictionary) -> void:
+	if permissions.is_empty():
+		return
+	if OS.get_environment("GODOT_AI_EVAL_ISOLATED") != "1":
+		push_warning("This task sets permissions and is skipped with --use-editor-config: it would change your settings.")
+		return
+	var settings: Object = _editor.get_editor_settings()
+	for category: String in permissions:
+		settings.set_setting("ai_assistant/permissions/" + category, int(permissions[category]))
 
 
 func _apply_setup(setup: Dictionary) -> void:
@@ -326,6 +345,27 @@ func plan_lines(prefix: String) -> int:
 	return count
 
 
+## For "expression" checks: takes back the last action of the scene's undo
+## history, as Ctrl+Z would. True if there was one.
+func undo_last() -> bool:
+	var manager: Object = _editor.get_editor_undo_redo()
+	var history: UndoRedo = manager.get_history_undo_redo(manager.get_object_history_id(_scene()))
+	return history.undo()
+
+
+## For "expression" checks: whether a connection saved with the scene exists.
+func connected(source: String, signal_name: String, target: String, method: String) -> bool:
+	var from := _node(source)
+	var to := _node(target)
+	if from == null or to == null:
+		return false
+	for connection: Dictionary in from.get_signal_connection_list(signal_name):
+		var callable: Callable = connection["callable"]
+		if callable.get_object() == to and callable.get_method() == method and (int(connection["flags"]) & CONNECT_PERSIST) != 0:
+			return true
+	return false
+
+
 func _last_run() -> Dictionary:
 	return _runs.back() if not _runs.is_empty() else {}
 
@@ -350,6 +390,10 @@ func _run_check(check: Dictionary) -> String:
 			return "" if _sum("retries") <= int(check["value"]) else "retries: %d" % _sum("retries")
 		"retries_equal":
 			return "" if _sum("retries") == int(check["value"]) else "retries: %d" % _sum("retries")
+		"tool_calls_equal":
+			return "" if _sum("tool_calls") == int(check["value"]) else "tool calls: %d" % _sum("tool_calls")
+		"tool_calls_min":
+			return "" if _sum("tool_calls") >= int(check["value"]) else "tool calls: %d" % _sum("tool_calls")
 		"requests_max":
 			return "" if _sum("requests") <= int(check["value"]) else "requests: %d" % _sum("requests")
 		"plan_steps_min":

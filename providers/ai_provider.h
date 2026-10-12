@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../common/ai_tool_types.h"
+
 #include "core/object/ref_counted.h"
 #include "core/string/ustring.h"
 #include "core/variant/variant.h"
@@ -19,6 +21,8 @@ protected:
 	// Some reasoning models only accept their default sampling temperature and
 	// answer 400 to any explicit value; the panel turns this off when that happens.
 	bool send_temperature = true;
+	// Tools offered to the model with each request. Empty: none.
+	Vector<AIToolSpec> tools;
 
 	static void _bind_methods();
 
@@ -41,6 +45,15 @@ public:
 	void set_pending_image(const String &p_png_base64) { pending_image_png_b64 = p_png_base64; }
 	void set_send_temperature(bool p_send) { send_temperature = p_send; }
 	bool is_sending_temperature() const { return send_temperature; }
+	// Whether requests can offer tools and the stream can carry calls to
+	// them. With tools set, the history may hold the two kinds of message
+	// AISession writes for a tool round — an assistant message with
+	// "tool_calls" ([{id, name, arguments}]) and "tool" messages with
+	// "tool_call_id" — and an empty user message means "continue": no user
+	// turn is added.
+	virtual bool supports_tools() const { return false; }
+	void set_tools(const Vector<AIToolSpec> &p_tools) { tools = p_tools; }
+	bool has_tools() const { return !tools.is_empty(); }
 	// Whether build_stream_request_body() can attach pending_image_png_b64.
 	virtual bool supports_image_input() const { return false; }
 
@@ -72,6 +85,10 @@ public:
 	//   "finish": FINISH_LENGTH (cut off at the output limit) or
 	//             FINISH_BLOCKED (withheld by the provider's filter);
 	//   "error":  the message of an error reported inside the stream.
+	// And "tool_calls", when the payload carries fragments of tool calls:
+	// an Array of {index, id, name, arguments}, for AIToolCallAccumulator —
+	// or of {whole: true, name, arguments, provider_data} for a provider
+	// that sends each call in one piece.
 	virtual Dictionary parse_stream_delta_ex(const String &p_data) const;
 	// Check if an SSE data payload signals end of stream.
 	virtual bool is_stream_done_marker(const String &p_data) const;

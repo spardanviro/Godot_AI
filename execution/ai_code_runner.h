@@ -49,6 +49,7 @@ public:
 	bool may_write_files() const;
 
 	Ref<AICheckpointManager> get_checkpoint_manager() const { return checkpoint_manager; }
+	Ref<AIPermissionManager> get_permission_manager() const { return permission_manager; }
 	Ref<AIErrorMonitor> get_error_monitor() const { return error_monitor; }
 
 	AICodeRunner();

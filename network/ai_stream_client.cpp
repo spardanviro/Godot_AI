@@ -24,6 +24,7 @@ bool AIStreamClient::start(const Request &p_request) {
 		finished = false;
 		stop_requested = false;
 	}
+	tool_calls.clear();
 	busy = true;
 	thread.start(_thread_func, this);
 	return true;
@@ -79,6 +80,7 @@ void AIStreamClient::_finish(Outcome p_outcome, const String &p_error) {
 	MutexLock lock(mutex);
 	result.outcome = p_outcome;
 	result.error = p_error;
+	result.tool_calls = tool_calls.get_calls();
 	finished = true;
 }
 
@@ -236,6 +238,17 @@ void AIStreamClient::_run() {
 				MutexLock lock(mutex);
 				result.truncated = result.truncated || String(delta["finish"]) == AIProvider::FINISH_LENGTH;
 				result.blocked = result.blocked || String(delta["finish"]) == AIProvider::FINISH_BLOCKED;
+			}
+			if (delta.has("tool_calls")) {
+				const Array fragments = delta["tool_calls"];
+				for (int j = 0; j < fragments.size(); j++) {
+					const Dictionary fragment = fragments[j];
+					if (bool(fragment.get("whole", false))) {
+						tool_calls.add_whole(fragment.get("id", String()), fragment.get("name", String()), fragment.get("arguments", String()), fragment.get("provider_data", String()));
+					} else {
+						tool_calls.add(fragment.get("index", j), fragment.get("id", String()), fragment.get("name", String()), fragment.get("arguments", String()));
+					}
+				}
 			}
 			const String thinking_delta = delta.get("thinking", String());
 			const String content_delta = delta.get("content", String());
