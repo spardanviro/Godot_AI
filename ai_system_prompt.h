@@ -2,19 +2,21 @@
 
 #include "core/string/ustring.h"
 
+// The static part of the system prompt. Its text lives in
+// knowledge/system_prompt.md; see AIKnowledge.
 class AISystemPrompt {
 public:
-	// Returns the full static base prompt.
-	// Everything in this string is the "cacheable" portion — it does not include
-	// any project-specific or session-specific context (that is injected later
-	// in _get_system_prompt by the panel). Providers that support prompt caching
-	// (Anthropic cache_control, OpenAI prefix caching) can treat this entire
-	// string as the static prefix that does not change between turns.
+	// The base prompt with the project's res://godot_ai.md (if any) inserted.
+	// Everything in it is stable between turns, so providers with prompt
+	// caching can treat it as the cacheable prefix.
 	static String get_base_prompt();
 
-	// Marker string inserted into the base prompt to delineate where the
-	// globally-cacheable static content ends and per-session content begins.
-	// Currently unused in the API request (the split happens conceptually), but
-	// available so providers can find the boundary if they implement caching.
+	// Inserts the project instructions into a prompt template (pure).
+	static String build(const String &p_template, const String &p_project_instructions);
+
+	// Marks where the cacheable static content ends.
 	static constexpr const char *CACHE_BOUNDARY = "<!-- GODOTAI_CACHE_BOUNDARY -->";
+	// Where the project's godot_ai.md goes in the template.
+	static constexpr const char *PROJECT_INSTRUCTIONS_PLACEHOLDER = "{{project_instructions}}";
+	static constexpr const char *PROJECT_INSTRUCTIONS_FILE = "res://godot_ai.md";
 };

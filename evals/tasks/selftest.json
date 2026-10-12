@@ -1,0 +1,616 @@
+[
+  {
+    "id": "selftest.retry_syntax",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Fixed.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Fixed"
+      },
+      {
+        "type": "retries_equal",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene(",
+        "var node = Node2D.new()",
+        "```"
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"Fixed\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Fixed\")",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.retry_runtime_error",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Recovered.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Recovered"
+      },
+      {
+        "type": "retries_equal",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var missing = get_scene().get_node(\"DoesNotExist\")",
+        "missing.name = \"Renamed\"",
+        "```"
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"Recovered\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Recovered\")",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.retry_no_code",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Eventually.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Eventually"
+      },
+      {
+        "type": "retries_equal",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "I will add a Node2D named Eventually to your scene."
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"Eventually\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Eventually\")",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.late_error",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Clean.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Clean"
+      },
+      {
+        "type": "retries_equal",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "get_scene().call_deferred(\"method_that_does_not_exist\")",
+        "print(\"Scheduled a call\")",
+        "```"
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"Clean\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Clean\")",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.plan_execute",
+    "mode": "plan",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Plan adding two nodes, StepOne and StepTwo.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "StepOne"
+      },
+      {
+        "type": "node_exists",
+        "path": "StepTwo"
+      },
+      {
+        "type": "plan_steps_min",
+        "value": 2
+      },
+      {
+        "type": "expression",
+        "code": "plan_lines(\"- [x] \") == 2 and plan_lines(\"- [ ] \") == 0"
+      }
+    ],
+    "mock_replies": [
+      [
+        "1. Add a Node2D named StepOne.",
+        "2. Add a Node2D named StepTwo."
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"StepOne\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added StepOne\")",
+        "```"
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"StepTwo\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added StepTwo\")",
+        "```"
+      ]
+    ],
+    "mock_only": true,
+    "execute_plan": true
+  },
+  {
+    "id": "selftest.think_tags",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Thought.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Thought"
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      }
+    ],
+    "mock_replies": [
+      [
+        "<think>The user wants a node. I should add it under the scene root.</think>",
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"Thought\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Thought\")",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.memory_note",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named Noted.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Noted"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://godot_ai.md",
+        "text": "TileMapLayer replaces TileMap in this project"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"Noted\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Noted\")",
+        "```",
+        "",
+        "[WRITE_MEMORY: TileMapLayer replaces TileMap in this project]"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.unicode",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "添加一个名为“主角”的 Node2D，位置在 (1, 2)。",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "主角"
+      },
+      {
+        "type": "property",
+        "path": "主角",
+        "property": "position",
+        "equals": "Vector2(1, 2)"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var hero = Node2D.new()",
+        "hero.name = \"主角\"",
+        "hero.position = Vector2(1, 2)",
+        "root.add_child(hero)",
+        "hero.owner = root",
+        "print(\"已添加节点“主角”，位置 (1, 2)\")",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.stop_while_streaming",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named NeverAdded.",
+    "checks": [
+      {
+        "type": "run_stopped"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "node_missing",
+        "path": "NeverAdded"
+      },
+      {
+        "type": "requests_max",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"NeverAdded\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added NeverAdded\")",
+        "```"
+      ]
+    ],
+    "mock_only": true,
+    "stop_on": "stream_delta"
+  },
+  {
+    "id": "selftest.stop_while_handling_reply",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named NeverAdded.",
+    "checks": [
+      {
+        "type": "run_stopped"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "node_missing",
+        "path": "NeverAdded"
+      },
+      {
+        "type": "requests_max",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"NeverAdded\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added NeverAdded\")",
+        "```"
+      ]
+    ],
+    "mock_only": true,
+    "stop_on": "response_received"
+  },
+  {
+    "id": "selftest.stop_after_failed_execution",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Node2D named NeverAdded.",
+    "checks": [
+      {
+        "type": "run_stopped"
+      },
+      {
+        "type": "node_missing",
+        "path": "NeverAdded"
+      },
+      {
+        "type": "requests_max",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var missing = get_scene().get_node(\"DoesNotExist\")",
+        "missing.name = \"Renamed\"",
+        "```"
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Node2D.new()",
+        "node.name = \"NeverAdded\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added NeverAdded\")",
+        "```"
+      ]
+    ],
+    "mock_only": true,
+    "stop_on": "execution_finished"
+  },
+  {
+    "id": "selftest.resend_keeps_screenshot",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "screenshot": true
+    },
+    "prompt": "Look at the screenshot and add a Node2D named Seen.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Seen",
+        "class": "Node2D"
+      },
+      {
+        "type": "requests_max",
+        "value": 2
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      }
+    ],
+    "mock_replies": [
+      {
+        "status": 400,
+        "body": "{\"error\": {\"message\": \"Unsupported value: temperature does not support 0.7 with this model.\"}}"
+      },
+      {
+        "requires_image": true,
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Node2D.new()",
+          "node.name = \"Seen\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "print(\"Added Seen\")",
+          "```"
+        ]
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.truncated_reply_not_executed",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Sprite2D named Half.",
+    "checks": [
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "node_missing",
+        "path": "Half"
+      },
+      {
+        "type": "requests_max",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      {
+        "finish": "length",
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Sprite2D.new()",
+          "node.name = \"Half\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "var more ="
+        ]
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.plan_mode_does_not_run_code",
+    "mode": "plan",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Plan a main menu.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "plan_steps_min",
+        "value": 2
+      },
+      {
+        "type": "node_missing",
+        "path": "Sneaky"
+      }
+    ],
+    "mock_replies": [
+      [
+        "1. Create a Control root for the menu.",
+        "2. Add Start and Quit buttons.",
+        "",
+        "```gdscript",
+        "var node = Node2D.new()",
+        "node.name = \"Sneaky\"",
+        "get_scene().add_child(node)",
+        "node.owner = get_scene()",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "selftest.failed_code_is_rolled_back",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Sprite2D named Once.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Once",
+        "class": "Sprite2D"
+      },
+      {
+        "type": "node_count",
+        "class": "Sprite2D",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "type": "retries_equal",
+        "value": 1
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Sprite2D.new()",
+        "node.name = \"Once\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Once\")",
+        "var missing = root.get_node(\"DoesNotExist\")",
+        "missing.name = \"Renamed\"",
+        "```"
+      ],
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Sprite2D.new()",
+        "node.name = \"Once\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Once\")",
+        "```"
+      ]
+    ],
+    "mock_only": true
+  }
+]

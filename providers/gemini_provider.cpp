@@ -36,7 +36,8 @@ int GeminiProvider::get_recommended_max_tokens() const {
 	if (m.find("3-flash") >= 0 || m.find("3.1-flash") >= 0) return 65536;
 	// Older models.
 	if (m.find("2.5-pro") >= 0) return 65536;
-	if (m.find("2.5-flash") >= 0) return 8192;
+	if (m.find("2.5-flash") >= 0) return 65536; // Thinking tokens count against the limit: 8K left no room for the answer.
+	if (m.find("gemini-3") >= 0) return 65536; // Any other 3.x model.
 	if (m.find("2.0-flash") >= 0) return 8192;
 	return 8192;
 }
@@ -313,7 +314,19 @@ Dictionary GeminiProvider::parse_stream_delta_ex(const String &p_data) const {
 		return result;
 	}
 
+	if (json->get_data().get_type() != Variant::DICTIONARY) {
+		return result;
+	}
 	Dictionary data = json->get_data();
+	if (data.has("error")) {
+		const Variant error = data["error"];
+		result["error"] = error.get_type() == Variant::DICTIONARY ? String(Dictionary(error).get("message", "Unknown error")) : String("Unknown error");
+		return result;
+	}
+	const Variant feedback = data.get("promptFeedback", Variant());
+	if (feedback.get_type() == Variant::DICTIONARY && Dictionary(feedback).has("blockReason")) {
+		result["finish"] = FINISH_BLOCKED;
+	}
 	if (!data.has("candidates")) {
 		return result;
 	}
@@ -324,6 +337,12 @@ Dictionary GeminiProvider::parse_stream_delta_ex(const String &p_data) const {
 	}
 
 	Dictionary candidate = candidates[0];
+	const String finish_reason = candidate.get("finishReason", "");
+	if (finish_reason == "MAX_TOKENS") {
+		result["finish"] = FINISH_LENGTH;
+	} else if (!finish_reason.is_empty() && finish_reason != "STOP" && finish_reason != "FINISH_REASON_UNSPECIFIED") {
+		result["finish"] = FINISH_BLOCKED; // SAFETY, RECITATION, BLOCKLIST, ...
+	}
 	if (!candidate.has("content")) {
 		return result;
 	}

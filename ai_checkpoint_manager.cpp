@@ -51,8 +51,8 @@ static void _list_project_files(const String &p_dir, Vector<String> &r_files) {
 	}
 }
 
-static String _backup_path(const String &p_backup_dir, const String &p_res_path) {
-	return p_backup_dir.path_join(p_res_path.trim_prefix("res://"));
+static String _backup_path(const String &p_backup_dir, const String &p_project_root, const String &p_path) {
+	return p_backup_dir.path_join(p_path.trim_prefix(p_project_root).trim_prefix("/"));
 }
 
 static bool _same_contents(const String &p_a, const String &p_b) {
@@ -89,6 +89,16 @@ void AICheckpointManager::_discard_file_snapshot(FileSnapshot &p_snapshot) {
 	p_snapshot = FileSnapshot();
 }
 
+void AICheckpointManager::set_storage_for_tests(const String &p_project_root, const String &p_backup_root) {
+	project_root = p_project_root;
+	backup_root = p_backup_root;
+	trash_new_files = false;
+}
+
+void AICheckpointManager::skip_file_snapshot() {
+	_discard_file_snapshot(pending_files);
+}
+
 void AICheckpointManager::begin_file_snapshot() {
 	_discard_file_snapshot(pending_files);
 
@@ -98,11 +108,11 @@ void AICheckpointManager::begin_file_snapshot() {
 
 	FileSnapshot snap;
 	snap.valid = true;
-	snap.backup_dir = String(CHECKPOINT_ROOT).path_join(
+	snap.backup_dir = (backup_root.is_empty() ? String(CHECKPOINT_ROOT) : backup_root).path_join(
 			"files_" + itos(OS::get_singleton()->get_process_id()) + "_" + itos(next_id) + "_" + itos(Time::get_singleton()->get_ticks_msec()));
 
 	Vector<String> all_files;
-	_list_project_files("res://", all_files);
+	_list_project_files(project_root, all_files);
 
 	uint64_t total_bytes = 0;
 	for (int i = 0; i < all_files.size(); i++) {
@@ -121,7 +131,7 @@ void AICheckpointManager::begin_file_snapshot() {
 			snap.complete = false;
 			continue;
 		}
-		const String dest = _backup_path(snap.backup_dir, path);
+		const String dest = _backup_path(snap.backup_dir, project_root, path);
 		DirAccess::make_dir_recursive_absolute(dest.get_base_dir());
 		if (DirAccess::copy_absolute(path, dest) == OK) {
 			snap.backed_up.push_back(path);
@@ -142,7 +152,7 @@ void AICheckpointManager::_restore_files(const FileSnapshot &p_snapshot) {
 	// Put back every file that was changed or deleted since the snapshot.
 	for (int i = 0; i < p_snapshot.backed_up.size(); i++) {
 		const String &path = p_snapshot.backed_up[i];
-		const String backup = _backup_path(p_snapshot.backup_dir, path);
+		const String backup = _backup_path(p_snapshot.backup_dir, project_root, path);
 		if (!FileAccess::exists(backup)) {
 			continue;
 		}
@@ -158,13 +168,13 @@ void AICheckpointManager::_restore_files(const FileSnapshot &p_snapshot) {
 	// Files that did not exist then were created since. They go to the system
 	// trash rather than being deleted, in case one of them is the user's own.
 	Vector<String> current_files;
-	_list_project_files("res://", current_files);
+	_list_project_files(project_root, current_files);
 	for (int i = 0; i < current_files.size(); i++) {
 		if (p_snapshot.existing.has(current_files[i])) {
 			continue;
 		}
 		const String global = ProjectSettings::get_singleton()->globalize_path(current_files[i]);
-		if (OS::get_singleton()->move_to_trash(global) != OK) {
+		if (!trash_new_files || OS::get_singleton()->move_to_trash(global) != OK) {
 			DirAccess::remove_absolute(current_files[i]);
 		}
 		last_report.files_removed++;
@@ -338,7 +348,7 @@ bool AICheckpointManager::restore_checkpoint(int p_id) {
 		_remove_checkpoint(checkpoints.size() - 1);
 	}
 
-	if (last_report.files_restored > 0 || last_report.files_removed > 0) {
+	if (ei && (last_report.files_restored > 0 || last_report.files_removed > 0)) {
 		if (EditorFileSystem *efs = ei->get_resource_filesystem()) {
 			efs->scan();
 		}

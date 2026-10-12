@@ -1,4 +1,6 @@
 #include "ai_script_executor.h"
+
+#include "core/templates/hash_set.h"
 #include "core/object/class_db.h"
 
 #include "core/config/engine.h"
@@ -221,6 +223,13 @@ static String _check_string_literal(const String &p_value) {
 	return String();
 }
 
+// The assistant's own classes (AIAgentController, AIPermissionManager, the
+// settings dialog...) hold the permission table and the provider. Named as
+// an identifier or looked up by a string, they are off limits.
+static bool _is_assistant_class(const String &p_name) {
+	return p_name.begins_with("AI") && p_name.length() > 2 && ClassDB::class_exists(p_name);
+}
+
 static String _check_token_policy(const String &p_code) {
 	typedef GDScriptTokenizer::Token Token;
 
@@ -239,7 +248,9 @@ static String _check_token_policy(const String &p_code) {
 	};
 	static const char *engine_denied[] = {
 		"get_singleton", "register_singleton", "unregister_singleton", "get_singleton_list",
-		"call", "callv", "call_deferred", "get", "get_indexed", "set", nullptr
+		"call", "callv", "call_deferred", "get", "get_indexed", "set",
+		// The main loop is the editor itself, not the edited scene.
+		"get_main_loop", nullptr
 	};
 	static const char *denied_classes[] = {
 		"Expression", "JavaClassWrapper", "JavaScriptBridge", "GDExtensionManager",
@@ -249,14 +260,26 @@ static String _check_token_policy(const String &p_code) {
 		// Network I/O from inside the editor.
 		"request", "request_raw", "connect_to_host", "connect_to_url", "create_client",
 		"create_server", "listen", "put_packet",
-		// Editor settings hold the API keys.
-		"get_editor_settings", nullptr
+		// Editor settings hold the permission table; the editor's own data
+		// directories hold the credential store.
+		"get_editor_settings", "get_editor_paths",
+		// Turning res:// or user:// into a real path is the first step of
+		// walking out of the project (to the editor's config, for one).
+		"get_user_data_dir", "get_config_dir", "get_data_dir", "get_cache_dir",
+		"get_executable_path", "get_system_dir",
+		// The editor's own interface tree, where the assistant's nodes live,
+		// and the switches on them that decide what generated code may do.
+		"get_main_loop", "get_base_control", "get_editor_main_screen",
+		"get_window", "get_last_exclusive_window",
+		"set_auto_approve", "configure_provider", "confirm_permission", nullptr
 	};
 	static const char *dynamic_call[] = { "call", "callv", "call_deferred", "callp", nullptr };
 	static const char *dangerous_names[] = {
 		"execute", "execute_with_pipe", "create_process", "create_instance", "shell_open",
 		"shell_show_in_file_manager", "kill", "set_environment", "get_singleton",
-		"request", "request_raw", "connect_to_host", "connect_to_url", "get_editor_settings", nullptr
+		"request", "request_raw", "connect_to_host", "connect_to_url", "get_editor_settings",
+		"get_editor_paths", "get_main_loop", "get_base_control", "get_editor_main_screen",
+		"set_auto_approve", "configure_provider", "confirm_permission", nullptr
 	};
 
 	Vector<Token> tokens;
@@ -276,6 +299,29 @@ static String _check_token_policy(const String &p_code) {
 		}
 	}
 
+	// Names that hold the edited scene's root: `var root = get_scene()`.
+	// Its parent is the editor, so get_parent() on it is refused below.
+	static const char *scene_root_calls[] = { "get_scene", "get_edited_scene_root", "get_viewport", nullptr };
+	HashSet<StringName> scene_root_names;
+	for (int i = 0; i + 2 < tokens.size(); i++) {
+		if (tokens[i].type != Token::IDENTIFIER) {
+			continue;
+		}
+		// `name =`, `name :=` or `name: Type =`, then the call within the next few tokens.
+		int equal = -1;
+		for (int j = i + 1; j <= i + 3 && j < tokens.size(); j++) {
+			if (tokens[j].type == Token::EQUAL) {
+				equal = j;
+				break;
+			}
+		}
+		for (int j = equal + 1; equal > 0 && j <= equal + 3 && j < tokens.size(); j++) {
+			if (tokens[j].type == Token::IDENTIFIER && _in_list(tokens[j].get_identifier(), scene_root_calls)) {
+				scene_root_names.insert(tokens[i].get_identifier());
+			}
+		}
+	}
+
 	for (int i = 0; i < tokens.size(); i++) {
 		const Token &t = tokens[i];
 		const bool after_period = i > 0 && tokens[i - 1].type == Token::PERIOD;
@@ -286,6 +332,9 @@ static String _check_token_policy(const String &p_code) {
 			if (!problem.is_empty()) {
 				return "Blocked: Code contains " + problem + ". Generated code may only work inside the project (res://, user://).";
 			}
+			if (_is_assistant_class(t.literal)) {
+				return "Blocked: Generated code may not look up or use the AI assistant's own classes (\"" + String(t.literal) + "\").";
+			}
 			continue;
 		}
 		if (t.type != Token::IDENTIFIER) {
@@ -293,6 +342,43 @@ static String _check_token_policy(const String &p_code) {
 		}
 		const StringName name = t.get_identifier();
 
+		if (_is_assistant_class(name)) {
+			return "Blocked: Generated code may not use the AI assistant's own classes ('" + String(name) + "').";
+		}
+		// The parent of the scene root (or of its viewport) is the editor.
+		if (after_period && name == SNAME("get_parent") && i >= 2) {
+			const bool on_call = i >= 4 && tokens[i - 2].type == Token::PARENTHESIS_CLOSE && tokens[i - 3].type == Token::PARENTHESIS_OPEN &&
+					tokens[i - 4].type == Token::IDENTIFIER && _in_list(tokens[i - 4].get_identifier(), scene_root_calls);
+			const bool on_name = tokens[i - 2].type == Token::IDENTIFIER && scene_root_names.has(tokens[i - 2].get_identifier());
+			if (on_call || on_name) {
+				return "Blocked: the parent of the edited scene's root is the editor itself. Generated code works inside the scene.";
+			}
+		}
+		// get_tree().root is the editor's window, not the scene being edited.
+		if (after_period && (name == SNAME("root") || name == SNAME("get_root")) && i >= 4 &&
+				tokens[i - 2].type == Token::PARENTHESIS_CLOSE && tokens[i - 3].type == Token::PARENTHESIS_OPEN &&
+				tokens[i - 4].type == Token::IDENTIFIER && tokens[i - 4].get_identifier() == SNAME("get_tree")) {
+			return "Blocked: get_tree().root is the editor itself when code runs in the editor. Work on the edited scene (EditorInterface.get_edited_scene_root()) instead.";
+		}
+
+		if (after_period && name == SNAME("globalize_path")) {
+			// The real path of a project folder is only needed to create that
+			// folder, and that exact form is all that is accepted:
+			//   make_dir[_recursive]_absolute(ProjectSettings.globalize_path("res://dir"))
+			// Anywhere else the result could be walked upwards, out of the project.
+			static const char *folder_calls[] = { "make_dir_recursive_absolute", "make_dir_absolute", "dir_exists_absolute", nullptr };
+			const bool wrapped = i >= 4 && i + 4 < tokens.size() &&
+					tokens[i - 2].type == Token::IDENTIFIER && tokens[i - 2].get_identifier() == SNAME("ProjectSettings") &&
+					tokens[i - 3].type == Token::PARENTHESIS_OPEN &&
+					tokens[i - 4].type == Token::IDENTIFIER && _in_list(tokens[i - 4].get_identifier(), folder_calls) &&
+					tokens[i + 1].type == Token::PARENTHESIS_OPEN &&
+					tokens[i + 2].type == Token::LITERAL && tokens[i + 2].literal.get_type() == Variant::STRING &&
+					tokens[i + 3].type == Token::PARENTHESIS_CLOSE && tokens[i + 4].type == Token::PARENTHESIS_CLOSE;
+			if (!wrapped) {
+				return "Blocked: globalize_path() may only be used as DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(\"res://folder\")). Use res:// and user:// paths directly everywhere else; FileAccess and DirAccess accept them.";
+			}
+			continue;
+		}
 		if (after_period) {
 			// `.method` on any receiver.
 			if (_in_list(name, denied_methods)) {

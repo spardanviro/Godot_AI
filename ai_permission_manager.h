@@ -37,12 +37,17 @@ private:
 	Level permissions[PERM_MAX];
 
 	static String _category_name(Category p_cat);
-	static String _category_setting_key(Category p_cat);
 
 protected:
 	static void _bind_methods();
 
 public:
+	// The editor setting a category is stored under.
+	static String get_setting_key(Category p_category);
+	// The level a category has until the user chooses one. Shared with the
+	// settings dialog, so what it shows is what is enforced.
+	static Level get_default_level(Category p_category);
+
 	// Set/get permission level for a category.
 	void set_permission(Category p_category, Level p_level);
 	Level get_permission(Category p_category) const;

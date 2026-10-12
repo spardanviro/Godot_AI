@@ -1,0 +1,182 @@
+[
+  {
+    "id": "gameplay.coin_pickup",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a coin pickup: an Area2D named \"Coin\" with a circular collision shape of radius 16, and a script res://coin.gd on it that removes the coin when a body enters it.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Coin",
+        "class": "Area2D"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"CollisionShape2D\").size() == 1 and find(\"CollisionShape2D\")[0].shape != null and find(\"CollisionShape2D\")[0].shape.is_class(\"CircleShape2D\") and is_equal_approx(find(\"CollisionShape2D\")[0].shape.radius, 16.0)"
+      },
+      {
+        "type": "has_script",
+        "path": "Coin"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://coin.gd"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://coin.gd",
+        "text": "body_entered"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://coin.gd",
+        "text": "queue_free"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var source = \"extends Area2D\\n\\nfunc _ready() -> void:\\n\\tbody_entered.connect(_on_body_entered)\\n\\nfunc _on_body_entered(_body: Node2D) -> void:\\n\\tqueue_free()\\n\"",
+        "var file = FileAccess.open(\"res://coin.gd\", FileAccess.WRITE)",
+        "file.store_string(source)",
+        "file.close()",
+        "",
+        "var coin = Area2D.new()",
+        "coin.name = \"Coin\"",
+        "root.add_child(coin)",
+        "coin.owner = root",
+        "var collision = CollisionShape2D.new()",
+        "collision.name = \"CollisionShape2D\"",
+        "var shape = CircleShape2D.new()",
+        "shape.radius = 16.0",
+        "collision.shape = shape",
+        "coin.add_child(collision)",
+        "collision.owner = root",
+        "coin.set_script(load(\"res://coin.gd\"))",
+        "print(\"Added Coin pickup with res://coin.gd\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "gameplay.collision_layers",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Player",
+          "class": "CharacterBody2D"
+        }
+      ]
+    },
+    "prompt": "Put Player on collision layer 2 only, and make it collide with layers 1 and 3.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "property",
+        "path": "Player",
+        "property": "collision_layer",
+        "equals": 2
+      },
+      {
+        "type": "property",
+        "path": "Player",
+        "property": "collision_mask",
+        "equals": 5
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var player = get_scene().get_node(\"Player\")",
+        "player.collision_layer = 0",
+        "player.set_collision_layer_value(2, true)",
+        "player.collision_mask = 0",
+        "player.set_collision_mask_value(1, true)",
+        "player.set_collision_mask_value(3, true)",
+        "print(\"Player: layer 2, mask 1 and 3\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "gameplay.new_scene_file",
+    "mode": "agent",
+    "setup": {},
+    "prompt": "Create a new scene whose root is a Node2D named \"Level1\" and save it as res://levels/level1.tscn.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "file_exists",
+        "file": "res://levels/level1.tscn"
+      },
+      {
+        "type": "expression",
+        "code": "scene_root_info(\"res://levels/level1.tscn\") == [\"Level1\", \"Node2D\"]"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var level = Node2D.new()",
+        "level.name = \"Level1\"",
+        "var packed = PackedScene.new()",
+        "packed.pack(level)",
+        "DirAccess.make_dir_recursive_absolute(\"res://levels\")",
+        "ResourceSaver.save(packed, \"res://levels/level1.tscn\")",
+        "level.free()",
+        "print(\"Saved res://levels/level1.tscn\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "gameplay.input_action",
+    "mode": "agent",
+    "setup": {},
+    "prompt": "Add an input action named \"jump\" bound to the Space key and save the project settings.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://project.godot",
+        "text": "jump={"
+      },
+      {
+        "type": "file_contains_any",
+        "file": "res://project.godot",
+        "any": [
+          "\"physical_keycode\":32",
+          "\"keycode\":32"
+        ]
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var event = InputEventKey.new()",
+        "event.physical_keycode = KEY_SPACE",
+        "ProjectSettings.set_setting(\"input/jump\", {\"deadzone\": 0.5, \"events\": [event]})",
+        "ProjectSettings.save()",
+        "print(\"Added the 'jump' action (Space)\")",
+        "```"
+      ]
+    ]
+  }
+]

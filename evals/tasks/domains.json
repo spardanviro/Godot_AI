@@ -1,0 +1,398 @@
+[
+  {
+    "id": "audio.sfx_player",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add an AudioStreamPlayer named \"Sfx\" that plays on the Master bus at -6 dB.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Sfx",
+        "class": "AudioStreamPlayer"
+      },
+      {
+        "type": "expression",
+        "code": "is_equal_approx(node(\"Sfx\").volume_db, -6.0)"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Sfx\").bus == \"Master\""
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = AudioStreamPlayer.new()",
+        "node.name = \"Sfx\"",
+        "node.volume_db = -6.0",
+        "node.bus = \"Master\"",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Sfx\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "navigation.region_and_agent",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Set up 2D navigation: a NavigationRegion2D named \"Region\" with a rectangular navigation polygon of 400 by 300 pixels, and a CharacterBody2D named \"Npc\" with a NavigationAgent2D child named \"Agent\".",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Region",
+        "class": "NavigationRegion2D"
+      },
+      {
+        "type": "node_exists",
+        "path": "Npc",
+        "class": "CharacterBody2D"
+      },
+      {
+        "type": "node_exists",
+        "path": "Npc/Agent",
+        "class": "NavigationAgent2D"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Region\").navigation_polygon != null"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Region\").navigation_polygon.get_outline_count() >= 1 or node(\"Region\").navigation_polygon.get_polygon_count() >= 1"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var region = NavigationRegion2D.new()",
+        "region.name = \"Region\"",
+        "var polygon = NavigationPolygon.new()",
+        "polygon.add_outline(PackedVector2Array([Vector2(0, 0), Vector2(400, 0), Vector2(400, 300), Vector2(0, 300)]))",
+        "region.navigation_polygon = polygon",
+        "root.add_child(region)",
+        "region.owner = root",
+        "var npc = CharacterBody2D.new()",
+        "npc.name = \"Npc\"",
+        "root.add_child(npc)",
+        "npc.owner = root",
+        "var agent = NavigationAgent2D.new()",
+        "agent.name = \"Agent\"",
+        "npc.add_child(agent)",
+        "agent.owner = root",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "particles.sparks",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a GPUParticles2D named \"Sparks\" that emits 32 particles and has a ParticleProcessMaterial.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Sparks",
+        "class": "GPUParticles2D"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Sparks\").amount == 32"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Sparks\").process_material != null"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Sparks\").process_material.is_class(\"ParticleProcessMaterial\")"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = GPUParticles2D.new()",
+        "node.name = \"Sparks\"",
+        "node.amount = 32",
+        "node.process_material = ParticleProcessMaterial.new()",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Sparks\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "shader.tint",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Sprite2D named \"Tinted\" with a ShaderMaterial. Its shader is a canvas_item shader with a uniform colour named tint that multiplies the texture colour.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Tinted",
+        "class": "Sprite2D"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Tinted\").material != null"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Tinted\").material.is_class(\"ShaderMaterial\")"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Tinted\").material.shader.code.contains(\"shader_type canvas_item\")"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Tinted\").material.shader.code.contains(\"tint\")"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Sprite2D.new()",
+        "node.name = \"Tinted\"",
+        "var shader = Shader.new()",
+        "shader.code = \"shader_type canvas_item;\\nuniform vec4 tint : source_color = vec4(1.0, 0.0, 0.0, 1.0);\\nvoid fragment() {\\n\\tCOLOR = texture(TEXTURE, UV) * tint;\\n}\\n\"",
+        "var material = ShaderMaterial.new()",
+        "material.shader = shader",
+        "node.material = material",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Tinted\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "tilemap.ground_layer",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a TileMapLayer named \"Ground\" with a new TileSet whose tiles are 16 by 16 pixels.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Ground",
+        "class": "TileMapLayer"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Ground\").tile_set != null"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Ground\").tile_set.tile_size == Vector2i(16, 16)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = TileMapLayer.new()",
+        "node.name = \"Ground\"",
+        "var tile_set = TileSet.new()",
+        "tile_set.tile_size = Vector2i(16, 16)",
+        "node.tile_set = tile_set",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Ground\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "animation.bounce",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add an AnimationPlayer named \"Anim\" that has an animation called \"bounce\", one second long.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Anim",
+        "class": "AnimationPlayer"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Anim\").has_animation(\"bounce\")"
+      },
+      {
+        "type": "expression",
+        "code": "is_equal_approx(node(\"Anim\").get_animation(\"bounce\").length, 1.0)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var player = AnimationPlayer.new()",
+        "player.name = \"Anim\"",
+        "root.add_child(player)",
+        "player.owner = root",
+        "var animation = Animation.new()",
+        "animation.length = 1.0",
+        "var library = AnimationLibrary.new()",
+        "library.add_animation(\"bounce\", animation)",
+        "player.add_animation_library(\"\", library)",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "batch.hide_enemies",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Enemy1",
+          "class": "Node2D"
+        },
+        {
+          "path": "Enemy2",
+          "class": "Node2D"
+        },
+        {
+          "path": "Player",
+          "class": "Node2D"
+        },
+        {
+          "path": "Enemy3",
+          "class": "Node2D"
+        }
+      ]
+    },
+    "prompt": "Hide every node in the scene whose name starts with Enemy (set visible to false). Leave the other nodes visible.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "expression",
+        "code": "not node(\"Enemy1\").visible and not node(\"Enemy2\").visible and not node(\"Enemy3\").visible"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Player\").visible"
+      },
+      {
+        "type": "node_count",
+        "class": "Node2D",
+        "min": 5,
+        "max": 5
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "for child in root.get_children():",
+        "\tif String(child.name).begins_with(\"Enemy\"):",
+        "\t\tchild.visible = false",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "project.script_in_subfolder",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Create the script res://player/player.gd: it extends CharacterBody2D and exports a float named speed with the default 200.0. Create the folder if it does not exist.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "file_exists",
+        "file": "res://player/player.gd"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://player/player.gd"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://player/player.gd",
+        "text": "extends CharacterBody2D"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://player/player.gd",
+        "text": "@export"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://player/player.gd",
+        "text": "speed"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(\"res://player/\"))",
+        "var file = FileAccess.open(\"res://player/player.gd\", FileAccess.WRITE)",
+        "file.store_string(\"extends CharacterBody2D\\n\\n@export var speed: float = 200.0\\n\")",
+        "file.close()",
+        "EditorInterface.get_resource_filesystem().scan()",
+        "```"
+      ]
+    ]
+  }
+]

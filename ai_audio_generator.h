@@ -14,7 +14,8 @@ protected:
 
 public:
 	// Build OpenAI TTS API request body.
-	static String build_tts_request(const String &p_text, const String &p_voice = "alloy", const String &p_model = "tts-1");
+	static constexpr const char *DEFAULT_MODEL = "gpt-4o-mini-tts";
+	static String build_tts_request(const String &p_text, const String &p_model = DEFAULT_MODEL, const String &p_voice = "alloy");
 
 	// Save raw audio bytes (mp3/wav) to a file in the project.
 	static bool save_audio_bytes(const PackedByteArray &p_data, const String &p_save_path);

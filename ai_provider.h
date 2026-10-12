@@ -68,11 +68,20 @@ public:
 	virtual String parse_stream_delta(const String &p_data) const;
 	// Parse SSE data returning both content and thinking deltas.
 	// Returns Dictionary with "content" (String) and "thinking" (String).
+	// Two optional keys say how the reply ended, when the payload does:
+	//   "finish": FINISH_LENGTH (cut off at the output limit) or
+	//             FINISH_BLOCKED (withheld by the provider's filter);
+	//   "error":  the message of an error reported inside the stream.
 	virtual Dictionary parse_stream_delta_ex(const String &p_data) const;
 	// Check if an SSE data payload signals end of stream.
 	virtual bool is_stream_done_marker(const String &p_data) const;
 	// Get the streaming URL (may differ from regular URL, e.g. Gemini).
 	virtual String get_stream_url() const;
+	// URL for a plain (non-streaming) request built with build_request_body().
+	virtual String get_request_url() const { return get_stream_url(); }
+
+	static constexpr const char *FINISH_LENGTH = "length";
+	static constexpr const char *FINISH_BLOCKED = "blocked";
 
 	// Models listing API.
 	virtual String get_models_list_url() const;
@@ -84,6 +93,12 @@ public:
 	// Call this in every provider that doesn't implement native prompt caching
 	// so the HTML comment never leaks into the API payload.
 	static String strip_cache_boundary(const String &p_prompt);
+
+	// Provider ids in the order they are offered in the settings dialog.
+	static Vector<String> get_provider_ids();
+	// Creates the provider for an id from get_provider_ids(); unknown ids get
+	// the default provider.
+	static Ref<AIProvider> create(const String &p_provider_id);
 
 	AIProvider();
 	virtual ~AIProvider();

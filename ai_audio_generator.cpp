@@ -10,9 +10,9 @@
 void AIAudioGenerator::_bind_methods() {
 }
 
-String AIAudioGenerator::build_tts_request(const String &p_text, const String &p_voice, const String &p_model) {
+String AIAudioGenerator::build_tts_request(const String &p_text, const String &p_model, const String &p_voice) {
 	Dictionary body;
-	body["model"] = p_model;
+	body["model"] = p_model.is_empty() ? String(DEFAULT_MODEL) : p_model;
 	body["input"] = p_text;
 	body["voice"] = p_voice;
 	body["response_format"] = "mp3";

@@ -26,7 +26,10 @@ int AnthropicProvider::get_model_context_length() const {
 	if (m.find("haiku-4-5") >= 0 || m.find("claude-3") >= 0) return 200000;
 	if (m.find("opus-4-5") >= 0 || m.find("opus-4-1") >= 0 || m.find("opus-4-0") >= 0 || m.find("opus-4-2") >= 0) return 200000;
 	if (m.find("sonnet-4-5") >= 0 || m.find("sonnet-4-0") >= 0 || m.find("sonnet-4-2") >= 0) return 200000;
-	return 1000000;
+	// Current Claude models have a 1M window. A name this table does not
+	// know at all (a proxy's own model id) gets the safe assumption:
+	// compressing early costs little, overflowing fails the request.
+	return m.begins_with("claude") ? 1000000 : 200000;
 }
 
 int AnthropicProvider::get_recommended_max_tokens() const {
@@ -307,6 +310,17 @@ Dictionary AnthropicProvider::parse_stream_delta_ex(const String &p_data) const 
 		} else if (delta_type == "text_delta") {
 			result["content"] = delta.get("text", "");
 		}
+	} else if (type == "message_delta") {
+		const Dictionary delta = data.get("delta", Dictionary());
+		const Variant reason = delta.get("stop_reason", Variant());
+		if (reason.get_type() == Variant::STRING && String(reason) == "max_tokens") {
+			result["finish"] = FINISH_LENGTH;
+		} else if (reason.get_type() == Variant::STRING && String(reason) == "refusal") {
+			result["finish"] = FINISH_BLOCKED;
+		}
+	} else if (type == "error") {
+		const Variant error = data.get("error", Variant());
+		result["error"] = error.get_type() == Variant::DICTIONARY ? String(Dictionary(error).get("message", "Unknown error")) : String("Unknown error");
 	}
 
 	return result;

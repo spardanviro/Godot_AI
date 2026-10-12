@@ -11,19 +11,23 @@
 void AIImageGenerator::_bind_methods() {
 }
 
-String AIImageGenerator::build_dalle_request(const String &p_prompt, const String &p_size, const String &p_quality) {
+String AIImageGenerator::build_request(const String &p_prompt, const String &p_model, const String &p_size) {
 	Dictionary body;
-	body["model"] = "dall-e-3";
+	body["model"] = p_model.is_empty() ? String(DEFAULT_MODEL) : p_model;
 	body["prompt"] = p_prompt;
 	body["n"] = 1;
 	body["size"] = p_size;
-	body["response_format"] = "b64_json";
-	body["quality"] = p_quality;
+	if (String(body["model"]).begins_with("dall-e")) {
+		// DALL-E answers with a URL unless asked for the data itself.
+		body["response_format"] = "b64_json";
+		body["quality"] = "standard";
+	}
+	// The GPT image models always return base64 and reject response_format.
 
 	return JSON::stringify(body, "", false);
 }
 
-String AIImageGenerator::parse_dalle_response(const String &p_response_body) {
+String AIImageGenerator::parse_response(const String &p_response_body) {
 	Ref<JSON> json;
 	json.instantiate();
 	Error err = json->parse(p_response_body);
@@ -34,7 +38,7 @@ String AIImageGenerator::parse_dalle_response(const String &p_response_body) {
 	Dictionary data = json->get_data();
 	if (data.has("error")) {
 		Dictionary error = data["error"];
-		ERR_PRINT("[Godot AI] DALL-E error: " + String(error.get("message", "Unknown")));
+		ERR_PRINT("[Godot AI] Image API error: " + String(error.get("message", "Unknown")));
 		return "";
 	}
 

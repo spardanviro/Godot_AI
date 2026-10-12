@@ -1,0 +1,390 @@
+[
+  {
+    "id": "scene.add_sprite",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Sprite2D named \"Logo\" to the scene at position (100, 50).",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Logo",
+        "class": "Sprite2D"
+      },
+      {
+        "type": "property",
+        "path": "Logo",
+        "property": "position",
+        "equals": "Vector2(100, 50)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var logo = Sprite2D.new()",
+        "logo.name = \"Logo\"",
+        "logo.position = Vector2(100, 50)",
+        "root.add_child(logo)",
+        "logo.owner = root",
+        "print(\"Added Sprite2D 'Logo' at (100, 50)\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "scene.player_2d",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Create a 2D player: a CharacterBody2D named \"Player\" with a CollisionShape2D child that has a rectangle shape, and a Camera2D child.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Player",
+        "class": "CharacterBody2D"
+      },
+      {
+        "type": "node_count",
+        "class": "CollisionShape2D",
+        "min": 1
+      },
+      {
+        "type": "node_count",
+        "class": "Camera2D",
+        "min": 1
+      },
+      {
+        "type": "expression",
+        "code": "find(\"CollisionShape2D\")[0].shape != null and find(\"CollisionShape2D\")[0].shape.is_class(\"RectangleShape2D\")"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"CollisionShape2D\")[0].get_parent().name == \"Player\" and find(\"Camera2D\")[0].get_parent().name == \"Player\""
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var player = CharacterBody2D.new()",
+        "player.name = \"Player\"",
+        "root.add_child(player)",
+        "player.owner = root",
+        "",
+        "var collision = CollisionShape2D.new()",
+        "collision.name = \"CollisionShape2D\"",
+        "var shape = RectangleShape2D.new()",
+        "shape.size = Vector2(32, 48)",
+        "collision.shape = shape",
+        "player.add_child(collision)",
+        "collision.owner = root",
+        "",
+        "var camera = Camera2D.new()",
+        "camera.name = \"Camera2D\"",
+        "player.add_child(camera)",
+        "camera.owner = root",
+        "print(\"Created Player with a rectangle collision shape and a camera\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "scene.enemy_group",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add three Area2D nodes named Enemy1, Enemy2 and Enemy3 and put all of them in the group \"enemies\".",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Enemy1",
+        "class": "Area2D"
+      },
+      {
+        "type": "node_exists",
+        "path": "Enemy2",
+        "class": "Area2D"
+      },
+      {
+        "type": "node_exists",
+        "path": "Enemy3",
+        "class": "Area2D"
+      },
+      {
+        "type": "expression",
+        "code": "saved_group_members(\"enemies\") == 3"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "for i in range(1, 4):",
+        "\tvar enemy = Area2D.new()",
+        "\tenemy.name = \"Enemy%d\" % i",
+        "\troot.add_child(enemy)",
+        "\tenemy.owner = root",
+        "\tenemy.add_to_group(\"enemies\", true)",
+        "print(\"Added 3 enemies to the 'enemies' group\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "scene.timer",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Timer named \"SpawnTimer\" that fires every 2.5 seconds, keeps repeating, and starts automatically.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "SpawnTimer",
+        "class": "Timer"
+      },
+      {
+        "type": "property",
+        "path": "SpawnTimer",
+        "property": "wait_time",
+        "equals": 2.5
+      },
+      {
+        "type": "property",
+        "path": "SpawnTimer",
+        "property": "one_shot",
+        "equals": false
+      },
+      {
+        "type": "property",
+        "path": "SpawnTimer",
+        "property": "autostart",
+        "equals": true
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var timer = Timer.new()",
+        "timer.name = \"SpawnTimer\"",
+        "timer.wait_time = 2.5",
+        "timer.one_shot = false",
+        "timer.autostart = true",
+        "root.add_child(timer)",
+        "timer.owner = root",
+        "print(\"Added SpawnTimer (2.5 s, repeating, autostart)\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "scene.rename_reparent",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "A",
+          "class": "Node2D"
+        },
+        {
+          "path": "B",
+          "class": "Sprite2D"
+        }
+      ]
+    },
+    "prompt": "Rename the node \"A\" to \"Player\" and make \"B\" a child of it.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Player"
+      },
+      {
+        "type": "node_exists",
+        "path": "Player/B",
+        "class": "Sprite2D"
+      },
+      {
+        "type": "node_missing",
+        "path": "A"
+      },
+      {
+        "type": "node_missing",
+        "path": "B"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var a = root.get_node(\"A\")",
+        "var b = root.get_node(\"B\")",
+        "a.name = \"Player\"",
+        "b.reparent(a)",
+        "b.owner = root",
+        "print(\"Renamed A to Player and moved B under it\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "scene.delete_node",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Obsolete",
+          "class": "Node2D"
+        },
+        {
+          "path": "Keep",
+          "class": "Node2D"
+        }
+      ]
+    },
+    "prompt": "Delete the node named \"Obsolete\". Leave everything else alone.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_missing",
+        "path": "Obsolete"
+      },
+      {
+        "type": "node_exists",
+        "path": "Keep"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = root.get_node(\"Obsolete\")",
+        "root.remove_child(node)",
+        "node.queue_free()",
+        "print(\"Deleted node 'Obsolete'\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "scene.tilemap_layer",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a TileMapLayer named \"Ground\" with a new TileSet whose tiles are 16x16 pixels.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Ground",
+        "class": "TileMapLayer"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Ground\").tile_set != null and node(\"Ground\").tile_set.tile_size == Vector2i(16, 16)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var ground = TileMapLayer.new()",
+        "ground.name = \"Ground\"",
+        "var tile_set = TileSet.new()",
+        "tile_set.tile_size = Vector2i(16, 16)",
+        "ground.tile_set = tile_set",
+        "root.add_child(ground)",
+        "ground.owner = root",
+        "print(\"Added TileMapLayer 'Ground' with a 16x16 TileSet\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "scene.animation",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add an AnimationPlayer named \"Anim\" with an animation called \"idle\" that lasts 1 second.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Anim",
+        "class": "AnimationPlayer"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Anim\").has_animation(\"idle\") and is_equal_approx(node(\"Anim\").get_animation(\"idle\").length, 1.0)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var player = AnimationPlayer.new()",
+        "player.name = \"Anim\"",
+        "root.add_child(player)",
+        "player.owner = root",
+        "",
+        "var animation = Animation.new()",
+        "animation.length = 1.0",
+        "var library = AnimationLibrary.new()",
+        "library.add_animation(\"idle\", animation)",
+        "player.add_animation_library(\"\", library)",
+        "print(\"Added AnimationPlayer 'Anim' with a 1 s 'idle' animation\")",
+        "```"
+      ]
+    ]
+  }
+]

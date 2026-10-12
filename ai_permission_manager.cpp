@@ -20,8 +20,18 @@ String AIPermissionManager::_category_name(Category p_cat) {
 	}
 }
 
-String AIPermissionManager::_category_setting_key(Category p_cat) {
-	switch (p_cat) {
+AIPermissionManager::Level AIPermissionManager::get_default_level(Category p_category) {
+	// Deleting files is the one thing a checkpoint cannot always undo.
+	if (p_category == PERM_FILE_DELETE) {
+		return LEVEL_DENY;
+	}
+	// A script is code that runs later, unseen by the safety check: writing
+	// or attaching one is shown to the user first.
+	return p_category == PERM_MODIFY_SCRIPTS ? LEVEL_ASK : LEVEL_ALLOW;
+}
+
+String AIPermissionManager::get_setting_key(Category p_category) {
+	switch (p_category) {
 		case PERM_CREATE_NODES: return "ai_assistant/permissions/create_nodes";
 		case PERM_DELETE_NODES: return "ai_assistant/permissions/delete_nodes";
 		case PERM_MODIFY_PROPERTIES: return "ai_assistant/permissions/modify_properties";
@@ -53,9 +63,12 @@ void AIPermissionManager::load_from_settings() {
 	}
 
 	for (int i = 0; i < PERM_MAX; i++) {
-		String key = _category_setting_key((Category)i);
+		String key = get_setting_key((Category)i);
 		if (!key.is_empty() && es->has_setting(key)) {
-			permissions[i] = (Level)(int)es->get_setting(key);
+			const int level = es->get_setting(key);
+			if (level >= LEVEL_ALLOW && level <= LEVEL_DENY) {
+				permissions[i] = (Level)level;
+			}
 		}
 	}
 }
@@ -67,7 +80,7 @@ void AIPermissionManager::save_to_settings() {
 	}
 
 	for (int i = 0; i < PERM_MAX; i++) {
-		String key = _category_setting_key((Category)i);
+		String key = get_setting_key((Category)i);
 		if (!key.is_empty()) {
 			es->set_setting(key, (int)permissions[i]);
 		}
@@ -156,8 +169,14 @@ Vector<AIPermissionManager::Category> AIPermissionManager::categorize_code(const
 	}
 
 	// Detect script modification.
+	// Writing a script file counts as much as attaching one: what is in the
+	// file never passes the safety check, and it runs when loaded.
+	const bool writes_files = p_code.find("FileAccess") != -1 || p_code.find("store_") != -1 || p_code.find("ResourceSaver") != -1 ||
+			p_code.find("rename") != -1 || p_code.find(".copy(") != -1 || p_code.find("copy_absolute") != -1;
+	const bool names_code_file = p_code.find(".gd") != -1 || p_code.find(".cs\"") != -1 || p_code.find("project.godot") != -1 ||
+			p_code.find(".cfg") != -1 || p_code.find(".import") != -1;
 	if (p_code.find("set_script") != -1 || p_code.find("source_code") != -1 ||
-			p_code.find("GDScript.new") != -1) {
+			p_code.find("GDScript.new") != -1 || (writes_files && names_code_file)) {
 		result.push_back(PERM_MODIFY_SCRIPTS);
 	}
 
@@ -223,9 +242,8 @@ String AIPermissionManager::get_code_action_summary(const Vector<Category> &p_ca
 }
 
 AIPermissionManager::AIPermissionManager() {
-	// Default: all operations allowed (matches existing behavior).
 	for (int i = 0; i < PERM_MAX; i++) {
-		permissions[i] = LEVEL_ALLOW;
+		permissions[i] = get_default_level((Category)i);
 	}
 	load_from_settings();
 }

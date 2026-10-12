@@ -19,7 +19,7 @@ public:
 	virtual Vector<String> get_headers() const override;
 
 	// Gemini uses API key in URL, not header.
-	String get_request_url() const;
+	virtual String get_request_url() const override;
 
 	virtual String get_models_list_url() const override;
 	virtual Vector<String> get_models_list_headers() const override;

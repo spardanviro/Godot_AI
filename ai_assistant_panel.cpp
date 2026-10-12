@@ -1,428 +1,170 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_assistant_panel.h"
-#include "ai_settings_dialog.h"
-#include "ai_system_prompt.h"
-#include "ai_localization.h"
-#include "ai_gotchas_index.h"
 
-#include "providers/openai_provider.h"
-#include "providers/anthropic_provider.h"
-#include "providers/gemini_provider.h"
-#include "providers/glm_provider.h"
-#include "providers/deepseek_provider.h"
+#include "ai_chat_store.h"
+#include "ai_chat_view.h"
+#include "ai_credential_store.h"
+#include "ai_knowledge.h"
+#include "ai_log.h"
+#include "ai_mention_autocomplete.h"
+#include "ai_runtime_watch.h"
+#include "ai_settings_dialog.h"
+#include "ai_theme.h"
+
+#include "editor/themes/editor_scale.h"
 
 #include "core/config/project_settings.h"
-#include "editor/settings/editor_settings.h"
-#include "editor/themes/editor_scale.h"
-#include "editor/editor_interface.h"
-#include "editor/editor_node.h"
-#include "editor/editor_data.h"
-#include "editor/file_system/editor_file_system.h"
-#include "scene/gui/button.h"
-#include "scene/gui/label.h"
-#include "scene/gui/rich_text_label.h"
-#include "scene/gui/scroll_container.h"
-#include "scene/gui/separator.h"
-#include "scene/gui/text_edit.h"
-#include "scene/gui/option_button.h"
-#include "scene/gui/dialogs.h"
-#include "scene/gui/file_dialog.h"
-#include "scene/gui/panel.h"
-#include "editor/gui/editor_file_dialog.h"
-#include "scene/main/http_request.h"
-#include "scene/main/timer.h"
 #include "core/input/input_event.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
-#include "core/io/http_client.h"
 #include "core/object/callable_mp.h"
-#include "core/object/script_language.h"
-#include "core/io/json.h"
-#include "core/os/os.h"
 #include "core/os/time.h"
-#include "core/crypto/crypto.h"
-#include "core/crypto/crypto_core.h"
+#include "editor/editor_data.h"
+#include "editor/editor_interface.h"
+#include "editor/file_system/editor_file_system.h"
+#include "editor/gui/editor_file_dialog.h"
+#include "editor/settings/editor_settings.h"
+#include "scene/gui/button.h"
+#include "scene/gui/dialogs.h"
+#include "scene/gui/label.h"
+#include "scene/gui/option_button.h"
+#include "scene/gui/rich_text_label.h"
+#include "scene/gui/scroll_container.h"
 #include "scene/main/viewport.h"
 
-#define AI_LOG(msg) print_line(String("[Godot AI] ") + msg)
-#define AI_ERR(msg) ERR_PRINT(String("[Godot AI] ") + msg)
-#define AI_WARN(msg) WARN_PRINT(String("[Godot AI] ") + msg)
-// Inline two-language text for chat messages that have no entry in AILocalization.
-#define AI_L(en, zh) (AILocalization::get_language() == "zh" ? String::utf8(zh) : String::utf8(en))
+static const int INPUT_MIN_HEIGHT = 60;
+static const int INPUT_MAX_HEIGHT = 200;
+static const int INPUT_FALLBACK_MARGIN = 8;
+static const int ATTACHMENT_MAX_CHARS = 50000;
+static const int CODE_FONT_SIZE = 13;
+static const Size2 DETAILS_DIALOG_SIZE(700, 500);
+static const Size2 DETAILS_TEXT_MIN_SIZE(650, 400);
+static const float FILE_DIALOG_RATIO = 0.6f;
+static const int DELETE_BUTTON_WIDTH = 28;
+static const char *SCREENSHOT_DIR = "user://ai_screenshots";
 
-// Forward-declare mention helper used in _on_input_gui_input (defined later).
-static bool _is_mention_word_char(char32_t c);
+static const Color COLOR_DETAILS_TEXT(0.85, 0.85, 0.9);
+static const Color COLOR_DETAILS_MUTED(0.5, 0.5, 0.6);
+static const Color COLOR_DETAILS_THINKING(0.55, 0.55, 0.65);
+static const Color COLOR_CODE(0.9, 0.85, 0.7);
+static const Color COLOR_CODE_BACKGROUND(0.12, 0.12, 0.16, 0.9);
 
-// Gemini carries the API key in the query string; never print it.
-static String _redact_url_key(const String &p_url) {
-	const int key_pos = p_url.find("key=");
-	if (key_pos < 0) {
-		return p_url;
-	}
-	int key_end = p_url.find("&", key_pos);
-	if (key_end < 0) {
-		key_end = p_url.length();
-	}
-	return p_url.left(key_pos + 4) + "****" + p_url.substr(key_end);
-}
-
-// Static runtime error capture buffer (written on main thread only).
-String AIAssistantPanel::s_runtime_errors;
-
-// Sorter for NodeInfo by name.
-struct _NodeInfoSorter {
-	bool operator()(const AIAssistantPanel::NodeInfo &a, const AIAssistantPanel::NodeInfo &b) const {
-		return a.name.naturalcasecmp_to(b.name) < 0;
-	}
+// The preset buttons; their prompts are knowledge files, so they can be edited.
+static const struct {
+	AILocalization::StringID label;
+	const char *prompt_id;
+} PRESETS[] = {
+	{ AILocalization::STR_PRESET_FIX_ERRORS, "preset_fix_errors" },
+	{ AILocalization::STR_PRESET_PERFORMANCE, "preset_performance" },
 };
 
-void AIAssistantPanel::_bind_methods() {
-}
-
 void AIAssistantPanel::_notification(int p_what) {
-	switch (p_what) {
-		case NOTIFICATION_READY: {
-			_update_provider();
-			_append_message("System", TR(STR_SYS_READY), Color(0.6, 0.8, 1.0));
-			AI_LOG("Panel initialized and ready.");
+	if (p_what != NOTIFICATION_READY) {
+		return;
+	}
+	const int migrated_keys = AICredentialStore::migrate_from_editor_settings();
+	controller->reload_settings();
+	_system_message(TR(STR_SYS_READY));
+	if (migrated_keys > 0) {
+		_system_message(AI_L("Your API keys were moved out of the editor settings file into an encrypted credential store.", "API 密钥已从编辑器设置文件迁移到加密的凭据存储中。"));
+	}
 
-			// Start the passive runtime-error watch — always on, no user toggle needed.
-			if (runtime_poll_timer) {
-				runtime_poll_timer->start();
-			}
+	// Override files change what the model is told; never let that happen unseen.
+	const AIKnowledge *knowledge = AIKnowledge::get_singleton();
+	if (!knowledge->get_overridden_files().is_empty()) {
+		_system_message(itos(knowledge->get_overridden_files().size()) +
+						AI_L(" prompt/knowledge files are loaded from ", " 个提示词/知识文件来自覆盖目录 ") + knowledge->get_override_dir() +
+						AI_L(" instead of the built-in ones.", "，替代了内置版本。"),
+				AIAgentController::NOTICE_WARNING);
+	}
 
-			// Attach the autocomplete overlay to the editor root so it floats
-			// above all panels without creating a separate OS window.
-			// Must be deferred: the editor root may still be setting up children
-			// when NOTIFICATION_READY fires, and add_child() would assert otherwise.
-			Control *base = EditorInterface::get_singleton()->get_base_control();
-			if (base && autocomplete_panel) {
-				base->call_deferred("add_child", autocomplete_panel);
-			}
-
-			// Auto-restore last conversation if the setting is enabled.
-			{
-				EditorSettings *es = EditorSettings::get_singleton();
-				bool restore = true; // Default on.
-				if (es && es->has_setting("ai_assistant/restore_last_chat")) {
-					restore = es->get_setting("ai_assistant/restore_last_chat");
-				}
-				if (restore) {
-					String dir_path = _get_chats_dir();
-					Ref<DirAccess> dir = DirAccess::open(dir_path);
-					if (dir.is_valid()) {
-						Vector<String> files;
-						dir->list_dir_begin();
-						String fname = dir->get_next();
-						while (!fname.is_empty()) {
-							if (!dir->current_is_dir() && fname.ends_with(".json")) {
-								files.push_back(fname);
-							}
-							fname = dir->get_next();
-						}
-						dir->list_dir_end();
-						if (!files.is_empty()) {
-							files.sort();
-							// Last file alphabetically = most recent (timestamp-based names).
-							String latest = dir_path + "/" + files[files.size() - 1];
-							// Defer load so RichTextLabel finishes its layout pass first.
-							callable_mp(this, &AIAssistantPanel::_load_chat).bind(latest).call_deferred();
-						}
-					}
-				}
-			}
-		} break;
-		case NOTIFICATION_EXIT_TREE: {
-			// The panel leaves the tree whenever its dock is moved or floated, not
-			// only on shutdown, so the overlay must survive this: freeing it here
-			// left autocomplete_list dangling and, at shutdown, raced the editor
-			// root's own teardown. It is released in the destructor instead.
-			_hide_mention_autocomplete();
-		} break;
-		case NOTIFICATION_THEME_CHANGED: {
-		} break;
+	EditorSettings *es = EditorSettings::get_singleton();
+	const bool restore = !es || !es->has_setting("ai_assistant/restore_last_chat") || bool(es->get_setting("ai_assistant/restore_last_chat"));
+	if (restore) {
+		// Deferred so the chat view finishes its first layout pass.
+		callable_mp(this, &AIAssistantPanel::_restore_last_chat).call_deferred();
 	}
 }
 
-// --- Settings ---
+void AIAssistantPanel::_system_message(const String &p_text, AIAgentController::NoticeLevel p_level) {
+	chat_view->append_notice(p_level, p_text);
+}
 
 bool AIAssistantPanel::_get_send_on_enter() const {
 	EditorSettings *es = EditorSettings::get_singleton();
-	if (es && es->has_setting("ai_assistant/send_on_enter")) {
-		return es->get_setting("ai_assistant/send_on_enter");
-	}
-	return true;
-}
-
-bool AIAssistantPanel::_get_autorun() const {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (es && es->has_setting("ai_assistant/autorun")) {
-		return es->get_setting("ai_assistant/autorun");
-	}
-	return true; // Default: auto-run enabled
-}
-
-AIAssistantPanel::AIMode AIAssistantPanel::_get_current_mode() const {
-	if (mode_selector) {
-		return (AIMode)mode_selector->get_selected();
-	}
-	return MODE_AGENT;
-}
-
-void AIAssistantPanel::_on_mode_changed(int p_index) {
-	AI_LOG("Mode changed to: " + String(p_index == 0 ? "ASK" : (p_index == 1 ? "AGENT" : "PLAN")));
+	return !es || !es->has_setting("ai_assistant/send_on_enter") || bool(es->get_setting("ai_assistant/send_on_enter"));
 }
 
 void AIAssistantPanel::_refresh_ui_texts() {
-	if (title_label) {
-		title_label->set_text(TR(STR_PANEL_TITLE));
-	}
-	if (new_chat_button) {
-		new_chat_button->set_text(TR(STR_BTN_NEW));
-		new_chat_button->set_tooltip_text(TR(STR_TIP_NEW_CHAT));
-	}
-	if (history_button) {
-		if (history_visible) {
-			history_button->set_text(TR(STR_BTN_BACK));
-		} else {
-			history_button->set_text(TR(STR_BTN_HISTORY));
-		}
-		history_button->set_tooltip_text(TR(STR_TIP_HISTORY));
-	}
-	if (settings_button) {
-		settings_button->set_text(TR(STR_BTN_SETTINGS));
-		settings_button->set_tooltip_text(TR(STR_TIP_SETTINGS));
-	}
-	if (mode_selector) {
-		int sel = mode_selector->get_selected();
-		mode_selector->set_item_text(0, TR(STR_MODE_ASK));
-		mode_selector->set_item_text(1, TR(STR_MODE_AGENT));
-		mode_selector->set_item_text(2, TR(STR_MODE_PLAN));
-		mode_selector->select(sel);
-		mode_selector->set_tooltip_text(TR(STR_MODE_TOOLTIP));
-	}
-	if (send_button) {
-		send_button->set_text(TR(STR_BTN_SEND));
-	}
-	if (attach_button) {
-		attach_button->set_tooltip_text(TTR("Attach file (.md, .mermaid, .txt, .json, .yaml, .gd ...)"));
-	}
-	if (input_field) {
-		if (_get_send_on_enter()) {
-			input_field->set_placeholder(TR(STR_INPUT_PLACEHOLDER_ENTER));
-		} else {
-			input_field->set_placeholder(TR(STR_INPUT_PLACEHOLDER_CTRL));
-		}
-	}
+	title_label->set_text(TR(STR_PANEL_TITLE));
+	new_chat_button->set_text(TR(STR_BTN_NEW));
+	new_chat_button->set_tooltip_text(TR(STR_TIP_NEW_CHAT));
+	history_button->set_text(history_visible ? TR(STR_BTN_BACK) : TR(STR_BTN_HISTORY));
+	history_button->set_tooltip_text(TR(STR_TIP_HISTORY));
+	screenshot_button->set_text(TR(STR_BTN_SCREENSHOT));
+	screenshot_button->set_tooltip_text(TR(STR_TIP_SCREENSHOT));
+	settings_button->set_text(TR(STR_BTN_SETTINGS));
+	settings_button->set_tooltip_text(TR(STR_TIP_SETTINGS));
+	send_button->set_text(TR(STR_BTN_SEND));
 
-	// Update preset buttons (Fix Errors, Performance).
-	AILocalization::StringID preset_ids[] = {
-		AILocalization::STR_PRESET_FIX_ERRORS,
-		AILocalization::STR_PRESET_PERFORMANCE,
-	};
-	for (int i = 0; i < preset_buttons.size() && i < 2; i++) {
-		preset_buttons[i]->set_text(AILocalization::get(preset_ids[i]));
+	const int selected_mode = mode_selector->get_selected();
+	mode_selector->set_item_text(AIAgentController::MODE_ASK, TR(STR_MODE_ASK));
+	mode_selector->set_item_text(AIAgentController::MODE_AGENT, TR(STR_MODE_AGENT));
+	mode_selector->set_item_text(AIAgentController::MODE_PLAN, TR(STR_MODE_PLAN));
+	mode_selector->select(selected_mode);
+	mode_selector->set_tooltip_text(TR(STR_MODE_TOOLTIP));
+
+	input_field->set_placeholder(_get_send_on_enter() ? TR(STR_INPUT_PLACEHOLDER_ENTER) : TR(STR_INPUT_PLACEHOLDER_CTRL));
+	for (int i = 0; i < preset_buttons.size(); i++) {
+		preset_buttons[i]->set_text(AILocalization::get(PRESETS[i].label));
 	}
+	permission_dialog->set_title(TR(STR_PERM_DIALOG_TITLE));
 }
 
-void AIAssistantPanel::_update_provider() {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (!es) {
-		AI_ERR("EditorSettings singleton not available.");
-		return;
-	}
-
-	String provider_name = es->get_setting("ai_assistant/provider");
-	// Load provider-specific API key; fall back to legacy single key.
-	String api_key_val;
-	{
-		String per_provider_key = "ai_assistant/api_key_" + provider_name;
-		if (es->has_setting(per_provider_key) && !String(es->get_setting(per_provider_key)).is_empty()) {
-			api_key_val = es->get_setting(per_provider_key);
-		} else {
-			api_key_val = es->get_setting("ai_assistant/api_key");
-		}
-	}
-	String model_val = es->get_setting("ai_assistant/model");
-	String endpoint_val = es->get_setting("ai_assistant/api_endpoint");
-	int max_tokens_val = es->get_setting("ai_assistant/max_tokens");
-	float temperature_val = es->get_setting("ai_assistant/temperature");
-
-	if (provider_name == "anthropic") {
-		current_provider = Ref<AnthropicProvider>(memnew(AnthropicProvider));
-	} else if (provider_name == "openai") {
-		current_provider = Ref<OpenAIProvider>(memnew(OpenAIProvider));
-	} else if (provider_name == "gemini") {
-		current_provider = Ref<GeminiProvider>(memnew(GeminiProvider));
-	} else if (provider_name == "glm") {
-		current_provider = Ref<GLMProvider>(memnew(GLMProvider));
-	} else if (provider_name == "deepseek") {
-		current_provider = Ref<DeepSeekProvider>(memnew(DeepSeekProvider));
-	} else {
-		current_provider = Ref<AnthropicProvider>(memnew(AnthropicProvider));
-	}
-	// An in-flight summary was built for (and must be parsed by) the old provider.
-	_cancel_pending_summary();
-
-	current_provider->set_api_key(api_key_val);
-	if (!model_val.is_empty()) {
-		current_provider->set_model(model_val);
-	}
-	if (!endpoint_val.is_empty()) {
-		current_provider->set_api_endpoint(endpoint_val);
-	}
-
-	// Auto-set max_tokens based on model if user hasn't customized it.
-	int recommended = current_provider->get_recommended_max_tokens();
-	if (max_tokens_val == 4096 && recommended != 4096) {
-		// Default was never changed — use model's recommended value.
-		max_tokens_val = recommended;
-		es->set_setting("ai_assistant/max_tokens", max_tokens_val);
-	}
-	current_provider->set_max_tokens(max_tokens_val);
-	current_provider->set_temperature(temperature_val);
-	current_provider->set_send_temperature(!models_without_temperature.has(_temperature_key()));
-
-	String actual_model = model_val.is_empty() ? current_provider->get_default_model() : model_val;
-	String actual_endpoint = endpoint_val.is_empty() ? current_provider->get_default_endpoint() : endpoint_val;
-	int context_len = current_provider->get_model_context_length();
-	AI_LOG("Provider updated: " + provider_name);
-	AI_LOG("  Model: " + actual_model);
-	AI_LOG("  Endpoint: " + actual_endpoint);
-	AI_LOG("  API Key: " + (api_key_val.is_empty() ? String("(not set)") : String("****" + api_key_val.right(4))));
-	AI_LOG("  Max tokens: " + itos(max_tokens_val) + " (recommended: " + itos(recommended) + "), Temperature: " + String::num(temperature_val, 1));
-
-	// Reload compression and permission settings.
-	_load_compression_settings();
-	AI_LOG("  Context window: " + itos(context_len) + " tokens, Compression threshold: ~" + itos((int)((context_len - max_tokens_val) * compression_threshold_pct)) + " tokens before system prompt");
-	permission_manager->load_from_settings();
-
-	if (input_field) {
-		if (_get_send_on_enter()) {
-			input_field->set_placeholder(TR(STR_INPUT_PLACEHOLDER_ENTER));
-		} else {
-			input_field->set_placeholder(TR(STR_INPUT_PLACEHOLDER_CTRL));
-		}
-	}
-}
-
-// --- Chat Actions ---
-
-void AIAssistantPanel::_on_stop_pressed() {
-	if (!is_waiting_response) {
-		return;
-	}
-	// Signal the stream thread to exit its read loop.
-	stream_mutex.lock();
-	stream_stop_requested = true;
-	stream_mutex.unlock();
-	// If the timer is running, the next poll will see stream_finished and clean up.
-	// Force a final poll immediately so the UI updates without a noticeable delay.
-	if (!stream_poll_timer->is_stopped()) {
-		_on_stream_poll();
-	}
-}
-
-void AIAssistantPanel::_reset_automation_state() {
-	runtime_fix_in_progress = false;
-	runtime_restart_after_fix = false;
-	plan_step_execution_mode = false;
-	auto_retry_count = 0;
-	reactive_retry_pending = false;
-}
+// =============================================================================
+// User actions
+// =============================================================================
 
 void AIAssistantPanel::_on_send_pressed() {
 	if (history_visible) {
 		_show_chat_view();
 	}
-
-	String text = input_field->get_text().strip_edges();
-	if (text.is_empty() || is_waiting_response) {
+	const String text = input_field->get_text().strip_edges();
+	if (text.is_empty() || controller->is_busy()) {
 		return;
 	}
+	autocomplete->hide_popup();
 
-	AI_LOG("========== NEW MESSAGE ==========");
-	AI_LOG("User input: " + text);
-
-	web_requests_this_turn = 0;
-
-	// A message typed by the user starts a fresh exchange. Any automation state
-	// left behind by a failed or cancelled run must not leak into it — a stale
-	// runtime_fix_in_progress would execute code in ASK mode and skip dialogs.
-	_reset_automation_state();
-
-	if (current_chat_id.is_empty()) {
-		_generate_chat_id();
+	if (!controller->get_session().is_empty()) {
+		chat_view->append_separator();
 	}
-
-	// Add conversation separator before new message (if not first message).
-	if (!conversation_history.is_empty()) {
-		chat_display->push_color(Color(0.3, 0.3, 0.4));
-		chat_display->add_text(String::utf8("────────────────────────────────────────"));
-		chat_display->pop();
-		chat_display->add_newline();
-	}
-
-	// Dismiss autocomplete before sending.
-	_hide_mention_autocomplete();
-
-	// Display user message with mention chips rendered via BBCode.
-	_append_message("You", input_field->get_text_with_mention_bbcode(), Color(0.9, 0.9, 0.9), true);
-
-	// Send to AI with mentions expanded to full node-info context.
+	// Shown with mention chips; sent with the mentions expanded to node details.
+	chat_view->append_user_message(input_field->get_text_with_mention_bbcode());
 	const String expanded = input_field->get_text_with_expanded_mentions();
-
-	// Record the raw user input for use in conversational-intent detection.
-	last_user_input = text;
 
 	input_field->set_text("");
 	input_field->clear_mentions();
-	input_field->set_custom_minimum_size(Size2(0, 60)); // Reset to minimum after send.
+	input_field->set_custom_minimum_size(Size2(0, INPUT_MIN_HEIGHT * EDSCALE));
 
-	_send_to_api(expanded);
+	controller->submit_user_message(expanded, text, (AIAgentController::Mode)mode_selector->get_selected());
+}
+
+void AIAssistantPanel::_on_stop_pressed() {
+	controller->stop();
 }
 
 void AIAssistantPanel::_on_new_chat_pressed() {
-	// The in-flight response would otherwise land in — and run its code in —
-	// the new conversation.
-	if (is_waiting_response) {
-		_append_message("System", AI_L("Stop the current response before starting a new chat.", "请先停止当前回复，再新建对话。"), Color(1.0, 0.7, 0.3));
+	if (!controller->new_session()) {
+		_system_message(AI_L("Stop the current response before starting a new chat.", "请先停止当前回复，再新建对话。"), AIAgentController::NOTICE_WARNING);
 		return;
 	}
-	if (!conversation_history.is_empty()) {
-		_save_current_chat();
-	}
-
-	chat_display->clear();
-	conversation_history.clear();
-	full_conversation_history.clear();
-	context_summary = "";
-	_cancel_pending_summary();
-	pending_code = "";
-	pending_plan_md_path = "";
-	active_plan_md_path = "";
-	plan_execution_steps.clear();
-	plan_execution_step_idx = 0;
-	plan_step_execution_mode = false;
-	current_chat_id = "";
-	pending_attachments.clear();
-	displayed_code_blocks.clear();
-	stored_detail_responses.clear();
-	stored_thinking_texts.clear();
-	// Clear paste store so file IDs reset for the new session.
-	paste_path_to_id.clear();
-	paste_id_to_content.clear();
-	paste_next_id = 1;
 	input_field->set_text("");
 	input_field->clear_mentions();
-
 	if (history_visible) {
 		_show_chat_view();
 	}
-
-	_append_message("System", TR(STR_SYS_NEW_CONVERSATION), Color(0.6, 0.8, 1.0));
-	AI_LOG("New conversation started.");
+	_system_message(TR(STR_SYS_NEW_CONVERSATION));
 }
 
 void AIAssistantPanel::_on_history_pressed() {
@@ -433,3095 +175,286 @@ void AIAssistantPanel::_on_history_pressed() {
 	}
 }
 
-void AIAssistantPanel::_on_screenshot_pressed() {
-	// Try 3D viewport first, then 2D viewport.
-	SubViewport *vp = EditorInterface::get_singleton()->get_editor_viewport_3d(0);
-	if (!vp) {
-		vp = EditorInterface::get_singleton()->get_editor_viewport_2d();
-	}
-	if (!vp) {
-		_append_message("System", String(U"❌ ") + TR(STR_SCREENSHOT_FAILED), Color(1.0f, 0.4f, 0.4f));
+void AIAssistantPanel::_on_preset_pressed(const String &p_prompt_id) {
+	if (controller->is_busy()) {
 		return;
 	}
-
-	Ref<Image> img = vp->get_texture()->get_image();
-	if (img.is_null() || img->is_empty()) {
-		_append_message("System", String(U"❌ ") + TR(STR_SCREENSHOT_FAILED), Color(1.0f, 0.4f, 0.4f));
-		return;
-	}
-
-	// Save to user:// so it doesn't pollute the project.
-	String dir_path = "user://ai_screenshots";
-	Ref<DirAccess> da = DirAccess::open("user://");
-	if (da.is_valid() && !da->dir_exists("ai_screenshots")) {
-		da->make_dir("ai_screenshots");
-	}
-
-	String timestamp = Time::get_singleton()->get_datetime_string_from_system(false, true).replace(":", "-");
-	String file_path = dir_path + "/screenshot_" + timestamp + ".png";
-	Error err = img->save_png(file_path);
-	if (err != OK) {
-		_append_message("System", String(U"❌ ") + TR(STR_SCREENSHOT_FAILED), Color(1.0f, 0.4f, 0.4f));
-		return;
-	}
-
-	pending_screenshot_path = file_path;
-
-	// Encode as base64 for inline display info.
-	int width = img->get_width();
-	int height = img->get_height();
-
-	_append_message("System",
-			String(U"📷 ") + TR(STR_SCREENSHOT_SAVED) + " (" + itos(width) + "x" + itos(height) + ")",
-			Color(0.4f, 0.8f, 1.0f));
-	AI_LOG("[Screenshot] Captured " + itos(width) + "x" + itos(height) + " -> " + file_path);
-}
-
-void AIAssistantPanel::_on_settings_pressed() {
-	if (settings_dialog) {
-		settings_dialog->refresh();
-		settings_dialog->popup_centered();
-	}
-}
-
-void AIAssistantPanel::_on_input_gui_input(const Ref<InputEvent> &p_event) {
-	Ref<InputEventKey> key = p_event;
-	if (!key.is_valid() || !key->is_pressed() || key->is_echo()) {
-		return;
-	}
-
-	// ── Autocomplete navigation (when popup is visible) ──────────────────────
-	if (autocomplete_panel && autocomplete_panel->is_visible()) {
-		const int item_count = autocomplete_list->get_item_count();
-		PackedInt32Array sel = autocomplete_list->get_selected_items();
-		const int cur = sel.is_empty() ? 0 : sel[0];
-
-		switch (key->get_keycode()) {
-			case Key::ESCAPE:
-				_hide_mention_autocomplete();
-				input_field->accept_event();
-				return;
-			case Key::UP:
-				if (item_count > 0) {
-					int next = (cur - 1 + item_count) % item_count;
-					autocomplete_list->select(next);
-					autocomplete_list->ensure_current_is_visible();
-				}
-				input_field->accept_event();
-				return;
-			case Key::DOWN:
-				if (item_count > 0) {
-					int next = (cur + 1) % item_count;
-					autocomplete_list->select(next);
-					autocomplete_list->ensure_current_is_visible();
-				}
-				input_field->accept_event();
-				return;
-			case Key::ENTER:
-			case Key::KP_ENTER:
-			case Key::TAB:
-				if (!sel.is_empty()) {
-					_commit_mention_autocomplete(sel[0]);
-				}
-				input_field->accept_event();
-				return;
-			default:
-				break; // Let the key through to TextEdit for filter-as-you-type.
-		}
-	}
-
-	// Note: Mention chips are single PUA characters, so standard Backspace
-	// already deletes them atomically. No special handling needed.
-
-	// ── Send on Enter ─────────────────────────────────────────────────────────
-	if (_get_send_on_enter()) {
-		if (key->get_keycode() == Key::ENTER && !key->is_shift_pressed() && !key->is_ctrl_pressed()) {
-			_on_send_pressed();
-			input_field->accept_event();
-		}
-	} else {
-		if (key->get_keycode() == Key::ENTER && key->is_ctrl_pressed()) {
-			_on_send_pressed();
-			input_field->accept_event();
-		}
-	}
-}
-
-// --- Node mention helpers (file-scope statics) ---
-
-static bool _is_mention_word_char(char32_t c) {
-	// Allow letters, digits, underscore, hyphen, and dot so filenames like
-	// "player.gd" or "my-script" can be typed as @-partial matches.
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
-}
-
-static Node *_find_node_by_name_r(Node *p_node, const String &p_name) {
-	if (!p_node) {
-		return nullptr;
-	}
-	if (p_node->get_name() == p_name) {
-		return p_node;
-	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		Node *found = _find_node_by_name_r(p_node->get_child(i), p_name);
-		if (found) {
-			return found;
-		}
-	}
-	return nullptr;
-}
-
-// --- Node mention methods ---
-
-// Recalculates and applies the input field height. Called deferred from
-// _on_input_text_changed so layout changes don't interrupt active signals.
-void AIAssistantPanel::_update_input_height() {
-	if (!input_field) {
-		return;
-	}
-	const int MIN_H = 60;
-	const int MAX_H = 200;
-
-	const int line_h = input_field->get_line_height();
-	const int visible_lines = input_field->get_total_visible_line_count();
-
-	Ref<StyleBox> style = input_field->get_theme_stylebox(SNAME("normal"), SNAME("TextEdit"));
-	const int v_margin = style.is_valid()
-			? (int)(style->get_margin(SIDE_TOP) + style->get_margin(SIDE_BOTTOM))
-			: 8;
-
-	const int desired_h = CLAMP(visible_lines * line_h + v_margin, MIN_H, MAX_H);
-	if ((int)input_field->get_custom_minimum_size().y != desired_h) {
-		input_field->set_custom_minimum_size(Size2(0, desired_h));
-	}
-}
-
-// Fires every time the input_field text changes; show/update autocomplete
-// when the cursor is immediately after a @partial token.
-void AIAssistantPanel::_on_input_text_changed() {
-	// Defer height recalculation so it runs after the text_changed signal
-	// has fully settled — avoids triggering a mid-signal layout pass that
-	// fires NOTIFICATION_ACCESSIBILITY_UPDATE with a stale caret column.
-	callable_mp(this, &AIAssistantPanel::_update_input_height).call_deferred();
-
-	// Suppress re-opening during _commit_mention_autocomplete to avoid the
-	// freshly-inserted mention chip immediately re-triggering the popup.
-	if (_suppress_autocomplete) {
-		return;
-	}
-
-	const int caret_col = input_field->get_caret_column();
-	const int caret_line = input_field->get_caret_line();
-	const String line = input_field->get_line(caret_line);
-
-	// Walk backwards from cursor through word chars, looking for a leading '@'.
-	// Skip over PUA mention characters (they are chips, not text).
-	int at_pos = -1;
-	for (int i = caret_col - 1; i >= 0; i--) {
-		const char32_t c = line[i];
-		if (c == '@') {
-			// Only trigger if '@' is at start of line or preceded by whitespace/non-word.
-			if (i == 0 || !_is_mention_word_char(line[i - 1])) {
-				at_pos = i;
-			}
-			break;
-		}
-		// Stop scanning if we hit a PUA char (mention chip) or non-word char.
-		if (input_field->is_mention_char(c) || !_is_mention_word_char(c)) {
-			break;
-		}
-	}
-
-	if (at_pos >= 0) {
-		const String partial = line.substr(at_pos + 1, caret_col - at_pos - 1);
-		_show_mention_autocomplete(caret_line, at_pos, partial);
-	} else {
-		_hide_mention_autocomplete();
-	}
-}
-
-void AIAssistantPanel::_show_mention_autocomplete(int p_line, int p_col, const String &p_partial) {
-	autocomplete_at_line = p_line;
-	autocomplete_at_col = p_col;
-
-	const String partial_lower = p_partial.to_lower();
-
-	// Collect scene nodes.
-	autocomplete_node_infos = _get_all_scene_node_infos();
-
-	// Collect filesystem files (only when the user has typed at least one char,
-	// to avoid flooding the list on bare "@").
-	autocomplete_file_infos.clear();
-	if (!partial_lower.is_empty()) {
-		autocomplete_file_infos = _get_file_infos(partial_lower);
-	}
-
-	autocomplete_list->clear();
-
-	// Add node items. Metadata: non-negative index into autocomplete_node_infos.
-	for (int i = 0; i < autocomplete_node_infos.size(); i++) {
-		const NodeInfo &ni = autocomplete_node_infos[i];
-		if (partial_lower.is_empty() || ni.name.to_lower().contains(partial_lower)) {
-			Ref<Texture2D> icon;
-			if (EditorNode::get_singleton()) {
-				icon = EditorNode::get_singleton()->get_class_icon(ni.type, "Node");
-			}
-			autocomplete_list->add_item(ni.name, icon);
-			autocomplete_list->set_item_metadata(autocomplete_list->get_item_count() - 1, i);
-		}
-	}
-
-	// Add file items. Metadata: -(file_index + 1) to distinguish from node indices.
-	Ref<Texture2D> file_icon = get_theme_icon(SNAME("File"), SNAME("EditorIcons"));
-	for (int i = 0; i < autocomplete_file_infos.size(); i++) {
-		const FileInfo &fi = autocomplete_file_infos[i];
-		autocomplete_list->add_item(fi.name, file_icon);
-		// Store path as tooltip so the user can see the full path.
-		int item_idx = autocomplete_list->get_item_count() - 1;
-		autocomplete_list->set_item_tooltip(item_idx, fi.path);
-		autocomplete_list->set_item_metadata(item_idx, -(i + 1));
-	}
-
-	if (autocomplete_list->get_item_count() == 0) {
-		_hide_mention_autocomplete();
-		return;
-	}
-
-	// Block signals during programmatic select() so that the connected
-	// item_selected → _commit_mention_autocomplete is NOT triggered here.
-	autocomplete_list->set_block_signals(true);
-	autocomplete_list->select(0);
-	autocomplete_list->set_block_signals(false);
-
-	// Position the overlay panel above the caret (upward expansion).
-	// We position in editor-root-control local space to avoid OS-window focus issues.
-	const float POPUP_W = 250.0f;
-	const float ITEM_H = 26.0f;
-	const float MAX_H = 200.0f;
-	const float popup_h = MIN((float)autocomplete_list->get_item_count() * ITEM_H + 8.0f, MAX_H);
-
-	const Vector2 caret_screen = input_field->get_screen_position() + input_field->get_caret_draw_pos();
-	Control *base = EditorInterface::get_singleton()->get_base_control();
-	const Vector2 base_origin = base ? base->get_screen_position() : Vector2();
-	const Vector2 local_pos = caret_screen - base_origin + Vector2(-4.0f, -popup_h - 4.0f);
-
-	autocomplete_panel->set_position(local_pos);
-	autocomplete_panel->set_size(Vector2(POPUP_W, popup_h));
-	autocomplete_panel->show();
-	autocomplete_panel->move_to_front(); // Ensure it draws on top.
-}
-
-void AIAssistantPanel::_hide_mention_autocomplete() {
-	if (autocomplete_panel && autocomplete_panel->is_visible()) {
-		autocomplete_panel->hide();
-	}
-	autocomplete_at_line = -1;
-	autocomplete_at_col = -1;
-}
-
-// Replaces the "@partial" text with a mention chip, then closes the autocomplete.
-// Called both by item_selected signal (single click) and keyboard Enter/Tab.
-void AIAssistantPanel::_commit_mention_autocomplete(int p_item_idx) {
-	if (p_item_idx < 0 || p_item_idx >= autocomplete_list->get_item_count()) {
-		return;
-	}
-	if (autocomplete_at_col < 0) {
-		return;
-	}
-
-	// Metadata: >= 0 is a node index, < 0 is -(file_index+1).
-	const int raw_meta = (int)autocomplete_list->get_item_metadata(p_item_idx);
-	const int current_col = input_field->get_caret_column();
-
-	// Suppress _on_input_text_changed during the edit so the freshly-inserted
-	// chip does not immediately re-open the autocomplete popup.
-	_suppress_autocomplete = true;
-
-	// Delete the entire "@partial" text (including the '@' itself).
-	input_field->select(autocomplete_at_line, autocomplete_at_col,
-			autocomplete_at_line, current_col);
-	input_field->delete_selection();
-
-	if (raw_meta >= 0) {
-		// Node mention.
-		if (raw_meta >= autocomplete_node_infos.size()) {
-			_suppress_autocomplete = false;
-			return;
-		}
-		const NodeInfo &ni = autocomplete_node_infos[raw_meta];
-		input_field->insert_mention(ni.name, ni.path, ni.type);
-	} else {
-		// File mention.
-		const int file_idx = -(raw_meta + 1);
-		if (file_idx < 0 || file_idx >= autocomplete_file_infos.size()) {
-			_suppress_autocomplete = false;
-			return;
-		}
-		const FileInfo &fi = autocomplete_file_infos[file_idx];
-		input_field->insert_file_mention(fi.name, fi.path);
-	}
-
-	_suppress_autocomplete = false;
-	_hide_mention_autocomplete();
-	input_field->grab_focus();
-}
-
-// Toolbar "@" button: inserts @NodeName for every currently selected node.
-void AIAssistantPanel::_on_mention_button_pressed() {
-	insert_mention_of_selected_node();
-}
-
-void AIAssistantPanel::insert_mention_of_selected_node() {
-#ifdef TOOLS_ENABLED
-	EditorSelection *sel = EditorInterface::get_singleton()->get_selection();
-	if (!sel) {
-		return;
-	}
-	const TypedArray<Node> nodes = sel->get_selected_nodes();
-	if (nodes.is_empty()) {
-		_append_message("System", TTR("No nodes selected in the scene tree."), Color(1.0f, 0.8f, 0.3f));
-		return;
-	}
-	for (int i = 0; i < nodes.size(); i++) {
-		const Node *n = Object::cast_to<Node>(nodes[i]);
-		if (!n) {
-			continue;
-		}
-		input_field->insert_mention(
-				String(n->get_name()),
-				String(n->get_path()),
-				n->get_class());
-	}
-	input_field->grab_focus();
-#endif
-}
-
-// --- Context-menu callbacks (from right-click "在GodotAI中提及") ---
-
-void AIAssistantPanel::mention_nodes_from_context(const Variant &p_arg) {
-#ifdef TOOLS_ENABLED
-	// p_arg is a TypedArray<Node> passed by SceneTreeDock::_get_selection_array().
-	Array nodes = p_arg;
-	for (int i = 0; i < nodes.size(); i++) {
-		Node *n = Object::cast_to<Node>(nodes[i]);
-		if (!n) {
-			continue;
-		}
-		input_field->insert_mention(
-				String(n->get_name()),
-				String(n->get_path()),
-				n->get_class());
-	}
-	if (nodes.size() > 0) {
-		input_field->grab_focus();
-	}
-#endif
-}
-
-void AIAssistantPanel::mention_files_from_context(const Variant &p_arg) {
-#ifdef TOOLS_ENABLED
-	// p_arg is a PackedStringArray of res:// file/directory paths.
-	// Directory paths often end with '/' so get_file() returns ""; strip it first.
-	PackedStringArray paths = p_arg;
-	for (int i = 0; i < paths.size(); i++) {
-		const String &path = paths[i];
-		if (path.is_empty()) {
-			continue;
-		}
-		String fname = path.get_file();
-		if (fname.is_empty()) {
-			// Directory — strip trailing slash and take the last path component.
-			fname = path.rstrip("/").get_file();
-		}
-		if (!fname.is_empty()) {
-			input_field->insert_file_mention(fname, path);
-		}
-	}
-	if (paths.size() > 0) {
-		input_field->grab_focus();
-	}
-#endif
-}
-
-// Returns deduplicated sorted list of all node names in the current scene.
-Vector<String> AIAssistantPanel::_get_all_scene_node_names() const {
-	Vector<String> names;
-	const Vector<NodeInfo> infos = _get_all_scene_node_infos();
-	for (int i = 0; i < infos.size(); i++) {
-		names.push_back(infos[i].name);
-	}
-	return names;
-}
-
-// Returns deduplicated sorted list of all scene nodes with name, path, and type.
-Vector<AIAssistantPanel::NodeInfo> AIAssistantPanel::_get_all_scene_node_infos() const {
-	Vector<NodeInfo> infos;
-#ifdef TOOLS_ENABLED
-	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
-	if (!root) {
-		return infos;
-	}
-	HashSet<String> seen;
-	List<Node *> queue;
-	queue.push_back(root);
-	while (!queue.is_empty()) {
-		Node *n = queue.front()->get();
-		queue.pop_front();
-		const String nm = n->get_name();
-		if (!seen.has(nm)) {
-			seen.insert(nm);
-			NodeInfo ni;
-			ni.name = nm;
-			ni.path = String(n->get_path());
-			ni.type = n->get_class();
-			infos.push_back(ni);
-		}
-		for (int i = 0; i < n->get_child_count(); i++) {
-			queue.push_back(n->get_child(i));
-		}
-	}
-	infos.sort_custom<_NodeInfoSorter>();
-#endif
-	return infos;
-}
-
-// Note: _expand_mentions and _render_mentions_bbcode are now handled by
-// AIMentionTextEdit::get_text_with_expanded_mentions() and
-// AIMentionTextEdit::get_text_with_mention_bbcode() respectively.
-
-// --- File info for @-mention autocomplete ---
-
-// Recursively walks the project directory and collects files whose extension
-// matches common text/script types.  Results are filtered by p_partial and
-// limited to MAX_FILE_RESULTS to keep the autocomplete popup snappy.
-static void _collect_files_r(const String &p_dir, Vector<AIAssistantPanel::FileInfo> &r_files,
-		const String &p_partial_lower, int p_max) {
-	if (r_files.size() >= p_max) {
-		return;
-	}
-	Ref<DirAccess> da = DirAccess::open(p_dir);
-	if (!da.is_valid()) {
-		return;
-	}
-
-	// Collect entries first to allow alphabetic ordering.
-	Vector<String> subdirs, files;
-	da->list_dir_begin();
-	String entry = da->get_next();
-	while (!entry.is_empty()) {
-		if (entry == "." || entry == "..") {
-			entry = da->get_next();
-			continue;
-		}
-		if (da->current_is_dir()) {
-			// Skip hidden dirs and the .godot import cache.
-			if (!entry.begins_with(".") && entry != ".godot") {
-				subdirs.push_back(entry);
-			}
-		} else {
-			files.push_back(entry);
-		}
-		entry = da->get_next();
-	}
-	da->list_dir_end();
-
-	// Process files in this directory.
-	static const char *ALLOWED_EXT[] = {
-		"gd", "cs", "md", "txt", "json", "yaml", "yml",
-		"cfg", "ini", "tscn", "tres", "res", "toml", nullptr
-	};
-	for (int i = 0; i < files.size(); i++) {
-		if (r_files.size() >= p_max) {
-			return;
-		}
-		const String &fname = files[i];
-		const String ext = fname.get_extension().to_lower();
-		bool allowed = false;
-		for (int e = 0; ALLOWED_EXT[e] != nullptr; e++) {
-			if (ext == ALLOWED_EXT[e]) {
-				allowed = true;
-				break;
-			}
-		}
-		if (!allowed) {
-			continue;
-		}
-		// Filter by partial (empty partial shows all).
-		if (!p_partial_lower.is_empty() && !fname.to_lower().contains(p_partial_lower)) {
-			continue;
-		}
-		AIAssistantPanel::FileInfo fi;
-		fi.name = fname;
-		fi.path = p_dir.path_join(fname);
-		r_files.push_back(fi);
-	}
-
-	// Recurse into subdirs.
-	for (int i = 0; i < subdirs.size(); i++) {
-		_collect_files_r(p_dir.path_join(subdirs[i]), r_files, p_partial_lower, p_max);
-	}
-}
-
-Vector<AIAssistantPanel::FileInfo> AIAssistantPanel::_get_file_infos(const String &p_partial) const {
-	Vector<FileInfo> results;
-#ifdef TOOLS_ENABLED
-	const String res_root = ProjectSettings::get_singleton()->get_resource_path();
-	if (res_root.is_empty()) {
-		return results;
-	}
-	const int MAX_FILE_RESULTS = 30;
-	const String partial_lower = p_partial.to_lower();
-	_collect_files_r(res_root, results, partial_lower, MAX_FILE_RESULTS);
-#endif
-	return results;
-}
-
-// --- N4: File Attachment ---
-
-void AIAssistantPanel::_on_attach_pressed() {
-#ifdef TOOLS_ENABLED
-	if (!file_dialog) {
-		return;
-	}
-	file_dialog->popup_centered_ratio(0.6f);
-#endif
-}
-
-String AIAssistantPanel::_make_paste_ref(int p_id, const String &p_path, int p_char_count) const {
-	return "[Attached file #" + itos(p_id) + ": " + p_path.get_file() +
-		" (" + itos(p_char_count) + " chars) — already provided in this session]";
-}
-
-String AIAssistantPanel::_build_attachment_content(const String &p_path, const String &p_raw_content) {
-	// For small files, always inline (no dedup overhead).
-	if (p_raw_content.length() <= PASTE_INLINE_LIMIT) {
-		return "--- ATTACHED FILE: " + p_path.get_file() + " ---\n" + p_raw_content + "\n--- END FILE ---";
-	}
-
-	// Check if this file was already attached in this session.
-	if (paste_path_to_id.has(p_path)) {
-		int existing_id = paste_path_to_id[p_path];
-		const String &stored = paste_id_to_content[existing_id];
-		// Check if the content changed since it was last stored.
-		if (stored == p_raw_content) {
-			// Content unchanged — return a back-reference only. The AI already
-			// has the full content from a previous turn; no need to repeat it.
-			return _make_paste_ref(existing_id, p_path, p_raw_content.length());
-		}
-		// Content changed — update store and include full content again.
-		paste_id_to_content[existing_id] = p_raw_content;
-		return "--- ATTACHED FILE #" + itos(existing_id) + " (updated): " + p_path.get_file() +
-			" ---\n" + p_raw_content + "\n--- END FILE ---";
-	}
-
-	// New file — assign an ID, store it, include full content.
-	int new_id = paste_next_id++;
-	paste_path_to_id[p_path] = new_id;
-	paste_id_to_content[new_id] = p_raw_content;
-	return "--- ATTACHED FILE #" + itos(new_id) + ": " + p_path.get_file() +
-		" ---\n" + p_raw_content + "\n--- END FILE ---";
-}
-
-void AIAssistantPanel::_on_file_attach_selected(const String &p_path) {
-	// Read the file and store its content as an attachment for the next message.
-	Ref<FileAccess> fa = FileAccess::open(p_path, FileAccess::READ);
-	if (fa.is_null()) {
-		_append_message("System", TTR("Failed to open file: ") + p_path, Color(1.0, 0.4, 0.4));
-		return;
-	}
-
-	const int MAX_CHARS = 50000;
-	String content = fa->get_as_utf8_string();
-	fa->close();
-
-	bool truncated = false;
-	if (content.length() > MAX_CHARS) {
-		content = content.substr(0, MAX_CHARS);
-		truncated = true;
-	}
-
-	// De-duplicate: if this file (same path, same content) was already attached
-	// in this session, insert a back-reference instead of the full content again.
-	String attachment = _build_attachment_content(p_path, content);
-	if (truncated) {
-		attachment += "\n[File truncated at " + itos(MAX_CHARS) + " characters]";
-	}
-
-	pending_attachments.push_back(attachment);
-
-	bool is_backref = attachment.begins_with("[Attached file #");
-	String status = String(U"\U0001F4CE") + " Attached: " + p_path.get_file();
-	if (is_backref) {
-		status += " (reference — content already sent this session)";
-	} else if (truncated) {
-		status += TTR(" (truncated)");
-	}
-	_append_message("System", status, Color(0.5, 0.8, 1.0));
-	AI_LOG("File attached: " + p_path + " (" + itos(content.length()) + " chars)" +
-		(is_backref ? " [back-ref]" : ""));
-}
-
-// --- N5: Code Save ---
-
-void AIAssistantPanel::_on_meta_clicked(const Variant &p_meta) {
-	String meta = p_meta;
-	if (meta.begins_with("save:")) {
-		int idx = meta.substr(5).to_int();
-		if (idx >= 0 && idx < displayed_code_blocks.size()) {
-			String code = displayed_code_blocks[idx];
-			String filename = "ai_generated_" + itos(idx) + ".gd";
-
-			// Detect if the code is already a complete GDScript file (has @tool /
-			// extends / class_name / func at the top level) or is raw EditorScript
-			// body code (starts with statements like DirAccess, var, etc.).
-			// Raw body code must be wrapped before saving or it will cause parse errors.
-			bool is_complete_script = false;
-			Vector<String> lines = code.split("\n");
-			for (int i = 0; i < lines.size(); i++) {
-				String stripped = lines[i].strip_edges();
-				if (stripped.is_empty() || stripped.begins_with("#")) {
-					continue; // skip blank lines and comments
-				}
-				// If the first real line starts one of these, it's already a full script.
-				if (stripped.begins_with("@tool") || stripped.begins_with("extends ") ||
-						stripped.begins_with("class_name ") || stripped.begins_with("func ") ||
-						stripped.begins_with("var ") || stripped.begins_with("const ") ||
-						stripped.begins_with("signal ") || stripped.begins_with("enum ") ||
-						stripped.begins_with("class ") || stripped.begins_with("static ") ||
-						stripped.begins_with("@export") || stripped.begins_with("@onready")) {
-					// Check extends specifically for a better filename.
-					if (stripped.begins_with("extends ")) {
-						String base = stripped.substr(8).strip_edges();
-						filename = base.to_lower() + "_script.gd";
-					}
-					is_complete_script = true;
-				}
-				break; // only look at the first real line
-			}
-
-			String content_to_save;
-			if (is_complete_script) {
-				// Code already has proper GDScript structure — save as-is.
-				content_to_save = code;
-			} else {
-				// Raw EditorScript body: wrap in a runnable EditorScript so the
-				// file is valid and can be executed via File > Run in ScriptEditor.
-				content_to_save = "@tool\nextends EditorScript\n\nfunc _run():\n";
-				for (int i = 0; i < lines.size(); i++) {
-					content_to_save += "\t" + lines[i] + "\n";
-				}
-				filename = "ai_editor_script_" + itos(idx) + ".gd";
-			}
-
-			String save_path = "res://" + filename;
-			Ref<FileAccess> f = FileAccess::open(save_path, FileAccess::WRITE);
-			if (f.is_valid()) {
-				f->store_string(content_to_save);
-				_append_message("System", "Code saved to: " + save_path, Color(0.5, 1.0, 0.5));
-				AI_LOG("Code saved to: " + save_path);
-
-				// Trigger rescan.
-				EditorInterface::get_singleton()->get_resource_filesystem()->scan();
-			} else {
-				_append_message("System", AI_L("Failed to save code to: ", "代码保存失败：") + save_path, Color(1.0, 0.4, 0.4));
-			}
-		}
-	} else if (meta.begins_with("details:")) {
-		int detail_id = meta.substr(8).to_int();
-		if (detail_id < 0 || detail_id >= stored_detail_responses.size()) {
-			return;
-		}
-
-		// Show full AI response in popup dialog.
-		String response = stored_detail_responses[detail_id];
-		Dictionary parsed = response_parser->parse(response);
-		Array text_segs = parsed["text_segments"];
-		Array code_blks_raw = parsed["code_blocks"];
-
-		// Deduplicate consecutive identical code blocks.
-		Array code_blks;
-		for (int j = 0; j < code_blks_raw.size(); j++) {
-			if (j == 0 || String(code_blks_raw[j]) != String(code_blks_raw[j - 1])) {
-				code_blks.push_back(code_blks_raw[j]);
-			}
-		}
-
-		details_rtl->clear();
-
-		for (int j = 0; j < text_segs.size(); j++) {
-			details_rtl->push_color(Color(0.85, 0.85, 0.9));
-			details_rtl->add_text(text_segs[j]);
-			details_rtl->pop();
-			details_rtl->add_newline();
-			details_rtl->add_newline();
-		}
-		for (int j = 0; j < code_blks.size(); j++) {
-			details_rtl->push_color(Color(0.5, 0.5, 0.6));
-			details_rtl->add_text("--- GDScript ---");
-			details_rtl->pop();
-			details_rtl->add_newline();
-
-			details_rtl->push_bgcolor(Color(0.12, 0.12, 0.16, 0.9));
-			details_rtl->push_color(Color(0.9, 0.85, 0.7));
-			details_rtl->push_font_size(13);
-			Vector<String> lines = String(code_blks[j]).split("\n");
-			for (int k = 0; k < lines.size(); k++) {
-				details_rtl->add_text(lines[k]);
-				if (k < lines.size() - 1) {
-					details_rtl->add_newline();
-				}
-			}
-			details_rtl->pop();
-			details_rtl->pop();
-			details_rtl->pop();
-			details_rtl->add_newline();
-			details_rtl->add_newline();
-		}
-
-		details_dialog->popup_centered(Size2(700, 500));
-	} else if (meta == "execute_plan") {
-		// User clicked "▶ Execute Plan" — begin step-by-step execution.
-		if (!plan_execution_steps.is_empty()) {
-			active_plan_md_path = pending_plan_md_path;
-			pending_plan_md_path = "";
-			plan_execution_step_idx = 0;
-			plan_step_execution_mode = true;
-			_append_message("System",
-					AI_L("▶ Starting plan execution — ", "▶ 开始执行计划 — ") + itos(plan_execution_steps.size()) + AI_L(" steps.", " 个步骤。"),
-					Color(0.3, 1.0, 0.55));
-			_execute_plan_next_step();
-		} else {
-			_append_message("System", AI_L("No plan steps to execute. Please generate a plan first.", "没有可执行的计划步骤，请先生成计划。"), Color(1.0, 0.7, 0.3));
-		}
-	} else if (meta.begins_with("revert:")) {
-		int idx = meta.substr(7).to_int();
-		// Read the description first: restoring discards this checkpoint and later ones.
-		const String cp_desc = checkpoint_manager->get_checkpoint_description(idx);
-		if (checkpoint_manager->restore_checkpoint(idx)) {
-			const AICheckpointManager::RestoreReport &report = checkpoint_manager->get_last_restore_report();
-			String detail;
-			if (report.files_restored > 0 || report.files_removed > 0) {
-				detail = AI_L(" (files restored: ", "（还原文件：") + itos(report.files_restored) +
-						AI_L(", new files moved to trash: ", "，新增文件移入回收站：") + itos(report.files_removed) + AI_L(")", "）");
-			}
-			if (report.files_partial) {
-				detail += AI_L(" Note: large or binary files are not covered by checkpoints.", " 注意：大文件和二进制文件不在检查点范围内。");
-			}
-			_append_message("System", AI_L("Checkpoint restored: ", "已恢复检查点：") + cp_desc + detail, Color(0.5, 1.0, 0.5));
-		} else {
-			_append_message("System", AI_L("Could not restore this checkpoint: it has expired, was already rolled back, or its scene is no longer the active tab.", "无法恢复此检查点：它已过期、已被回滚，或对应场景不是当前标签页。"), Color(1.0, 0.4, 0.4));
-		}
-	} else if (meta.begins_with("thinking:")) {
-		int thinking_id = meta.substr(9).to_int();
-		if (thinking_id < 0 || thinking_id >= stored_thinking_texts.size()) {
-			return;
-		}
-
-		// Show thinking text in popup dialog.
-		String thinking_text = stored_thinking_texts[thinking_id];
-		details_rtl->clear();
-		details_rtl->push_color(Color(0.55, 0.55, 0.65));
-		details_rtl->push_italics();
-
-		Vector<String> lines = thinking_text.split("\n");
-		for (int j = 0; j < lines.size(); j++) {
-			details_rtl->add_text(lines[j]);
-			if (j < lines.size() - 1) {
-				details_rtl->add_newline();
-			}
-		}
-
-		details_rtl->pop(); // italics
-		details_rtl->pop(); // color
-
-		details_dialog->set_title(TR(STR_THINKING_LABEL));
-		details_dialog->popup_centered(Size2(700, 500));
-	}
-}
-
-// --- N6: Permission ---
-
-void AIAssistantPanel::_on_permission_confirmed() {
-	if (!pending_permission_code.is_empty()) {
-		_execute_code_with_monitoring(pending_permission_code);
-		pending_permission_code = "";
-	}
-}
-
-void AIAssistantPanel::_on_permission_cancelled() {
-	_append_message("System", TR(STR_SYS_EXEC_CANCELLED), Color(1.0, 0.7, 0.3));
-	pending_permission_code = "";
-	auto_retry_count = 0;
-	runtime_restart_after_fix = false;
-	plan_step_execution_mode = false;
-}
-
-// --- API Communication (Streaming) ---
-
-void AIAssistantPanel::_send_to_api(const String &p_message) {
-	// One request at a time. The stream thread and its shared state can't be
-	// restarted while a response is in flight, so automatic follow-ups (retries,
-	// runtime fixes, plan steps, web results) that arrive meanwhile are dropped.
-	if (is_waiting_response || stream_thread.is_started()) {
-		AI_WARN("Request dropped: another request is still in flight.");
-		return;
-	}
-
-	if (!current_provider.is_valid()) {
-		AI_ERR("No AI provider configured.");
-		_append_message("System", TR(STR_SYS_NO_PROVIDER), Color(1.0, 0.4, 0.4));
-		_reset_automation_state();
-		return;
-	}
-
-	if (current_provider->get_api_key().is_empty()) {
-		AI_ERR("API key not set.");
-		_append_message("System", TR(STR_SYS_NO_API_KEY), Color(1.0, 0.4, 0.4));
-		_reset_automation_state();
-		return;
-	}
-
-	is_waiting_response = true;
-	send_button->set_visible(false);
-	stop_button->set_visible(true);
-
-	AI_LOG("Step 1: Building system prompt...");
-	String system_prompt = _get_system_prompt(p_message);
-	last_system_prompt_tokens = _estimate_tokens(system_prompt);
-	AI_LOG("  System prompt length: " + itos(system_prompt.length()) + " chars (~" + itos(last_system_prompt_tokens) + " tokens)");
-
-	// Build the actual user message with attachments.
-	String full_message = p_message;
-	if (!pending_attachments.is_empty()) {
-		full_message += "\n\n--- ATTACHED CONTEXT ---\n";
-		for (int i = 0; i < pending_attachments.size(); i++) {
-			full_message += pending_attachments[i] + "\n";
-		}
-		full_message += "--- END ATTACHED CONTEXT ---\n";
-		pending_attachments.clear();
-	}
-
-	// Attach the captured screenshot. Providers that accept images get the
-	// picture itself; for the others the model is told plainly that it cannot
-	// see it, rather than being handed a meaningless fragment of base64.
-	String screenshot_b64;
-	if (!pending_screenshot_path.is_empty()) {
-		Ref<Image> screenshot_img;
-		screenshot_img.instantiate();
-		if (screenshot_img->load(pending_screenshot_path) == OK && !screenshot_img->is_empty()) {
-			if (current_provider->supports_image_input()) {
-				// Keep the upload small: vision models downscale beyond ~1.5K px anyway.
-				const int MAX_SIDE = 1568;
-				const int longest = MAX(screenshot_img->get_width(), screenshot_img->get_height());
-				if (longest > MAX_SIDE) {
-					const float scale = (float)MAX_SIDE / (float)longest;
-					screenshot_img->resize(MAX(1, (int)(screenshot_img->get_width() * scale)), MAX(1, (int)(screenshot_img->get_height() * scale)), Image::INTERPOLATE_LANCZOS);
-				}
-				PackedByteArray png_data = screenshot_img->save_png_to_buffer();
-				screenshot_b64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
-				full_message += "\n\n[A screenshot of the editor viewport (" + itos(screenshot_img->get_width()) + "x" + itos(screenshot_img->get_height()) + ") is attached to this message.]\n";
-			} else {
-				full_message += "\n\n[The user captured a screenshot of the editor viewport, but the current provider does not accept images, so you cannot see it. Say so if the answer depends on it.]\n";
-				_append_message("System", AI_L("The current provider does not accept images; the screenshot was not sent.", "当前服务商不支持图像输入，截图未发送。"), Color(1.0, 0.7, 0.3));
-			}
-		}
-		pending_screenshot_path = "";
-	}
-
-	// Prepend context summary to conversation history if available.
-	Array messages_to_send;
-	if (!context_summary.is_empty()) {
-		Dictionary summary_msg;
-		summary_msg["role"] = "user";
-		summary_msg["content"] = "[CONTEXT SUMMARY - Previous conversation compressed]\n" + context_summary;
-		messages_to_send.push_back(summary_msg);
-		Dictionary ack_msg;
-		ack_msg["role"] = "assistant";
-		ack_msg["content"] = "Understood. I have the context from our previous conversation.";
-		messages_to_send.push_back(ack_msg);
-	}
-	for (int i = 0; i < conversation_history.size(); i++) {
-		// History entries carry local-only keys (e.g. "thinking"). APIs reject
-		// unknown message fields, so send role and content only.
-		const Dictionary stored = conversation_history[i];
-		Dictionary api_msg;
-		api_msg["role"] = stored.get("role", "user");
-		api_msg["content"] = stored.get("content", "");
-		messages_to_send.push_back(api_msg);
-	}
-
-	AI_LOG("Step 2: Building streaming request body...");
-	current_provider->set_pending_image(screenshot_b64);
-	String body = current_provider->build_stream_request_body(system_prompt, messages_to_send, full_message);
-	current_provider->set_pending_image(String());
-	AI_LOG("  Request body length: " + itos(body.length()) + " chars");
-
-	String url;
-	GeminiProvider *gemini = Object::cast_to<GeminiProvider>(current_provider.ptr());
-	if (gemini) {
-		url = gemini->get_stream_url();
-	} else {
-		url = current_provider->get_stream_url();
-	}
-
-	Vector<String> headers = current_provider->get_headers();
-
-	AI_LOG("Step 3: Starting streaming request...");
-	AI_LOG("  URL: " + _redact_url_key(url));
-
-	Dictionary user_msg;
-	user_msg["role"] = "user";
-	user_msg["content"] = full_message;
-	conversation_history.push_back(user_msg);
-	full_conversation_history.push_back(user_msg);
-
-	_start_streaming(url, headers, body);
-}
-
-// --- Streaming Infrastructure ---
-
-// Helper: extract "data:" payload from an SSE event block.
-static String _extract_sse_data(const String &p_event) {
-	Vector<String> lines = p_event.split("\n");
-	String data;
-	for (int i = 0; i < lines.size(); i++) {
-		String line = lines[i].strip_edges(true, true);
-		if (line.ends_with("\r")) {
-			line = line.substr(0, line.length() - 1);
-		}
-		if (line.begins_with("data: ")) {
-			if (!data.is_empty()) {
-				data += "\n";
-			}
-			data += line.substr(6);
-		} else if (line.begins_with("data:")) {
-			if (!data.is_empty()) {
-				data += "\n";
-			}
-			data += line.substr(5);
-		}
-	}
-	return data;
-}
-
-void AIAssistantPanel::_start_streaming(const String &p_url, const Vector<String> &p_headers, const String &p_body) {
-	_stream_url = p_url;
-	_stream_headers = p_headers;
-	_stream_body = p_body;
-	_stream_provider = current_provider;
-
-	stream_mutex.lock();
-	stream_chunk_queue.clear();
-	stream_accumulated = "";
-	stream_thinking_accumulated = "";
-	stream_inside_think_tag = false;
-	stream_tag_buffer = "";
-	stream_active = true;
-	stream_finished = false;
-	stream_error = false;
-	stream_stop_requested = false;
-	stream_error_msg = "";
-	stream_response_code = 0;
-	stream_display_started = false;
-	stream_mutex.unlock();
-
-	// Reset thinking display state.
-	thinking_phase_active = false;
-	thinking_collapsed = false;
-	ai_prefix_shown = false;
-	thinking_display_para_start = 0;
-	generic_thinking_shown = false;
-
-	// Show generic "Thinking..." indicator for all models immediately.
-	// Real thinking tokens will replace this; content will collapse/remove it.
-	thinking_display_para_start = chat_display->get_paragraph_count();
-	chat_display->push_color(Color(0.55, 0.55, 0.65));
-	chat_display->push_italics();
-	chat_display->add_text(TR(STR_THINKING_LABEL) + "...");
-	chat_display->pop(); // italics
-	chat_display->pop(); // color
-	chat_display->add_newline();
-	generic_thinking_shown = true;
-
-	// "AI: " prefix is now deferred — shown when first content delta arrives,
-	// so thinking can display above it.
-
-	stream_poll_timer->start(0.05);
-	stream_thread.start(_stream_thread_func_static, this);
-
-	AI_LOG("  Streaming thread started.");
-}
-
-void AIAssistantPanel::_stream_thread_func_static(void *p_userdata) {
-	AIAssistantPanel *self = static_cast<AIAssistantPanel *>(p_userdata);
-	self->_stream_thread_func();
-}
-
-// Length of the longest prefix of p_data that ends on a UTF-8 character boundary.
-static int _utf8_complete_prefix_len(const uint8_t *p_data, int p_len) {
-	// Walk back over at most 3 continuation bytes to the last lead byte.
-	for (int back = 1; back <= 4 && back <= p_len; back++) {
-		const uint8_t b = p_data[p_len - back];
-		if ((b & 0xC0) == 0x80) {
-			continue; // Continuation byte — keep looking for its lead.
-		}
-		int need = 1;
-		if ((b & 0xE0) == 0xC0) {
-			need = 2;
-		} else if ((b & 0xF0) == 0xE0) {
-			need = 3;
-		} else if ((b & 0xF8) == 0xF0) {
-			need = 4;
-		}
-		return need > back ? p_len - back : p_len;
-	}
-	return p_len;
-}
-
-bool AIAssistantPanel::_stream_stop_requested_locked() {
-	stream_mutex.lock();
-	const bool stop_req = stream_stop_requested;
-	stream_mutex.unlock();
-	return stop_req;
-}
-
-void AIAssistantPanel::_stream_thread_func() {
-	String url = _stream_url;
-	bool use_tls = false;
-	String host;
-	int port = 80;
-	String path;
-
-	if (url.begins_with("https://")) {
-		use_tls = true;
-		port = 443;
-		url = url.substr(8);
-	} else if (url.begins_with("http://")) {
-		url = url.substr(7);
-	}
-
-	int slash_pos = url.find("/");
-	if (slash_pos >= 0) {
-		host = url.substr(0, slash_pos);
-		path = url.substr(slash_pos);
-	} else {
-		host = url;
-		path = "/";
-	}
-
-	int colon_pos = host.find(":");
-	if (colon_pos >= 0) {
-		port = host.substr(colon_pos + 1).to_int();
-		host = host.substr(0, colon_pos);
-	}
-
-	HTTPClient *client = HTTPClient::create();
-	if (!client) {
-		stream_mutex.lock();
-		stream_error = true;
-		stream_error_msg = "Failed to create HTTPClient.";
-		stream_finished = true;
-		stream_mutex.unlock();
-		return;
-	}
-
-	Ref<TLSOptions> tls_opts;
-	if (use_tls) {
-		tls_opts = TLSOptions::client();
-	}
-
-	Error err = client->connect_to_host(host, port, tls_opts);
-	if (err != OK) {
-		memdelete(client);
-		stream_mutex.lock();
-		stream_error = true;
-		stream_error_msg = "Failed to connect to " + host;
-		stream_finished = true;
-		stream_mutex.unlock();
-		return;
-	}
-
-	while (client->get_status() == HTTPClient::STATUS_CONNECTING ||
-			client->get_status() == HTTPClient::STATUS_RESOLVING) {
-		if (_stream_stop_requested_locked()) {
-			memdelete(client);
-			stream_mutex.lock();
-			stream_finished = true;
-			stream_mutex.unlock();
-			return;
-		}
-		client->poll();
-		OS::get_singleton()->delay_usec(50000);
-	}
-
-	if (client->get_status() != HTTPClient::STATUS_CONNECTED) {
-		int status = (int)client->get_status();
-		memdelete(client);
-		stream_mutex.lock();
-		stream_error = true;
-		stream_error_msg = "Connection failed. Status: " + itos(status);
-		stream_finished = true;
-		stream_mutex.unlock();
-		return;
-	}
-
-	CharString body_utf8 = _stream_body.utf8();
-	err = client->request(HTTPClient::METHOD_POST, path, _stream_headers,
-			(const uint8_t *)body_utf8.get_data(), body_utf8.length());
-	if (err != OK) {
-		memdelete(client);
-		stream_mutex.lock();
-		stream_error = true;
-		stream_error_msg = "Failed to send HTTP request.";
-		stream_finished = true;
-		stream_mutex.unlock();
-		return;
-	}
-
-	// Waiting for response headers: honour Stop, and give up on a server that
-	// accepts the connection but never answers instead of hanging forever.
-	const uint64_t request_started_ms = OS::get_singleton()->get_ticks_msec();
-	const uint64_t HEADER_TIMEOUT_MS = 180000;
-	while (client->get_status() == HTTPClient::STATUS_REQUESTING) {
-		if (_stream_stop_requested_locked()) {
-			memdelete(client);
-			stream_mutex.lock();
-			stream_finished = true;
-			stream_mutex.unlock();
-			return;
-		}
-		if (OS::get_singleton()->get_ticks_msec() - request_started_ms > HEADER_TIMEOUT_MS) {
-			memdelete(client);
-			stream_mutex.lock();
-			stream_error = true;
-			stream_error_msg = "Timed out waiting for the server to respond.";
-			stream_finished = true;
-			stream_mutex.unlock();
-			return;
-		}
-		client->poll();
-		OS::get_singleton()->delay_usec(50000);
-	}
-
-	if (!client->has_response()) {
-		memdelete(client);
-		stream_mutex.lock();
-		stream_error = true;
-		stream_error_msg = "No response from server.";
-		stream_finished = true;
-		stream_mutex.unlock();
-		return;
-	}
-
-	int response_code = client->get_response_code();
-	stream_mutex.lock();
-	stream_response_code = response_code;
-	stream_mutex.unlock();
-
-	if (response_code != 200) {
-		String error_body;
-		while (client->get_status() == HTTPClient::STATUS_BODY) {
-			client->poll();
-			PackedByteArray chunk = client->read_response_body_chunk();
-			if (chunk.size() > 0) {
-				error_body += String::utf8((const char *)chunk.ptr(), chunk.size());
-			}
-			OS::get_singleton()->delay_usec(10000);
-		}
-		memdelete(client);
-		stream_mutex.lock();
-		stream_error = true;
-		stream_error_msg = "API Error (HTTP " + itos(response_code) + "): " + error_body.left(500);
-		stream_finished = true;
-		stream_mutex.unlock();
-		return;
-	}
-
-	String buffer;
-	PackedByteArray pending_bytes;
-	bool done = false;
-	bool stopped = false;
-
-	while (client->get_status() == HTTPClient::STATUS_BODY && !done) {
-		// Check if the user requested a stop.
-		if (_stream_stop_requested_locked()) {
-			stopped = true;
-			break;
-		}
-
-		client->poll();
-		PackedByteArray chunk = client->read_response_body_chunk();
-
-		if (chunk.size() > 0) {
-			// Network chunks can end in the middle of a multi-byte character (every
-			// CJK character is 3 bytes). Decode only whole characters and carry the
-			// incomplete tail over to the next read.
-			pending_bytes.append_array(chunk);
-			const int decodable = _utf8_complete_prefix_len(pending_bytes.ptr(), pending_bytes.size());
-			if (decodable > 0) {
-				buffer += String::utf8((const char *)pending_bytes.ptr(), decodable);
-				pending_bytes = pending_bytes.slice(decodable);
-			}
-
-			while (true) {
-				int event_end = buffer.find("\n\n");
-				int skip_len = 2;
-
-				if (event_end < 0) {
-					event_end = buffer.find("\r\n\r\n");
-					skip_len = 4;
-				}
-
-				if (event_end < 0) {
-					break;
-				}
-
-				String event_str = buffer.substr(0, event_end);
-				buffer = buffer.substr(event_end + skip_len);
-
-				String data_payload = _extract_sse_data(event_str);
-				if (!data_payload.is_empty()) {
-					if (_stream_provider->is_stream_done_marker(data_payload)) {
-						done = true;
-						break;
-					}
-					Dictionary delta_ex = _stream_provider->parse_stream_delta_ex(data_payload);
-					String content_delta = delta_ex["content"];
-					String thinking_delta = delta_ex["thinking"];
-
-					stream_mutex.lock();
-					if (!thinking_delta.is_empty()) {
-						StreamChunk chunk;
-						chunk.text = thinking_delta;
-						chunk.is_thinking = true;
-						stream_chunk_queue.push_back(chunk);
-						stream_thinking_accumulated += thinking_delta;
-					}
-					if (!content_delta.is_empty()) {
-						// Handle <think>...</think> tags embedded in content (e.g. DeepSeek models).
-						String remaining = content_delta;
-						while (!remaining.is_empty()) {
-							if (stream_inside_think_tag) {
-								int close_pos = remaining.find("</think>");
-								if (close_pos != -1) {
-									// End of think tag found.
-									String think_part = remaining.substr(0, close_pos);
-									remaining = remaining.substr(close_pos + 8);
-									stream_inside_think_tag = false;
-									if (!think_part.is_empty()) {
-										StreamChunk chunk;
-										chunk.text = think_part;
-										chunk.is_thinking = true;
-										stream_chunk_queue.push_back(chunk);
-										stream_thinking_accumulated += think_part;
-									}
-								} else {
-									// Still inside think tag.
-									StreamChunk chunk;
-									chunk.text = remaining;
-									chunk.is_thinking = true;
-									stream_chunk_queue.push_back(chunk);
-									stream_thinking_accumulated += remaining;
-									remaining = "";
-								}
-							} else {
-								int open_pos = remaining.find("<think>");
-								if (open_pos != -1) {
-									// Think tag found in content.
-									String before = remaining.substr(0, open_pos);
-									remaining = remaining.substr(open_pos + 7);
-									stream_inside_think_tag = true;
-									if (!before.is_empty()) {
-										StreamChunk chunk;
-										chunk.text = before;
-										chunk.is_thinking = false;
-										stream_chunk_queue.push_back(chunk);
-										stream_accumulated += before;
-									}
-								} else {
-									// Normal content.
-									StreamChunk chunk;
-									chunk.text = remaining;
-									chunk.is_thinking = false;
-									stream_chunk_queue.push_back(chunk);
-									stream_accumulated += remaining;
-									remaining = "";
-								}
-							}
-						}
-					}
-					stream_mutex.unlock();
-				}
-			}
-		}
-
-		OS::get_singleton()->delay_usec(10000);
-	}
-
-	// A dropped connection is not a finished response: the text so far is
-	// truncated and its last code block must not be executed.
-	const HTTPClient::Status end_status = client->get_status();
-	const bool connection_lost = !done && !stopped &&
-			(end_status == HTTPClient::STATUS_CONNECTION_ERROR || end_status == HTTPClient::STATUS_TLS_HANDSHAKE_ERROR);
-
-	memdelete(client);
-
-	stream_mutex.lock();
-	if (connection_lost) {
-		stream_error = true;
-		stream_error_msg = "Connection lost before the response finished.";
-	}
-	stream_finished = true;
-	stream_mutex.unlock();
-}
-
-void AIAssistantPanel::_on_stream_poll() {
-	stream_mutex.lock();
-	Vector<StreamChunk> chunks = stream_chunk_queue;
-	stream_chunk_queue.clear();
-	bool finished = stream_finished;
-	bool error = stream_error;
-	String error_msg = stream_error_msg;
-	stream_mutex.unlock();
-
-	AIMode mode = _get_current_mode();
-
-	for (int i = 0; i < chunks.size(); i++) {
-		stream_display_started = true;
-
-		if (chunks[i].is_thinking) {
-			// --- Thinking delta ---
-			if (!thinking_phase_active) {
-				// Remove generic indicator and start real thinking display.
-				if (generic_thinking_shown) {
-					int cur = chat_display->get_paragraph_count();
-					int remove_count = cur - thinking_display_para_start;
-					for (int r = 0; r < remove_count; r++) {
-						chat_display->remove_paragraph(thinking_display_para_start);
-					}
-					generic_thinking_shown = false;
-				}
-				thinking_phase_active = true;
-				thinking_display_para_start = chat_display->get_paragraph_count();
-				chat_display->push_color(Color(0.55, 0.55, 0.65));
-				chat_display->push_italics();
-				chat_display->add_text(TR(STR_THINKING_LABEL) + ": ");
-			}
-			chat_display->add_text(chunks[i].text);
-
-		} else {
-			// --- Content delta ---
-			// Remove generic "Thinking..." indicator if still showing.
-			if (generic_thinking_shown && !thinking_phase_active) {
-				int cur = chat_display->get_paragraph_count();
-				int remove_count = cur - thinking_display_para_start;
-				for (int r = 0; r < remove_count; r++) {
-					chat_display->remove_paragraph(thinking_display_para_start);
-				}
-				generic_thinking_shown = false;
-			}
-			// If real thinking was active, collapse it now.
-			if (thinking_phase_active && !thinking_collapsed) {
-				_collapse_thinking_display();
-			}
-
-			// Show "AI: " prefix on first content delta (ASK mode only).
-			if (mode == MODE_ASK && !ai_prefix_shown) {
-				ai_prefix_shown = true;
-				chat_display->push_color(Color(0.7, 0.85, 1.0));
-				chat_display->push_bold();
-				chat_display->add_text("AI: ");
-				chat_display->pop();
-				chat_display->pop();
-			}
-
-			// Display content only in ASK mode. AGENT/PLAN modes show summary after execution.
-			if (mode == MODE_ASK) {
-				chat_display->add_text(chunks[i].text);
-			}
-		}
-	}
-
-	if (finished) {
-		stream_poll_timer->stop();
-
-		if (stream_thread.is_started()) {
-			stream_thread.wait_to_finish();
-		}
-
-		stream_active = false;
-
-		// Clean up any remaining thinking display at stream end.
-		if (generic_thinking_shown) {
-			int cur = chat_display->get_paragraph_count();
-			int remove_count = cur - thinking_display_para_start;
-			for (int r = 0; r < remove_count; r++) {
-				chat_display->remove_paragraph(thinking_display_para_start);
-			}
-			generic_thinking_shown = false;
-		}
-		if (thinking_phase_active && !thinking_collapsed) {
-			_collapse_thinking_display();
-		}
-
-		// Restore send/stop button state.
-		is_waiting_response = false;
-		send_button->set_visible(true);
-		stop_button->set_visible(false);
-
-		if (stream_stop_requested) {
-			// User stopped generation — show partial response if any.
-			stream_stop_requested = false;
-			if (mode == MODE_ASK) {
-				chat_display->add_newline();
-			}
-			chat_display->push_color(Color(0.6, 0.6, 0.6));
-			chat_display->push_italics();
-			chat_display->add_text(" [stopped]");
-			chat_display->pop();
-			chat_display->pop();
-			chat_display->add_newline();
-			String partial = stream_accumulated;
-			_stream_provider.unref();
-			_reset_automation_state();
-			if (!partial.is_empty()) {
-				// Save partial response to history so context is preserved.
-				// Pass is_stopped_partial=true so code blocks are NOT executed
-				// and the auto-retry loop is suppressed — stopping must be final.
-				_handle_ai_response(partial, true);
-			}
-			return;
-		}
-
-		if (error) {
-			chat_display->add_newline();
-			chat_display->add_newline();
-			AI_ERR("Streaming error: " + error_msg);
-
-			// Feature: reactive token-gap compression.
-			// If this is a "context too long" error, parse the exact token gap,
-			// drop the minimum number of old messages, and retry automatically.
-			if (_try_reactive_compress(error_msg)) {
-				return; // Retry in progress — don't show error to user.
-			}
-			if (_try_retry_without_temperature(error_msg)) {
-				return;
-			}
-
-			_reset_automation_state();
-			_append_message("System", AI_L("Error: ", "错误：") + error_msg, Color(1.0, 0.4, 0.4));
-			return;
-		}
-
-		if (mode == MODE_ASK) {
-			chat_display->add_newline();
-			chat_display->add_newline();
-		}
-
-		String full_response = stream_accumulated;
-
-		// Fallback: some proxies (e.g. Codex-based CLIProxyAPI) route ALL model
-		// output through reasoning_content instead of content, leaving content empty.
-		// In that case use the thinking tokens as the actual response so code blocks
-		// can still be extracted and executed.
-		if (full_response.is_empty() && !stream_thinking_accumulated.is_empty()) {
-			AI_WARN("Content field empty — using thinking content as response (proxy fallback).");
-			full_response = stream_thinking_accumulated;
-			stream_thinking_accumulated = "";
-		}
-
-		AI_LOG("Step 6: Streaming complete. Response length: " + itos(full_response.length()) + " chars");
-
-		_stream_provider.unref();
-
-		_handle_ai_response(full_response);
-	}
-}
-
-void AIAssistantPanel::_finish_streaming() {
-	if (stream_thread.is_started()) {
-		stream_thread.wait_to_finish();
-	}
-	stream_active = false;
-	_stream_provider.unref();
-}
-
-void AIAssistantPanel::_collapse_thinking_display() {
-	thinking_collapsed = true;
-	thinking_phase_active = false;
-
-	// Pop the italics and color pushed during thinking start.
-	chat_display->pop(); // italics
-	chat_display->pop(); // color
-
-	// Remove thinking paragraphs from the chat display.
-	int current_para = chat_display->get_paragraph_count();
-	int remove_count = current_para - thinking_display_para_start;
-	for (int i = 0; i < remove_count; i++) {
-		chat_display->remove_paragraph(thinking_display_para_start);
-	}
-
-	// Store thinking text for popup viewing.
-	int thinking_id = stored_thinking_texts.size();
-	stored_thinking_texts.push_back(stream_thinking_accumulated);
-
-	// Add collapsed clickable link.
-	chat_display->push_color(Color(0.5, 0.5, 0.6));
-	chat_display->push_italics();
-	chat_display->add_text("[");
-	chat_display->push_meta("thinking:" + itos(thinking_id));
-	chat_display->push_color(Color(0.4, 0.7, 1.0));
-	chat_display->add_text(TR(STR_THINKING_COLLAPSED));
-	chat_display->pop(); // color
-	chat_display->pop(); // meta
-	chat_display->add_text("]");
-	chat_display->pop(); // italics
-	chat_display->pop(); // color
-	chat_display->add_newline();
-}
-
-void AIAssistantPanel::_on_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	AI_LOG("HTTP request completed (non-streaming). Status: " + itos(p_response_code));
-}
-
-// --- Response Handling ---
-
-void AIAssistantPanel::_handle_ai_response(const String &p_response, bool p_is_stopped_partial) {
-	Dictionary assistant_msg;
-	assistant_msg["role"] = "assistant";
-	assistant_msg["content"] = p_response;
-	if (!stream_thinking_accumulated.is_empty()) {
-		assistant_msg["thinking"] = stream_thinking_accumulated;
-	}
-	conversation_history.push_back(assistant_msg);
-	full_conversation_history.push_back(assistant_msg);
-
-	// Successful response clears reactive retry guard.
-	reactive_retry_pending = false;
-
-	// Stop is final: a stopped response never executes code, retries, continues
-	// a plan, or finishes a runtime fix.
-	if (p_is_stopped_partial) {
-		_reset_automation_state();
-	}
-
-	// Auto-compress context when history gets too long.
-	_compress_context_if_needed();
-
-	AI_LOG("Step 7: Parsing response for code blocks...");
-	Dictionary parsed = response_parser->parse(p_response);
-	Array text_segments = parsed["text_segments"];
-	Array code_blocks = parsed["code_blocks"];
-
-	AI_LOG("  Text segments: " + itos(text_segments.size()));
-	AI_LOG("  Code blocks: " + itos(code_blocks.size()));
-
-	// Store full response for [Details] link.
-	last_full_response = p_response;
-	bool compact = _get_current_mode() != MODE_ASK;
-
-	if (!code_blocks.is_empty()) {
-		// Deduplicate consecutive identical code blocks.
-		Array unique_blocks;
-		for (int i = 0; i < code_blocks.size(); i++) {
-			if (i == 0 || String(code_blocks[i]) != String(code_blocks[i - 1])) {
-				unique_blocks.push_back(code_blocks[i]);
-			} else {
-				AI_LOG("  Skipping duplicate code block " + itos(i));
-			}
-		}
-		code_blocks = unique_blocks;
-
-		// Store code blocks.
-		for (int i = 0; i < code_blocks.size(); i++) {
-			String cb = code_blocks[i];
-			AI_LOG("  Code block " + itos(i) + " (" + itos(cb.length()) + " chars):");
-			AI_LOG(cb);
-			displayed_code_blocks.push_back(cb);
-
-			// In ASK mode, add [Save] link after the streamed code block.
-			if (!compact) {
-				int block_idx = displayed_code_blocks.size() - 1;
-				chat_display->push_color(Color(0.4, 0.8, 1.0));
-				chat_display->push_meta("save:" + itos(block_idx));
-				chat_display->add_text("[Save]");
-				chat_display->pop();
-				chat_display->pop();
-				chat_display->add_text(" ");
-			}
-		}
-
-		// In ASK mode, or when the user pressed Stop (partial/truncated response),
-		// don't execute code blocks — a truncated script would likely be broken
-		// and we must never let a Stop trigger a new API request via auto-retry.
-		// Exception: runtime_fix_in_progress must always execute regardless of mode.
-		if ((_get_current_mode() == MODE_ASK || p_is_stopped_partial) && !runtime_fix_in_progress) {
-			if (p_is_stopped_partial) {
-				AI_LOG("  Stopped partial response: skipping code execution and auto-retry.");
-			} else {
-				AI_LOG("  ASK mode: skipping code execution.");
-			}
-			auto_retry_count = 0;
-		} else {
-			pending_code = code_blocks[code_blocks.size() - 1];
-
-			// ── AUTO-FIX + COMPILE CHECK ────────────────────────────────────────
-			// First, auto-fix known recurring issues (standalone lambdas, etc.)
-			// that the AI keeps generating despite the system prompt rules.
-			// Then run the GDScript parser on the fixed code.  Any remaining
-			// errors are fed back to the AI for correction via auto-retry.
-			{
-				pending_code = script_executor->auto_fix_code(pending_code);
-				String compile_error = script_executor->compile_check(pending_code);
-				if (!compile_error.is_empty()) {
-					AI_WARN("Pre-execution compile check FAILED:\n" + compile_error);
-					if (auto_retry_count < MAX_AUTO_RETRIES) {
-						auto_retry_count++;
-						String retry_num = itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES);
-						AI_LOG("Pre-execution compile retry " + retry_num);
-						_append_message("System",
-								(AI_L("⚠ GDScript syntax error - auto-fixing... (", "⚠ GDScript 语法错误，自动修复中... (") + retry_num + ")"),
-								Color(1.0, 0.82f, 0.25f));
-						String retry_msg =
-								"The GDScript code you generated has parse errors that prevent it from compiling:\n\n" +
-								compile_error +
-								"\n\nFix ONLY these errors and output the corrected GDScript code block. "
-								"Do not change anything else.";
-						pending_code = "";
-						_send_to_api(retry_msg);
-					} else {
-						_append_message("System",
-								AI_L("GDScript parse errors (auto-fix limit reached):\n", "GDScript 解析错误（已达自动修复上限）：\n") + compile_error,
-								Color(1.0, 0.4f, 0.4f));
-						_reset_automation_state();
-						pending_code = "";
-					}
-					return;
-				}
-			}
-			// ── END COMPILE CHECK ─────────────────────────────────────────────────
-
-			// ── PLAN STEP EXECUTION MODE ─────────────────────────────────────────
-			// When iterating plan steps, each AI response is expected to contain a
-			// code block for one step.  Let execution proceed normally (fall through).
-			// ── END PLAN STEP EXECUTION MODE ─────────────────────────────────────
-
-			AI_LOG("Step 8: Safety check...");
-			String safety_error = script_executor->check_safety(pending_code);
-			if (!safety_error.is_empty()) {
-				AI_WARN("Safety check BLOCKED: " + safety_error);
-				_append_message("System", safety_error, Color(1.0, 0.4, 0.4));
-				pending_code = "";
-				if (auto_retry_count < MAX_AUTO_RETRIES) {
-					auto_retry_count++;
-					_send_to_api("Your code was not executed because it violates the editor's safety policy:\n" + safety_error +
-							"\n\nRewrite it to achieve the same goal without that. Stay inside the project (res:// and user:// paths), "
-							"do not start processes, do not use the network, and do not use OS/Engine/ClassDB beyond simple queries. "
-							"If the goal cannot be met within these limits, explain that instead of writing code.");
-				} else {
-					_reset_automation_state();
-				}
-			} else {
-				// Speculative risk classification (inspired by Claude Code's bash_classifier).
-				// Classify the code into a risk tier BEFORE consulting per-category
-				// permission settings, enabling zero-friction execution for safe operations
-				// and guaranteed confirmation dialogs for destructive ones.
-				AIPermissionManager::RiskTier tier = AIPermissionManager::classify_risk(pending_code);
-				AI_LOG("  Risk tier: " + itos((int)tier));
-
-				if (tier == AIPermissionManager::RISK_BLOCKED) {
-					// classify_risk found a blocked pattern that safety check may have
-					// missed (edge case). Treat as blocked.
-					_append_message("System",
-						AI_L("Code contains a blocked operation and was not executed.", "代码包含被禁止的操作，未执行。"),
-						Color(1.0, 0.4, 0.4));
-					_reset_automation_state();
-					pending_code = "";
-
-				} else {
-					// The per-category permission table is consulted for every tier.
-					// The risk tier only decides how much friction to add on top; it
-					// never lets code skip a Deny or an Ask.
-					AIPermissionManager::PermissionResult perm =
-						permission_manager->check_code_permissions(pending_code);
-					const bool is_runtime_fix = runtime_fix_in_progress;
-					runtime_fix_in_progress = false;
-
-					if (!perm.allowed) {
-						AI_WARN("Permission DENIED: " + perm.description);
-						_append_message("System", perm.description, Color(1.0, 0.4, 0.4));
-						_reset_automation_state();
-						pending_code = "";
-					} else if (perm.needs_confirmation || (!is_runtime_fix && !_get_autorun())) {
-						// "Ask" always asks. With auto-execute off, everything asks.
-						String dialog_text;
-						if (!perm.description.is_empty()) {
-							dialog_text = perm.description + TR(STR_PERM_PROCEED);
-						} else if (tier == AIPermissionManager::RISK_DESTRUCTIVE) {
-							dialog_text = "This code will make changes that cannot be easily undone." + TR(STR_PERM_PROCEED);
-						} else {
-							dialog_text = TR(STR_PERM_EXECUTE_CONFIRM);
-						}
-						runtime_restart_after_fix = is_runtime_fix;
-						pending_permission_code = pending_code;
-						pending_code = "";
-						permission_dialog->set_text(dialog_text);
-						permission_dialog->popup_centered();
-					} else {
-						runtime_restart_after_fix = is_runtime_fix;
-						_execute_code_with_monitoring(pending_code);
-						pending_code = "";
-					}
-				}
-			}
-		}
-	} else {
-		AI_LOG("  No code blocks found. Text-only response.");
-
-		// In AGENT/PLAN mode: if the model returned text but no code block, it
-		// described what it wants to do instead of doing it.  Auto-retry by
-		// asking it to produce only the code block now.
-		// Skip retry when the user's original message looks conversational (greeting,
-		// question, short chitchat) — in those cases a text-only reply is correct.
-		// Check whether the user's original message looks conversational (greeting /
-		// acknowledgement) so we don't annoy the user with a spurious retry when
-		// they just said hello.  We test the RAW user input, not the AI response.
-		String user_lower = last_user_input.to_lower().strip_edges();
-		bool is_conversational = false;
-
-		// ① Exact or near-exact greeting words (full message is just a greeting).
-		// We compare against the stripped, lowercased input directly.
-		static const char *EXACT_GREETINGS[] = {
-			"你好", "嗨", "hi", "hello", "hey", "yo",
-			"thanks", "thank you", "谢谢", "感谢", "thx",
-			"ok", "okay", "好的", "好", "是", "是的", "明白", "了解",
-			"太好了", "很好", "nice", "great", "cool",
-			nullptr
-		};
-		for (int ki = 0; EXACT_GREETINGS[ki] != nullptr; ki++) {
-			String kw = String::utf8(EXACT_GREETINGS[ki]);
-			// Match if the entire input IS the keyword, or input starts with it
-			// followed only by punctuation/whitespace.
-			if (user_lower == kw || user_lower.begins_with(kw + " ") ||
-					user_lower.begins_with(kw + "!") || user_lower.begins_with(kw + "！") ||
-					user_lower.begins_with(kw + "~") || user_lower.begins_with(kw + "，") ||
-					user_lower.begins_with(kw + ",") || user_lower.begins_with(kw + "。")) {
-				is_conversational = true;
-				break;
-			}
-		}
-
-		// ② Very short input (≤ 3 chars) that didn't match keywords is still
-		//    almost certainly not a task request — treat as conversational.
-		if (!is_conversational && user_lower.length() <= 3) {
-			is_conversational = true;
-		}
-		// ── PLAN MODE: text-only response = the plan itself ──────────────────
-		// When in PLAN mode (not step-execution sub-mode) a text-only response is
-		// the expected outcome — the AI generated the numbered plan.
-		// Parse steps, save to MD, show "Execute Plan" button.  Never auto-retry.
-		bool is_plan_response = (_get_current_mode() == MODE_PLAN && !plan_step_execution_mode
-				&& !runtime_fix_in_progress);
-		if (is_plan_response) {
-			// Collect full plan text.
-			String full_plan_text;
-			for (int i = 0; i < text_segments.size(); i++) {
-				full_plan_text += String(text_segments[i]);
-			}
-
-			// Parse numbered steps (lines starting with "N." or "N)").
-			Vector<String> plan_steps;
-			{
-				Vector<String> plines = full_plan_text.split("\n");
-				for (int i = 0; i < plines.size(); i++) {
-					String line = plines[i].strip_edges();
-					if (line.is_empty()) {
-						continue;
-					}
-					int j = 0;
-					while (j < (int)line.length() && line[j] >= '0' && line[j] <= '9') {
-						j++;
-					}
-					if (j > 0 && j < (int)line.length() && (line[j] == '.' || line[j] == ')')) {
-						plan_steps.push_back(line);
-					}
-				}
-			}
-
-			// Show plan header + text.
-			chat_display->push_color(Color(0.75, 0.92, 0.78));
-			chat_display->push_bold();
-			chat_display->add_text(U"📋 Plan:");
-			chat_display->pop();
-			chat_display->pop();
-			chat_display->add_newline();
-			for (int i = 0; i < text_segments.size(); i++) {
-				chat_display->push_color(Color(0.85, 0.92, 0.88));
-				chat_display->add_text(text_segments[i]);
-				chat_display->pop();
-			}
-			chat_display->add_newline();
-
-			// Save plan to MD and show file path.
-			pending_plan_md_path = "";
-			plan_execution_steps.clear();
-			if (!plan_steps.is_empty()) {
-				pending_plan_md_path = _save_plan_to_md(plan_steps, full_plan_text);
-				plan_execution_steps = plan_steps;
-				if (!pending_plan_md_path.is_empty()) {
-					String rel = pending_plan_md_path;
-					String res_root = ProjectSettings::get_singleton()->get_resource_path();
-					if (rel.begins_with(res_root)) {
-						rel = "res://" + rel.substr(res_root.length()).lstrip("/\\");
-					}
-					chat_display->add_newline();
-					chat_display->push_color(Color(0.55, 0.75, 0.55));
-					chat_display->add_text(String(U"📄 ") + rel);
-					chat_display->pop();
-				}
-			}
-
-			// Show "Execute Plan" button.
-			chat_display->add_newline();
-			chat_display->push_bgcolor(Color(0.12, 0.38, 0.18, 0.6));
-			chat_display->push_color(Color(0.3, 1.0, 0.55));
-			chat_display->push_bold();
-			chat_display->push_meta("execute_plan");
-			chat_display->add_text(U"  ▶  Execute Plan  ");
-			chat_display->pop(); // meta
-			chat_display->pop(); // bold
-			chat_display->pop(); // color
-			chat_display->pop(); // bgcolor
-			chat_display->add_newline();
-			chat_display->add_newline();
-
-			auto_retry_count = 0;
-			return;
-		}
-		// ── END PLAN MODE TEXT-ONLY HANDLING ──────────────────────────────────
-
-		if (compact && !p_is_stopped_partial && !p_response.strip_edges().is_empty() &&
-				!is_conversational && auto_retry_count < MAX_AUTO_RETRIES) {
-			auto_retry_count++;
-			String retry_num = itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES);
-			AI_WARN("No code block in response — auto-retrying for code (" + retry_num + ")");
-
-			_append_message("System",
-					String(U"⚠ ") + TR(STR_NO_CODE_BLOCK_RETRY) + " (" + retry_num + ")",
-					Color(1.0, 0.82f, 0.25f));
-
-			_send_to_api(
-					"Output ONLY the GDScript code block. "
-					"Start your response with ```gdscript and nothing else before it. "
-					"No explanation, no planning, no tables, no bullet points. "
-					"Just the executable code block.");
-			return;
-		}
-
-		// In AGENT/PLAN mode, streaming text was hidden. Show text now.
-		if (compact) {
-			chat_display->push_color(Color(0.7, 0.85, 1.0));
-			chat_display->push_bold();
-			chat_display->add_text("AI: ");
-			chat_display->pop();
-			chat_display->pop();
-			for (int i = 0; i < text_segments.size(); i++) {
-				chat_display->add_text(text_segments[i]);
-			}
-			chat_display->add_newline();
-			chat_display->add_newline();
-		}
-		auto_retry_count = 0;
-	}
-
-	// A stopped response is truncated and final: none of its side-effect markers
-	// (asset generation, web requests, memory writes) are acted on.
-	if (p_is_stopped_partial) {
-		_save_current_chat();
-		return;
-	}
-
-	// N8/N9: Detect image/audio generation markers in the response.
-	{
-		int img_pos = p_response.find("[GENERATE_IMAGE:");
-		while (img_pos >= 0) {
-			int img_end = p_response.find("]", img_pos);
-			if (img_end > img_pos) {
-				String marker = p_response.substr(img_pos, img_end - img_pos + 1);
-				String prompt_val, path_val;
-				int pq = marker.find("prompt=\"");
-				if (pq >= 0) {
-					int pq_end = marker.find("\"", pq + 8);
-					if (pq_end > pq) {
-						prompt_val = marker.substr(pq + 8, pq_end - pq - 8);
-					}
-				}
-				int pp = marker.find("path=\"");
-				if (pp >= 0) {
-					int pp_end = marker.find("\"", pp + 6);
-					if (pp_end > pp) {
-						path_val = marker.substr(pp + 6, pp_end - pp - 6);
-					}
-				}
-				if (!prompt_val.is_empty()) {
-					_handle_image_generation(prompt_val, path_val);
-				}
-				img_pos = p_response.find("[GENERATE_IMAGE:", img_end + 1);
-			} else {
-				break;
-			}
-		}
-
-		int aud_pos = p_response.find("[GENERATE_AUDIO:");
-		while (aud_pos >= 0) {
-			int aud_end = p_response.find("]", aud_pos);
-			if (aud_end > aud_pos) {
-				String marker = p_response.substr(aud_pos, aud_end - aud_pos + 1);
-				String text_val, path_val;
-				int tq = marker.find("text=\"");
-				if (tq >= 0) {
-					int tq_end = marker.find("\"", tq + 6);
-					if (tq_end > tq) {
-						text_val = marker.substr(tq + 6, tq_end - tq - 6);
-					}
-				}
-				int pp = marker.find("path=\"");
-				if (pp >= 0) {
-					int pp_end = marker.find("\"", pp + 6);
-					if (pp_end > pp) {
-						path_val = marker.substr(pp + 6, pp_end - pp - 6);
-					}
-				}
-				if (!text_val.is_empty()) {
-					_handle_audio_generation(text_val, path_val);
-				}
-				aud_pos = p_response.find("[GENERATE_AUDIO:", aud_end + 1);
-			} else {
-				break;
-			}
-		}
-	}
-
-	// Web search/fetch markers.
-	{
-		// [WEB_SEARCH: query]
-		int ws_pos = p_response.find("[WEB_SEARCH:");
-		if (ws_pos >= 0) {
-			int ws_end = p_response.find("]", ws_pos);
-			if (ws_end > ws_pos) {
-				String query = p_response.substr(ws_pos + 12, ws_end - ws_pos - 12).strip_edges();
-				if (!query.is_empty()) {
-					_handle_web_search(query, "");
-				}
-			}
-		}
-
-		// [FETCH_URL: url]
-		int fu_pos = p_response.find("[FETCH_URL:");
-		if (fu_pos >= 0) {
-			int fu_end = p_response.find("]", fu_pos);
-			if (fu_end > fu_pos) {
-				String url = p_response.substr(fu_pos + 11, fu_end - fu_pos - 11).strip_edges();
-				if (!url.is_empty()) {
-					_handle_fetch_url(url, "");
-				}
-			}
-		}
-	}
-
-	// [WRITE_MEMORY: content] — AI records a newly-discovered quirk or pattern
-	// into res://godot_ai.md so future sessions inherit the knowledge.
-	{
-		int wm_pos = p_response.find("[WRITE_MEMORY:");
-		while (wm_pos >= 0) {
-			int wm_end = p_response.find("]", wm_pos);
-			if (wm_end > wm_pos) {
-				String content = p_response.substr(wm_pos + 14, wm_end - wm_pos - 14).strip_edges();
-				if (!content.is_empty()) {
-					_handle_write_memory(content);
-				}
-				wm_pos = p_response.find("[WRITE_MEMORY:", wm_end + 1);
-			} else {
-				break;
-			}
-		}
-	}
-
-	_save_current_chat();
-	AI_LOG("========== INTERACTION COMPLETE ==========");
-}
-
-// --- Summary Extraction ---
-
-String AIAssistantPanel::_extract_code_summary(const String &p_code) const {
-	// Extract the last print() string literal as summary.
-	int search_from = 0;
-	String last_print_text = "";
-
-	while (true) {
-		int print_pos = p_code.find("print(\"", search_from);
-		if (print_pos < 0) {
-			break;
-		}
-		int str_start = print_pos + 7; // after print("
-		int str_end = p_code.find("\"", str_start);
-		if (str_end > str_start) {
-			last_print_text = p_code.substr(str_start, str_end - str_start);
-		}
-		search_from = (str_end > str_start) ? str_end + 1 : str_start + 1;
-	}
-
-	if (!last_print_text.is_empty()) {
-		return last_print_text;
-	}
-
-	// Fallback: analyze code patterns.
-	if (p_code.find("add_child") >= 0) {
-		// Try to extract node name.
-		int name_pos = p_code.find(".name = \"");
-		if (name_pos >= 0) {
-			int name_start = name_pos + 9;
-			int name_end = p_code.find("\"", name_start);
-			if (name_end > name_start) {
-				return "Added node '" + p_code.substr(name_start, name_end - name_start) + "' to the scene.";
-			}
-		}
-		return "Node added to the scene.";
-	}
-	if (p_code.find("remove_child") >= 0) {
-		return "Node removed from the scene.";
-	}
-	if (p_code.find("ResourceSaver.save") >= 0) {
-		return "Resource saved to disk.";
-	}
-	if (p_code.find(".source_code") >= 0) {
-		return "Script created or modified.";
-	}
-	if (p_code.find(".position") >= 0 || p_code.find(".rotation") >= 0) {
-		return "Node transform modified.";
-	}
-	return "Code executed successfully.";
-}
-
-// --- N1/N3: Execute with error monitoring and checkpoints ---
-
-void AIAssistantPanel::_execute_code_with_monitoring(const String &p_code) {
-	AI_LOG("  Safety check: PASSED. Auto-executing...");
-
-	bool compact = _get_current_mode() != MODE_ASK;
-
-	// N3: Create checkpoint before execution.
-	// Also record whether a scene was open before execution so we can create a
-	// "scene-open" checkpoint if the code opens a new scene from scratch.
-	String first_line = p_code.get_slice("\n", 0).strip_edges().left(50);
-	Node *pre_exec_root = EditorInterface::get_singleton()->get_edited_scene_root();
-	bool had_scene_before = (pre_exec_root != nullptr);
-	// Snapshot the project's text files first; whichever checkpoint is created
-	// for this run takes it over, so Revert also undoes file writes and deletes.
-	checkpoint_manager->begin_file_snapshot();
-	bool checkpoint_created = checkpoint_manager->create_checkpoint("Before: " + first_line);
-	int cp_idx = checkpoint_created ? checkpoint_manager->get_latest_id() : -1;
-
-	if (!compact) {
-		// Full mode: show [Revert] link and "Executing code..." message.
-		if (cp_idx >= 0) {
-			chat_display->push_color(Color(0.5, 0.7, 1.0));
-			chat_display->push_meta("revert:" + itos(cp_idx));
-			chat_display->add_text("[Revert]");
-			chat_display->pop();
-			chat_display->pop();
-			chat_display->add_text(" ");
-		}
-
-		_append_message("System", TR(STR_SYS_EXECUTING_CODE), Color(1.0, 0.9, 0.5));
-	}
-
-	AI_LOG("---------- CODE EXECUTION ----------");
-
-	// N1: Begin error monitoring.
-	error_monitor->begin_ai_execution();
-
-	Dictionary result = script_executor->execute(p_code);
-
-	bool success = result["success"];
-	String output = result["output"];
-	String error_str = result["error"];
-
-	// No scene was open, so there is no scene checkpoint. Unless the code opened
-	// one (handled below), keep a files-only checkpoint so its writes can still
-	// be reverted. A failed run may have written files before it stopped, too.
-	if (cp_idx < 0 && (!success || EditorInterface::get_singleton()->get_edited_scene_root() == nullptr)) {
-		cp_idx = checkpoint_manager->create_files_checkpoint("Before: " + first_line);
-	}
-
-	if (success) {
-		AI_LOG("Execution SUCCESS: " + output);
-
-		// Mark current plan step done in the MD file.
-		if (plan_step_execution_mode) {
-			if (!active_plan_md_path.is_empty()) {
-				_mark_one_plan_step_done(active_plan_md_path, plan_execution_step_idx);
-			} else {
-				// MD path is empty — plan was generated without a detectable step list
-				// (e.g. AI used bullet points instead of "1. …" numbering).
-				AI_WARN("[Plan] Cannot mark step done: active_plan_md_path is empty.");
-			}
-		}
-
-		// N3 (post-exec): if no scene was open before but code opened a new scene,
-		// create a "scene-open" checkpoint so the user can still revert (close the scene).
-		if (!had_scene_before && cp_idx < 0) {
-			Node *post_root = EditorInterface::get_singleton()->get_edited_scene_root();
-			if (post_root) {
-				String new_scene_path = post_root->get_scene_file_path();
-				cp_idx = checkpoint_manager->create_scene_open_checkpoint(
-						new_scene_path, "Opened: " + new_scene_path.get_file());
-			}
-		}
-
-		if (compact) {
-			// Store detail response for popup.
-			int detail_id = stored_detail_responses.size();
-			stored_detail_responses.push_back(last_full_response);
-
-			// Use actual runtime output as summary (all print() lines visible).
-			// Fall back to code-extracted summary only when output is empty.
-			String summary;
-			if (!output.strip_edges().is_empty()) {
-				summary = output.strip_edges().replace("\n", "  |  ");
-				if (summary.length() > 300) {
-					summary = summary.left(300) + "...";
-				}
-			} else {
-				summary = _extract_code_summary(p_code);
-			}
-
-			// Compact summary: "AI: ✅ [summary]  [Details] [Save] [Revert]"
-			chat_display->push_color(Color(0.7, 0.85, 1.0));
-			chat_display->push_bold();
-			chat_display->add_text("AI: ");
-			chat_display->pop();
-			chat_display->pop();
-
-			chat_display->push_color(Color(0.5, 1.0, 0.5));
-			chat_display->add_text(String::utf8("\xe2\x9c\x85 ") + summary);
-			chat_display->pop();
-			chat_display->add_text("  ");
-
-			// [▶ Details] toggle link.
-			chat_display->push_color(Color(0.6, 0.6, 0.8));
-			chat_display->push_meta("details:" + itos(detail_id));
-			chat_display->add_text(String::utf8("[\xe2\x96\xb6 Details]"));
-			chat_display->pop();
-			chat_display->pop();
-			chat_display->add_text(" ");
-
-			// [Save] link (last code block).
-			if (!displayed_code_blocks.is_empty()) {
-				int block_idx = displayed_code_blocks.size() - 1;
-				chat_display->push_color(Color(0.4, 0.8, 1.0));
-				chat_display->push_meta("save:" + itos(block_idx));
-				chat_display->add_text("[Save]");
-				chat_display->pop();
-				chat_display->pop();
-				chat_display->add_text(" ");
-			}
-
-			// [Revert] link (only if checkpoint was created).
-			if (cp_idx >= 0) {
-				chat_display->push_color(Color(0.5, 0.7, 1.0));
-				chat_display->push_meta("revert:" + itos(cp_idx));
-				chat_display->add_text("[Revert]");
-				chat_display->pop();
-				chat_display->pop();
-			}
-
-			chat_display->add_newline();
-			chat_display->add_newline();
-		} else {
-			_append_message("System", String::utf8("\xe2\x9c\x85 ") + output, Color(0.5, 1.0, 0.5));
-		}
-
-		// N1: Start deferred error check (500ms) to catch async errors/warnings.
-		deferred_error_timer->start(0.5);
-
-		// Advance plan execution to the next step (if step-execution mode is active).
-		if (plan_step_execution_mode) {
-			plan_execution_step_idx++;
-			if (plan_execution_step_idx < plan_execution_steps.size()) {
-				// Delay next step slightly so UI updates are visible first.
-				// We call _execute_plan_next_step() via a one-shot timer-like deferred call.
-				callable_mp(this, &AIAssistantPanel::_execute_plan_next_step).call_deferred();
-			} else {
-				// All steps done.
-				plan_step_execution_mode = false;
-				active_plan_md_path = "";
-				_append_message("System",
-						AI_L("✅ All plan steps completed!", "✅ 计划的全部步骤已完成！"),
-						Color(0.3, 1.0, 0.55));
-			}
-		}
-	} else {
-		error_monitor->end_ai_execution();
-		AI_ERR("Execution FAILED: " + error_str);
-		// Stop plan execution on failure.
-		if (plan_step_execution_mode) {
-			plan_step_execution_mode = false;
-			_append_message("System",
-					AI_L("⛔ Plan execution stopped at step ", "⛔ 计划在第 ") + itos(plan_execution_step_idx + 1) + AI_L(" due to failure.", " 步因失败而中止。"),
-					Color(1.0, 0.4, 0.4));
-		}
-		active_plan_md_path = "";
-
-		if (compact) {
-			// Store detail response for toggle.
-			int detail_id = stored_detail_responses.size();
-			stored_detail_responses.push_back(last_full_response);
-
-			// Compact error: "AI: ❌ [error]  [▶ Details]"
-			chat_display->push_color(Color(0.7, 0.85, 1.0));
-			chat_display->push_bold();
-			chat_display->add_text("AI: ");
-			chat_display->pop();
-			chat_display->pop();
-
-			chat_display->push_color(Color(1.0, 0.4, 0.4));
-			chat_display->add_text(String::utf8("\xe2\x9d\x8c ") + error_str);
-			chat_display->pop();
-			chat_display->add_text("  ");
-
-			chat_display->push_color(Color(0.6, 0.6, 0.8));
-			chat_display->push_meta("details:" + itos(detail_id));
-			chat_display->add_text(String::utf8("[\xe2\x96\xb6 Details]"));
-			chat_display->pop();
-			chat_display->pop();
-
-			chat_display->add_newline();
-			chat_display->add_newline();
-		} else {
-			_append_message("System", AI_L("Execution failed: ", "执行失败：") + error_str, Color(1.0, 0.4, 0.4));
-		}
-
-		// Auto-recovery.
-		if (auto_retry_count < MAX_AUTO_RETRIES) {
-			auto_retry_count++;
-			AI_LOG("Auto-recovery attempt " + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES));
-			_append_message("System", AI_L("Auto-retrying... (", "自动重试中... (") + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES) + ")", Color(1.0, 0.7, 0.3));
-
-			String retry_msg = "The code failed with error:\n" + error_str + "\nPlease fix the code and try again.";
-			_save_current_chat();
-			_send_to_api(retry_msg);
-			return;
-		} else {
-			AI_WARN("Max auto-retry attempts reached.");
-			_append_message("System", AI_L("Auto-recovery failed after ", "自动恢复失败，已尝试 ") + itos(MAX_AUTO_RETRIES) + AI_L(" attempts.", " 次。"), Color(1.0, 0.4, 0.4));
-			auto_retry_count = 0;
-		}
-	}
-}
-
-// N1: Deferred error check — fires 500ms after successful execution to catch async errors/warnings.
-void AIAssistantPanel::_on_deferred_error_check() {
-	deferred_error_timer->stop();
-	error_monitor->end_ai_execution();
-
-	if (error_monitor->has_ai_execution_errors()) {
-		String errors = error_monitor->get_ai_execution_errors_text();
-		AI_WARN("Deferred errors detected after execution:\n" + errors);
-		_append_message("System", AI_L("Post-execution warnings/errors detected:\n", "执行后检测到警告或错误：\n") + errors, Color(1.0, 0.7, 0.3));
-
-		// Auto-retry to fix these errors — unless the next request (e.g. the
-		// following plan step) has already gone out.
-		if (is_waiting_response) {
-			AI_LOG("Deferred errors noted, but a request is in flight — not retrying.");
-		} else if (auto_retry_count < MAX_AUTO_RETRIES) {
-			auto_retry_count++;
-			AI_LOG("Auto-recovery (deferred) attempt " + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES));
-			_append_message("System", AI_L("Auto-fixing... (", "自动修复中... (") + itos(auto_retry_count) + "/" + itos(MAX_AUTO_RETRIES) + ")", Color(1.0, 0.7, 0.3));
-
-			String retry_msg = "The code executed but produced these warnings/errors afterwards:\n" + errors + "\nPlease fix the issues. Make sure there are no errors or warnings.";
-			_save_current_chat();
-			_send_to_api(retry_msg);
-			return;
-		} else {
-			auto_retry_count = 0;
-		}
-	} else {
-		auto_retry_count = 0;
-
-		// Runtime watch: fix was applied without errors → re-run the same scene.
-		if (runtime_restart_after_fix) {
-			runtime_restart_after_fix = false;
-			_append_message("System", String(U"🔄 ") + TR(STR_WATCH_RESTARTING), Color(0.5f, 1.0f, 0.85f));
-			AI_LOG("[Watch] Fix applied — re-running scene: " + runtime_last_play_path);
-			if (!runtime_last_play_path.is_empty()) {
-				EditorInterface::get_singleton()->play_custom_scene(runtime_last_play_path);
-			} else {
-				EditorInterface::get_singleton()->play_current_scene();
-			}
-		}
-	}
-
-	error_monitor->clear_ai_errors();
-}
-
-// =============================================================================
-// Plan MD helpers
-// =============================================================================
-
-// Save plan steps as a Markdown checklist inside the project at
-// res://ai_plans/plan_TIMESTAMP.md (created alongside the source tree so it
-// can be committed with the project). Returns the absolute OS path on success,
-// empty string on failure.
-String AIAssistantPanel::_save_plan_to_md(const Vector<String> &p_steps, const String &p_full_plan_text) {
-	// Resolve the project directory (absolute OS path, no trailing slash).
-	String res_root = ProjectSettings::get_singleton()->get_resource_path();
-	if (res_root.is_empty()) {
-		AI_WARN("[Plan] Project resource path is empty — cannot save plan MD.");
-		return "";
-	}
-
-	// Create res://ai_plans/ directory.
-	String plans_dir = res_root.path_join("ai_plans");
-	{
-		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-		if (dir.is_valid() && !dir->dir_exists(plans_dir)) {
-			Error err = dir->make_dir_recursive(plans_dir);
-			if (err != OK) {
-				AI_WARN("[Plan] Failed to create ai_plans directory: " + itos(err));
-				return "";
-			}
-		}
-	}
-
-	// Build filename: plan_YYYYMMDD_HHMMSS.md
-	Dictionary dt = Time::get_singleton()->get_datetime_dict_from_system();
-	String ts = String::num_int64((int64_t)dt["year"]).pad_zeros(4)
-			+ String::num_int64((int64_t)dt["month"]).pad_zeros(2)
-			+ String::num_int64((int64_t)dt["day"]).pad_zeros(2)
-			+ "_"
-			+ String::num_int64((int64_t)dt["hour"]).pad_zeros(2)
-			+ String::num_int64((int64_t)dt["minute"]).pad_zeros(2)
-			+ String::num_int64((int64_t)dt["second"]).pad_zeros(2);
-	String file_path = plans_dir.path_join("plan_" + ts + ".md");
-
-	// Write MD.
-	Ref<FileAccess> f = FileAccess::open(file_path, FileAccess::WRITE);
-	if (!f.is_valid()) {
-		AI_WARN("[Plan] Cannot open plan MD for writing: " + file_path);
-		return "";
-	}
-	f->store_string("# AI Plan\n\n");
-	f->store_string("Generated: " + Time::get_singleton()->get_datetime_string_from_system() + "\n\n");
-	f->store_string("## Steps\n\n");
-	for (int i = 0; i < p_steps.size(); i++) {
-		f->store_string("- [ ] " + p_steps[i] + "\n");
-	}
-	f.unref();
-
-	// Ask the editor FS to pick up the new file.
-	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
-
-	AI_LOG("[Plan] Plan saved to: " + file_path);
-	return file_path;
-}
-
-// Rewrite the plan MD so that all unchecked `- [ ]` boxes become `- [x]`
-// and an "Executed" timestamp line is added below the Steps heading.
-void AIAssistantPanel::_mark_plan_steps_done(const String &p_md_path) {
-	if (p_md_path.is_empty()) {
-		return;
-	}
-
-	Ref<FileAccess> fr = FileAccess::open(p_md_path, FileAccess::READ);
-	if (!fr.is_valid()) {
-		AI_WARN("[Plan] Cannot open plan MD for reading: " + p_md_path);
-		return;
-	}
-	String content = fr->get_as_text();
-	fr.unref();
-
-	// Insert "Executed:" timestamp above the Steps list.
-	String exec_line = "\n✅ Executed: " + Time::get_singleton()->get_datetime_string_from_system() + "\n";
-	content = content.replace("\n## Steps\n", "\n## Steps\n" + exec_line);
-
-	// Mark every unchecked box as done.
-	content = content.replace("- [ ] ", "- [x] ");
-
-	Ref<FileAccess> fw = FileAccess::open(p_md_path, FileAccess::WRITE);
-	if (!fw.is_valid()) {
-		AI_WARN("[Plan] Cannot open plan MD for writing: " + p_md_path);
-		return;
-	}
-	fw->store_string(content);
-	fw.unref();
-
-	// Refresh the editor FS so the file shows as modified.
-	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
-
-	AI_LOG("[Plan] Plan steps marked done: " + p_md_path);
-
-	// Show the path (res://-relative) in the chat.
-	String rel = p_md_path;
-	String res_root = ProjectSettings::get_singleton()->get_resource_path();
-	if (rel.begins_with(res_root)) {
-		rel = "res://" + rel.substr(res_root.length()).lstrip("/\\");
-	}
-	_append_message("System",
-			AI_L("✅ Plan complete — ", "✅ 计划完成 — ") + rel,
-			Color(0.4f, 1.0f, 0.4f));
-}
-
-// Mark a single numbered step as done in the plan MD (by step index, 0-based).
-// The MD was written with `- [ ] N. step text` lines — flip the matching one.
-void AIAssistantPanel::_mark_one_plan_step_done(const String &p_md_path, int p_step_idx) {
-	if (p_md_path.is_empty()) {
-		AI_WARN("[Plan] _mark_one_plan_step_done called with empty path — step " + itos(p_step_idx) + " not marked.");
-		return;
-	}
-
-	Ref<FileAccess> fr = FileAccess::open(p_md_path, FileAccess::READ);
-	if (!fr.is_valid()) {
-		AI_WARN("[Plan] Cannot open plan MD for reading: " + p_md_path);
-		return;
-	}
-	String content = fr->get_as_text();
-	fr.unref();
-
-	// Steps are executed sequentially — the first remaining unchecked box is always
-	// the current step. We do NOT count by p_step_idx across unchecked boxes because
-	// previously-checked boxes have been removed from the `- [ ]` count, which would
-	// shift every subsequent index by the number of already-completed steps.
-	Vector<String> lines = content.split("\n");
-	bool marked = false;
-	String step_label;
-	for (int i = 0; i < lines.size(); i++) {
-		if (lines[i].begins_with("- [ ] ")) {
-			step_label = lines[i].substr(6).strip_edges(); // Text after "- [ ] "
-			lines.write[i] = "- [x] " + lines[i].substr(6);
-			marked = true;
-			break;
-		}
-	}
-
-	if (!marked) {
-		AI_WARN("[Plan] No unchecked step found to mark in: " + p_md_path);
-		return;
-	}
-
-	// Rebuild content.
-	String new_content;
-	for (int i = 0; i < lines.size(); i++) {
-		new_content += lines[i];
-		if (i < lines.size() - 1) {
-			new_content += "\n";
-		}
-	}
-
-	Ref<FileAccess> fw = FileAccess::open(p_md_path, FileAccess::WRITE);
-	if (!fw.is_valid()) {
-		AI_WARN("[Plan] Cannot open plan MD for writing: " + p_md_path);
-		return;
-	}
-	fw->store_string(new_content);
-	fw.unref();
-
-	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
-	AI_LOG("[Plan] Marked step " + itos(p_step_idx) + " done in: " + p_md_path);
-
-	// Show brief confirmation in the chat.
-	String short_label = step_label.left(60);
-	if (step_label.length() > 60) {
-		short_label += "...";
-	}
-	_append_message("System",
-			AI_L("✅ Step ", "✅ 步骤 ") + itos(p_step_idx + 1) + AI_L(" done: ", " 完成：") + short_label,
-			Color(0.4f, 1.0f, 0.55f));
-}
-
-// Send a prompt to the AI to implement the current plan step.
-void AIAssistantPanel::_execute_plan_next_step() {
-	if (!plan_step_execution_mode) {
-		return;
-	}
-	if (plan_execution_step_idx >= plan_execution_steps.size()) {
-		plan_step_execution_mode = false;
-		return;
-	}
-
-	String step_text = plan_execution_steps[plan_execution_step_idx];
-	int step_num = plan_execution_step_idx + 1;
-	int total_steps = plan_execution_steps.size();
-
-	_append_message("System",
-			AI_L("🔧 Executing step ", "🔧 正在执行步骤 ") + itos(step_num) + "/" + itos(total_steps) + ": " + step_text,
-			Color(0.7, 0.9, 1.0));
-
-	// Build the step prompt.
-	String step_prompt =
-			"Implement step " + itos(step_num) + " of " + itos(total_steps) + " from the plan:\n\n" +
-			step_text + "\n\n" +
-			"Generate ONLY the GDScript code block for this specific step. "
-			"Start with ```gdscript and end with ```. "
-			"Do NOT include any other steps or unrelated code.";
-
-	_send_to_api(step_prompt);
-}
-
-// Runtime Error Auto-Fix ("Watch" mode)
-// =============================================================================
-
-// Called by AIAssistantPlugin when the debugger "started" signal fires (game connected).
-// This runs before any _ready() errors arrive over the debugger protocol, so it is
-// the safe place to clear stale error buffers from previous runs.
-void AIAssistantPanel::on_game_session_started() {
-	s_runtime_errors = "";
-	runtime_collect_timer->stop();
-	if (error_monitor.is_valid()) {
-		error_monitor->clear_debugger_errors();
-	}
-	// Record the scene path for re-run after auto-fix.
-	Node *scene_root = EditorInterface::get_singleton()->get_edited_scene_root();
-	runtime_last_play_path = scene_root ? scene_root->get_scene_file_path() : String();
-	AI_LOG("[Watch] Debugger session started — error buffers cleared. Scene: " + runtime_last_play_path);
-}
-
-// Static error handler — installed while the scene is playing.
-// Captures GDScript runtime errors into s_runtime_errors.
-void AIAssistantPanel::_runtime_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type) {
-	// Capture script errors and general errors; ignore warnings and shaders.
-	if (p_type != ERR_HANDLER_SCRIPT && p_type != ERR_HANDLER_ERROR) {
-		return;
-	}
-
-	String msg = p_error ? String(p_error) : String();
-	if (p_message && p_message[0]) {
-		msg += ": " + String(p_message);
-	}
-	if (msg.is_empty()) {
-		return;
-	}
-
-	// p_file for script errors is often the GDScript source file (res://...).
-	String file_str = p_file ? String(p_file) : String();
-	bool from_user_script = file_str.begins_with("res://");
-
-	// Try to collect GDScript stack frames for richer context.
-	String stack_str;
-	Vector<Ref<ScriptBacktrace>> backtraces = ScriptServer::capture_script_backtraces(false);
-	for (int bt = 0; bt < backtraces.size(); bt++) {
-		const Ref<ScriptBacktrace> &trace = backtraces[bt];
-		if (trace.is_null() || trace->is_empty()) {
-			continue;
-		}
-		for (int f = 0; f < trace->get_frame_count(); f++) {
-			String frame_file = trace->get_frame_file(f);
-			if (frame_file.begins_with("res://")) {
-				from_user_script = true;
-			}
-			if (!stack_str.is_empty()) {
-				stack_str += "\n    ";
-			}
-			stack_str += frame_file + ":" + itos(trace->get_frame_line(f)) + " @ " + trace->get_frame_function(f) + "()";
-		}
-	}
-
-	// For ERR_HANDLER_SCRIPT: always a GDScript error — capture unconditionally.
-	// For ERR_HANDLER_ERROR: only capture if it traces back to a user script file.
-	if (p_type == ERR_HANDLER_ERROR && !from_user_script) {
-		String msg_lower = msg.to_lower();
-		if (!msg_lower.contains("res://") && !msg_lower.contains(".gd")) {
-			return;
-		}
-	}
-
-	if (!s_runtime_errors.is_empty()) {
-		s_runtime_errors += "\n---\n";
-	}
-	s_runtime_errors += msg;
-
-	// Include the source location from p_file/p_line if it's a user script.
-	if (from_user_script && !file_str.is_empty() && stack_str.is_empty()) {
-		s_runtime_errors += "\n    at: " + file_str + ":" + itos(p_line);
-	}
-	if (!stack_str.is_empty()) {
-		s_runtime_errors += "\n    at: " + stack_str;
-	}
-}
-
-void AIAssistantPanel::_install_runtime_error_handler() {
-	if (runtime_eh_installed) {
-		return;
-	}
-	runtime_eh.errfunc = _runtime_error_handler;
-	runtime_eh.userdata = nullptr;
-	add_error_handler(&runtime_eh);
-	runtime_eh_installed = true;
-}
-
-void AIAssistantPanel::_remove_runtime_error_handler() {
-	if (!runtime_eh_installed) {
-		return;
-	}
-	remove_error_handler(&runtime_eh);
-	runtime_eh_installed = false;
-}
-
-// 200 ms poll — detects play start / stop transitions (always-on, no toggle).
-void AIAssistantPanel::_on_runtime_poll_timeout() {
-	bool currently_playing = EditorInterface::get_singleton()->is_playing_scene();
-
-	if (currently_playing && !runtime_was_playing) {
-		// ── Play just started ─────────────────────────────────────────────
-		// Note: error buffer clearing and scene path recording are done in
-		// on_game_session_started() (triggered by the debugger "started" signal),
-		// which fires before any _ready() errors arrive. We only install the
-		// in-process error handler here.
-		_install_runtime_error_handler();
-
-		AI_LOG("[Watch] Scene play detected by poll — in-process handler installed. Scene: " + runtime_last_play_path);
-
-	} else if (!currently_playing && runtime_was_playing) {
-		// ── Play just stopped ─────────────────────────────────────────────
-		_remove_runtime_error_handler();
-		runtime_collect_timer->stop();
-
-		// Check both the in-process buffer AND the debugger error buffer.
-		bool has_errors = !s_runtime_errors.is_empty() ||
-				(error_monitor.is_valid() && error_monitor->get_debugger_error_count() > 0);
-
-		if (has_errors && !runtime_fix_in_progress) {
-			AI_LOG("[Watch] Scene stopped with errors — triggering auto-fix.");
-			_trigger_runtime_fix();
-		} else if (!runtime_fix_in_progress && runtime_fix_attempt > 0) {
-			// Clean run after previous fix attempts → success.
-			_append_message("System", String(U"✅ ") + TR(STR_WATCH_SUCCESS), Color(0.4f, 1.0f, 0.4f));
-			AI_LOG("[Watch] Scene ran without errors — all runtime errors fixed.");
-			runtime_fix_attempt = 0;
-		}
-	}
-
-	runtime_was_playing = currently_playing;
-
-	// Errors appeared while still playing → start the 2 s collect-then-stop timer.
-	bool has_live_errors = !s_runtime_errors.is_empty() ||
-			(error_monitor.is_valid() && error_monitor->get_debugger_error_count() > 0);
-	if (currently_playing && has_live_errors && runtime_collect_timer->is_stopped()) {
-		_append_message("System", String(U"⚠ ") + TR(STR_WATCH_DETECTING), Color(1.0f, 0.82f, 0.25f));
-		runtime_collect_timer->start();
-	}
-}
-
-// 2 s one-shot: fired after the first error during play — stop the scene now.
-void AIAssistantPanel::_on_runtime_collect_timeout() {
-	bool has_errors = !s_runtime_errors.is_empty() ||
-			(error_monitor.is_valid() && error_monitor->get_debugger_error_count() > 0);
-	if (EditorInterface::get_singleton()->is_playing_scene() && has_errors) {
-		AI_LOG("[Watch] Collect timeout — stopping scene to apply fix.");
-		EditorInterface::get_singleton()->stop_playing_scene();
-		// poll timer will detect the transition and call _trigger_runtime_fix().
-	}
-}
-
-// Build prompt and send to AI for fixing.
-void AIAssistantPanel::_trigger_runtime_fix() {
-	// Collect errors from both sources: in-process handler + remote debugger protocol.
-	String errors = s_runtime_errors;
-	if (error_monitor.is_valid() && error_monitor->get_debugger_error_count() > 0) {
-		String dbg = error_monitor->get_recent_debugger_errors(20);
-		if (!dbg.is_empty()) {
-			if (!errors.is_empty()) {
-				errors += "\n---\n";
-			}
-			errors += dbg;
-		}
-	}
-
-	if (errors.is_empty()) {
-		return;
-	}
-
-	// Don't arm runtime_fix_in_progress for a request that can't be sent: the
-	// flag would then apply to whatever response is already streaming.
-	if (is_waiting_response) {
-		AI_LOG("[Watch] A request is in flight — skipping this runtime fix.");
-		return;
-	}
-
-	if (runtime_fix_attempt >= RUNTIME_MAX_ATTEMPTS) {
-		_append_message("System",
-				String(U"❌ ") + TR(STR_WATCH_FAILED),
-				Color(1.0f, 0.4f, 0.4f));
-		AI_WARN("[Watch] Max fix attempts reached. Giving up.");
-		runtime_fix_in_progress = false;
-		runtime_fix_attempt = 0;
-		return;
-	}
-
-	runtime_fix_attempt++;
-	runtime_fix_in_progress = true;
-
-	String attempt_str = itos(runtime_fix_attempt) + "/" + itos(RUNTIME_MAX_ATTEMPTS);
-	AI_LOG("[Watch] Fix attempt " + attempt_str);
-	_append_message("System",
-			String(U"🔄 ") + TR(STR_WATCH_FIXING) + " (" + attempt_str + ")",
-			Color(1.0f, 0.82f, 0.25f));
-
-	// Clear both buffers after snapshotting.
-	s_runtime_errors = "";
-	if (error_monitor.is_valid()) {
-		error_monitor->clear_debugger_errors();
-	}
-
-	// ── Parse unique res:// .gd file paths from the error text ─────────────
-	Vector<String> error_lines = errors.split("\n");
-	HashSet<String> seen_files;
-	String scripts_section;
-
-	for (int i = 0; i < error_lines.size(); i++) {
-		const String &line = error_lines[i];
-		int search_from = 0;
-		while (true) {
-			int res_pos = line.find("res://", search_from);
-			if (res_pos < 0) {
-				break;
-			}
-			// Read characters until a natural delimiter.
-			int end = res_pos + 6;
-			while (end < line.length()) {
-				char32_t c = line[end];
-				if (c == ' ' || c == '\t' || c == '"' || c == '\'' || c == ')' || c == ']') {
-					break;
-				}
-				// "path.gd:42" → stop before the colon+digit that is the line number.
-				if (c == ':' && end + 1 < line.length() && line[end + 1] >= '0' && line[end + 1] <= '9') {
-					break;
-				}
-				end++;
-			}
-			String file_path = line.substr(res_pos, end - res_pos);
-
-			if (file_path.ends_with(".gd") && !seen_files.has(file_path)) {
-				seen_files.insert(file_path);
-				Ref<FileAccess> f = FileAccess::open(file_path, FileAccess::READ);
-				if (f.is_valid()) {
-					scripts_section += "\nFile: " + file_path + "\n```gdscript\n" + f->get_as_text() + "\n```\n";
-				}
-			}
-			search_from = end;
-		}
-	}
-
-	// ── Build AI prompt ─────────────────────────────────────────────────────
-	String prompt =
-			"RUNTIME ERROR AUTO-FIX: The following errors occurred when running the scene.\n\n"
-			"ERRORS:\n" +
-			errors + "\n\n";
-
-	if (!scripts_section.is_empty()) {
-		prompt += "ERRORED SCRIPTS:\n" + scripts_section + "\n\n";
-	}
-
-	prompt +=
-			"Write EditorScript body code that fixes all the errors.\n"
-			"Requirements:\n"
-			"1. For each errored script: use FileAccess.open(path, FileAccess.WRITE) + store_line() to write the COMPLETE fixed script\n"
-			"2. At the end, call: get_editor_interface().get_resource_filesystem().scan()\n"
-			"3. Output ONLY the ```gdscript code block — no explanation before or after\n"
-			"4. Write the ENTIRE fixed file contents (not just the changed lines)\n"
-			"5. Keep the same file paths as the originals\n";
-
-	_send_to_api(prompt);
-}
-
-// --- N8/N9: Asset Generation ---
-
-// Image/audio generation always talks to api.openai.com, so it must only ever
-// send the OpenAI key — never the key of whichever provider is active.
-static String _get_openai_asset_key(const Ref<AIProvider> &p_current) {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (es && es->has_setting("ai_assistant/api_key_openai")) {
-		const String key = es->get_setting("ai_assistant/api_key_openai");
-		if (!key.is_empty()) {
-			return key;
-		}
-	}
-	if (p_current.is_valid() && p_current->get_provider_name() == "openai") {
-		return p_current->get_api_key();
-	}
-	return String();
-}
-
-// Marker-supplied save paths come from model output: keep them inside the project.
-static bool _is_safe_asset_path(const String &p_path) {
-	return p_path.is_empty() || (p_path.begins_with("res://") && p_path.find("..") < 0);
-}
-
-void AIAssistantPanel::_handle_image_generation(const String &p_prompt, const String &p_save_path) {
-	const String openai_key = _get_openai_asset_key(current_provider);
-	if (openai_key.is_empty()) {
-		_append_message("System", AI_L("Image generation uses the OpenAI API: set an OpenAI API key in Settings first.", "图像生成使用 OpenAI 接口：请先在设置中填写 OpenAI API 密钥。"), Color(1.0, 0.4, 0.4));
-		return;
-	}
-	if (!_is_safe_asset_path(p_save_path)) {
-		_append_message("System", AI_L("Image generation skipped: save path must be inside res:// (", "已跳过图像生成：保存路径必须位于 res:// 内 (") + p_save_path + ").", Color(1.0, 0.4, 0.4));
-		return;
-	}
-
-	_append_message("System", AI_L("Generating image: ", "正在生成图像：") + p_prompt + "...", Color(0.5, 0.8, 1.0));
-
-	String body = AIImageGenerator::build_dalle_request(p_prompt);
-	Vector<String> headers;
-	headers.push_back("Content-Type: application/json");
-	headers.push_back("Authorization: Bearer " + openai_key);
-
-	pending_asset_type = "image";
-	pending_asset_path = p_save_path;
-
-	asset_http_request->cancel_request();
-	Error err = asset_http_request->request("https://api.openai.com/v1/images/generations", headers, HTTPClient::METHOD_POST, body);
-	if (err != OK) {
-		_append_message("System", AI_L("Failed to send image generation request.", "图像生成请求发送失败。"), Color(1.0, 0.4, 0.4));
-	}
-}
-
-void AIAssistantPanel::_handle_audio_generation(const String &p_prompt, const String &p_save_path) {
-	const String openai_key = _get_openai_asset_key(current_provider);
-	if (openai_key.is_empty()) {
-		_append_message("System", AI_L("Audio generation uses the OpenAI API: set an OpenAI API key in Settings first.", "音频生成使用 OpenAI 接口：请先在设置中填写 OpenAI API 密钥。"), Color(1.0, 0.4, 0.4));
-		return;
-	}
-	if (!_is_safe_asset_path(p_save_path)) {
-		_append_message("System", AI_L("Audio generation skipped: save path must be inside res:// (", "已跳过音频生成：保存路径必须位于 res:// 内 (") + p_save_path + ").", Color(1.0, 0.4, 0.4));
-		return;
-	}
-
-	_append_message("System", AI_L("Generating audio: ", "正在生成音频：") + p_prompt + "...", Color(0.5, 0.8, 1.0));
-
-	String body = AIAudioGenerator::build_tts_request(p_prompt);
-	Vector<String> headers;
-	headers.push_back("Content-Type: application/json");
-	headers.push_back("Authorization: Bearer " + openai_key);
-
-	pending_asset_type = "audio";
-	pending_asset_path = p_save_path;
-
-	asset_http_request->cancel_request();
-	Error err = asset_http_request->request("https://api.openai.com/v1/audio/speech", headers, HTTPClient::METHOD_POST, body);
-	if (err != OK) {
-		_append_message("System", AI_L("Failed to send audio generation request.", "音频生成请求发送失败。"), Color(1.0, 0.4, 0.4));
-	}
-}
-
-void AIAssistantPanel::_on_asset_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
-		String body_text = String::utf8((const char *)p_body.ptr(), p_body.size());
-		_append_message("System", AI_L("Asset generation failed (HTTP ", "资源生成失败 (HTTP ") + itos(p_response_code) + "): " + body_text.left(300), Color(1.0, 0.4, 0.4));
-		return;
-	}
-
-	if (pending_asset_type == "image") {
-		String body_text = String::utf8((const char *)p_body.ptr(), p_body.size());
-		String b64 = AIImageGenerator::parse_dalle_response(body_text);
-		if (!b64.is_empty()) {
-			String path = pending_asset_path.is_empty() ? "res://ai_generated_image.png" : pending_asset_path;
-			if (AIImageGenerator::save_base64_as_texture(b64, path)) {
-				_append_message("System", AI_L("Image saved: ", "图像已保存：") + path, Color(0.5, 1.0, 0.5));
-			} else {
-				_append_message("System", AI_L("Failed to save image.", "图像保存失败。"), Color(1.0, 0.4, 0.4));
-			}
-		} else {
-			_append_message("System", AI_L("Failed to parse image response.", "图像响应解析失败。"), Color(1.0, 0.4, 0.4));
-		}
-	} else if (pending_asset_type == "audio") {
-		String path = pending_asset_path.is_empty() ? "res://ai_generated_audio.mp3" : pending_asset_path;
-		// Ensure .mp3 extension since we request mp3 format from TTS API.
-		if (path.ends_with(".wav")) {
-			path = path.get_basename() + ".mp3";
-		}
-		if (AIAudioGenerator::save_audio_bytes(p_body, path)) {
-			_append_message("System", AI_L("Audio saved: ", "音频已保存：") + path, Color(0.5, 1.0, 0.5));
-		} else {
-			_append_message("System", AI_L("Failed to save audio.", "音频保存失败。"), Color(1.0, 0.4, 0.4));
-		}
-	}
-
-	pending_asset_type = "";
-	pending_asset_path = "";
-}
-
-// --- Display Helpers ---
-
-void AIAssistantPanel::_append_message(const String &p_sender, const String &p_text, const Color &p_color, bool p_bbcode) {
-	chat_display->push_color(p_color);
-	chat_display->push_bold();
-	chat_display->add_text(p_sender + ": ");
-	chat_display->pop();
-	chat_display->pop();
-
-	if (p_bbcode) {
-		chat_display->append_text(p_text); // Parses BBCode (used for @mention pills).
-	} else {
-		chat_display->add_text(p_text);
-	}
-	chat_display->add_newline();
-	chat_display->add_newline();
-}
-
-void AIAssistantPanel::_append_code_block(const String &p_code) {
-	// N5: Store code block for save feature.
-	int block_idx = displayed_code_blocks.size();
-	displayed_code_blocks.push_back(p_code);
-
-	chat_display->push_color(Color(0.4, 0.4, 0.4));
-	chat_display->add_text("--- GDScript --- ");
-	chat_display->pop();
-
-	// N5: Add save link.
-	chat_display->push_color(Color(0.4, 0.8, 1.0));
-	chat_display->push_meta("save:" + itos(block_idx));
-	chat_display->add_text("[Save]");
-	chat_display->pop();
-	chat_display->pop();
-
-	chat_display->add_newline();
-
-	chat_display->push_bgcolor(Color(0.15, 0.15, 0.2, 0.8));
-	chat_display->push_color(Color(0.9, 0.85, 0.7));
-	chat_display->push_font_size(13);
-
-	Vector<String> lines = p_code.split("\n");
-	for (int i = 0; i < lines.size(); i++) {
-		chat_display->add_text(lines[i]);
-		if (i < lines.size() - 1) {
-			chat_display->add_newline();
-		}
-	}
-
-	chat_display->pop();
-	chat_display->pop();
-	chat_display->pop();
-	chat_display->add_newline();
-	chat_display->add_newline();
-}
-
-String AIAssistantPanel::_get_system_prompt(const String &p_current_message) const {
-	String prompt = AISystemPrompt::get_base_prompt();
-
-	// Mode-specific instructions.
-	AIMode mode = _get_current_mode();
-	if (mode == MODE_ASK) {
-		prompt = "You are in ASK mode. Only answer questions with text explanations. Do NOT generate code blocks.\n\n" + prompt;
-	} else if (mode == MODE_PLAN && !plan_step_execution_mode) {
-		// Pure planning request: AI must output ONLY the numbered plan, no code.
-		prompt = "You are in PLAN mode. Create a numbered step-by-step implementation plan ONLY.\n"
-				 "DO NOT write any code or code blocks.\n"
-				 "Write only the plan text with clearly numbered steps (e.g. 1. ... 2. ... 3. ...).\n"
-				 "Each step should be a concise description of one concrete implementation action.\n\n" +
-				prompt;
-	} else if (mode == MODE_PLAN && plan_step_execution_mode) {
-		// Step execution sub-request: behave like AGENT mode — generate code.
-		prompt = "You are executing one step of a multi-step plan. Generate the GDScript code block for this specific step ONLY.\n\n" + prompt;
-	}
-
-	// N10: Detect UI request from current user message and add UI-specialized prompt.
-	if (AIUIAgent::is_ui_request(p_current_message)) {
-		prompt += AIUIAgent::get_ui_system_prompt();
-	}
-
-	// N11: Domain-specific prompt injection (Animation, TileMap, Navigation, etc.)
-	{
-		String domain_prompt = AIDomainPrompts::build_contextual_prompt(p_current_message);
-		if (!domain_prompt.is_empty()) {
-			prompt += domain_prompt;
-		}
-	}
-
-	// N12: Lazy-loaded API docs + gotchas — inject compact references for any
-	// Godot class or topic mentioned in the user's message. Only matching entries
-	// are injected, keeping token cost proportional to what's being discussed.
-	{
-		String api_docs = AIAPIDocLoader::get_docs_for_message(p_current_message);
-		if (!api_docs.is_empty()) {
-			prompt += api_docs;
-		}
-		String gotchas = AIGotchasIndex::get_for_message(p_current_message);
-		if (!gotchas.is_empty()) {
-			prompt += "\n";
-			prompt += gotchas;
-		}
-	}
-
-	prompt += context_collector->build_context_prompt();
-
-	// Performance snapshot — always include a brief one for context.
-	{
-		String perf = context_collector->get_performance_snapshot();
-		if (!perf.is_empty()) {
-			prompt += "\n--- " + perf + "---\n";
-		}
-	}
-
-	// N7: Add profiler data if "Performance" preset was used.
-	{
-		String content = p_current_message.to_lower();
-		if (content.find("performance") != -1 || content.find("optimize") != -1 ||
-				content.find("fps") != -1 || content.find(String::utf8("性能")) != -1 ||
-				content.find(String::utf8("优化")) != -1) {
-			prompt += "\n--- PERFORMANCE SNAPSHOT ---\n";
-			prompt += profiler_collector->collect_performance_snapshot();
-			prompt += "--- END PERFORMANCE SNAPSHOT ---\n";
-		}
-	}
-
-	// N1: Add recent console errors context.
-	// Always include for error/fix/bug related queries; otherwise only if errors exist.
-	if (error_monitor.is_valid()) {
-		String content = p_current_message.to_lower();
-		bool is_error_query = content.find("error") != -1 || content.find("fix") != -1 ||
-				content.find("bug") != -1 || content.find("warning") != -1 ||
-				content.find(String::utf8("错误")) != -1 || content.find(String::utf8("修复")) != -1 ||
-				content.find(String::utf8("警告")) != -1 || content.find("debug") != -1;
-
-		if (is_error_query || error_monitor->get_recent_error_count() > 0) {
-			prompt += "\n--- RECENT CONSOLE ERRORS (editor, not caused by AI) ---\n";
-			prompt += error_monitor->get_recent_console_errors(10);
-			prompt += "\n--- END CONSOLE ERRORS ---\n";
-		}
-
-		// Include game runtime debugger errors (from running the game).
-		if (is_error_query || error_monitor->get_debugger_error_count() > 0) {
-			String dbg_errors = error_monitor->get_recent_debugger_errors(10);
-			if (!dbg_errors.is_empty()) {
-				prompt += "\n--- GAME RUNTIME ERRORS (from running the game, shown in debugger panel) ---\n";
-				prompt += dbg_errors;
-				prompt += "\n--- END GAME RUNTIME ERRORS ---\n";
-			}
-		}
-	}
-
-	return prompt;
-}
-
-// --- Presets ---
-
-void AIAssistantPanel::_on_preset_pressed(const String &p_prompt) {
-	if (is_waiting_response) {
-		return;
-	}
-	if (history_visible) {
-		_show_chat_view();
-	}
-	input_field->set_text(p_prompt);
+	input_field->set_text(AIKnowledge::get_singleton()->get_prompt(p_prompt_id));
 	_on_send_pressed();
 }
 
-// --- History View ---
+void AIAssistantPanel::_on_settings_pressed() {
+	settings_dialog->open();
+}
+
+void AIAssistantPanel::_on_settings_confirmed() {
+	if (controller->is_busy()) {
+		// The work in flight keeps the provider it started with; the new
+		// settings are applied as soon as it ends (see _on_state_changed).
+		settings_reload_pending = true;
+		_system_message(AI_L("Settings saved. They take effect once the current response has finished.", "设置已保存，将在当前回复结束后生效。"));
+		return;
+	}
+	controller->reload_settings();
+}
+
+void AIAssistantPanel::_on_screenshot_pressed() {
+	SubViewport *viewport = EditorInterface::get_singleton()->get_editor_viewport_3d(0);
+	if (!viewport) {
+		viewport = EditorInterface::get_singleton()->get_editor_viewport_2d();
+	}
+	Ref<Image> image;
+	if (viewport) {
+		image = viewport->get_texture()->get_image();
+	}
+
+	// Saved under user:// so it does not pollute the project.
+	String file_path;
+	if (image.is_valid() && !image->is_empty()) {
+		DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(SCREENSHOT_DIR));
+		const String timestamp = Time::get_singleton()->get_datetime_string_from_system(false, true).replace(":", "-");
+		file_path = String(SCREENSHOT_DIR).path_join("screenshot_" + timestamp + ".png");
+		if (image->save_png(file_path) != OK) {
+			file_path = String();
+		}
+	}
+	if (file_path.is_empty()) {
+		_system_message(String(U"❌ ") + TR(STR_SCREENSHOT_FAILED), AIAgentController::NOTICE_ERROR);
+		return;
+	}
+
+	controller->set_pending_screenshot(file_path);
+	_system_message(String(U"📷 ") + TR(STR_SCREENSHOT_SAVED) + " (" + itos(image->get_width()) + "x" + itos(image->get_height()) + ")");
+}
+
+void AIAssistantPanel::_on_attach_pressed() {
+	file_dialog->popup_centered_ratio(FILE_DIALOG_RATIO);
+}
+
+void AIAssistantPanel::_on_file_attach_selected(const String &p_path) {
+	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
+	if (file.is_null()) {
+		_system_message(AI_L("Failed to open file: ", "无法打开文件：") + p_path, AIAgentController::NOTICE_ERROR);
+		return;
+	}
+	String content = file->get_as_utf8_string();
+	const bool truncated = content.length() > ATTACHMENT_MAX_CHARS;
+	if (truncated) {
+		content = content.left(ATTACHMENT_MAX_CHARS) + "\n[File truncated at " + itos(ATTACHMENT_MAX_CHARS) + " characters]";
+	}
+
+	const String attachment = controller->add_attachment(p_path, content);
+	String status = String(U"📎 ") + AI_L("Attached: ", "已附加：") + p_path.get_file();
+	if (AISession::is_attachment_backref(attachment)) {
+		status += AI_L(" (reference — content already sent this session)", "（引用 — 内容已在本次会话中发送过）");
+	} else if (truncated) {
+		status += AI_L(" (truncated)", "（已截断）");
+	}
+	_system_message(status);
+}
+
+void AIAssistantPanel::_on_permission_confirmed() {
+	controller->confirm_permission(true);
+}
+
+void AIAssistantPanel::_on_permission_cancelled() {
+	controller->confirm_permission(false);
+}
+
+void AIAssistantPanel::_on_link_clicked(int p_kind, int p_id) {
+	switch (p_kind) {
+		case AIChatView::LINK_SAVE:
+			_save_code_block(p_id);
+			break;
+		case AIChatView::LINK_DETAILS:
+			_show_details(chat_view->get_detail_response(p_id));
+			break;
+		case AIChatView::LINK_THINKING:
+			_show_thinking(chat_view->get_thinking_text(p_id));
+			break;
+		case AIChatView::LINK_REVERT:
+			_ask_to_confirm(AI_L("Restore this checkpoint?\n\nThe scene and the project's text files go back to how they were before that step. Changes made since then — yours included — are lost.",
+							"恢复到这个检查点？\n\n场景和项目里的文本文件会回到那一步之前的状态。此后所做的修改（包括你自己的）都会丢失。"),
+					callable_mp(this, &AIAssistantPanel::_revert_checkpoint).bind(p_id));
+			break;
+		case AIChatView::LINK_EXECUTE_PLAN:
+			if (controller->is_busy()) {
+				_system_message(AI_L("Stop the current response before executing the plan.", "请先停止当前回复，再执行计划。"), AIAgentController::NOTICE_WARNING);
+			} else {
+				controller->execute_plan();
+			}
+			break;
+		default:
+			break;
+	}
+}
+
+void AIAssistantPanel::_save_code_block(int p_index) {
+	const String code = chat_view->get_code_block(p_index);
+	if (code.is_empty()) {
+		return;
+	}
+	String file_name;
+	const String script = AIResponseAnalysis::build_saved_script(code, p_index, file_name);
+	const String save_path = "res://" + file_name;
+
+	Ref<FileAccess> file = FileAccess::open(save_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		_system_message(AI_L("Failed to save code to: ", "代码保存失败：") + save_path, AIAgentController::NOTICE_ERROR);
+		return;
+	}
+	file->store_string(script);
+	file.unref();
+	_system_message(AI_L("Code saved to: ", "代码已保存到：") + save_path, AIAgentController::NOTICE_SUCCESS);
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+}
+
+void AIAssistantPanel::_revert_checkpoint(int p_checkpoint_id) {
+	if (controller->is_busy()) {
+		_system_message(AI_L("Stop the current response before reverting.", "请先停止当前回复，再执行回滚。"), AIAgentController::NOTICE_WARNING);
+		return;
+	}
+	Ref<AICheckpointManager> checkpoints = controller->get_checkpoint_manager();
+	// Read the description first: restoring discards this checkpoint and later ones.
+	const String description = checkpoints->get_checkpoint_description(p_checkpoint_id);
+	if (!checkpoints->restore_checkpoint(p_checkpoint_id)) {
+		_system_message(AI_L("Could not restore this checkpoint: it has expired, was already rolled back, or its scene is no longer the active tab.", "无法恢复此检查点：它已过期、已被回滚，或对应场景不是当前标签页。"), AIAgentController::NOTICE_ERROR);
+		return;
+	}
+	const AICheckpointManager::RestoreReport &report = checkpoints->get_last_restore_report();
+	String detail;
+	if (report.files_restored > 0 || report.files_removed > 0) {
+		detail = AI_L(" (files restored: ", "（还原文件：") + itos(report.files_restored) +
+				AI_L(", new files moved to trash: ", "，新增文件移入回收站：") + itos(report.files_removed) + AI_L(")", "）");
+	}
+	if (report.files_partial) {
+		detail += AI_L(" Note: large or binary files are not covered by checkpoints.", " 注意：大文件和二进制文件不在检查点范围内。");
+	}
+	_system_message(AI_L("Checkpoint restored: ", "已恢复检查点：") + description + detail, AIAgentController::NOTICE_SUCCESS);
+}
+
+void AIAssistantPanel::_show_details(const String &p_response) {
+	if (p_response.is_empty()) {
+		return;
+	}
+	const Dictionary parsed = controller->get_response_parser()->parse(p_response);
+	const PackedStringArray text_segments = PackedStringArray(parsed["text_segments"]);
+	Vector<String> code_blocks;
+	const Array raw_blocks = parsed["code_blocks"];
+	for (int i = 0; i < raw_blocks.size(); i++) {
+		code_blocks.push_back(raw_blocks[i]);
+	}
+	code_blocks = AIResponseAnalysis::dedupe_consecutive(code_blocks);
+
+	details_text->clear();
+	for (int i = 0; i < text_segments.size(); i++) {
+		details_text->push_color(ai_themed(COLOR_DETAILS_TEXT));
+		details_text->add_text(text_segments[i]);
+		details_text->pop();
+		details_text->add_newline();
+		details_text->add_newline();
+	}
+	for (int i = 0; i < code_blocks.size(); i++) {
+		details_text->push_color(ai_themed(COLOR_DETAILS_MUTED));
+		details_text->add_text("--- GDScript ---");
+		details_text->pop();
+		details_text->add_newline();
+
+		details_text->push_bgcolor(COLOR_CODE_BACKGROUND);
+		details_text->push_color(ai_themed(COLOR_CODE));
+		details_text->push_font_size(CODE_FONT_SIZE);
+		details_text->add_text(code_blocks[i]);
+		details_text->pop();
+		details_text->pop();
+		details_text->pop();
+		details_text->add_newline();
+		details_text->add_newline();
+	}
+	details_dialog->set_title(AI_L("AI Response Details", "AI 回复详情"));
+	details_dialog->popup_centered(DETAILS_DIALOG_SIZE * EDSCALE);
+}
+
+void AIAssistantPanel::_show_thinking(const String &p_thinking) {
+	if (p_thinking.is_empty()) {
+		return;
+	}
+	details_text->clear();
+	details_text->push_color(ai_themed(COLOR_DETAILS_THINKING));
+	details_text->push_italics();
+	details_text->add_text(p_thinking);
+	details_text->pop();
+	details_text->pop();
+	details_dialog->set_title(TR(STR_THINKING_LABEL));
+	details_dialog->popup_centered(DETAILS_DIALOG_SIZE * EDSCALE);
+}
+
+void AIAssistantPanel::_on_input_gui_input(const Ref<InputEvent> &p_event) {
+	const Ref<InputEventKey> key = p_event;
+	if (!key.is_valid() || !key->is_pressed() || key->is_echo()) {
+		return;
+	}
+	if (autocomplete->handle_key(key)) {
+		input_field->accept_event();
+		return;
+	}
+	if (key->get_keycode() != Key::ENTER) {
+		return;
+	}
+	const bool send = _get_send_on_enter() ? (!key->is_shift_pressed() && !key->is_ctrl_pressed()) : key->is_ctrl_pressed();
+	if (send) {
+		_on_send_pressed();
+		input_field->accept_event();
+	}
+}
+
+// Grows the input field with its content. Deferred from text_changed so the
+// layout change does not land in the middle of that signal.
+void AIAssistantPanel::_update_input_height() {
+	const Ref<StyleBox> style = input_field->get_theme_stylebox(SNAME("normal"), SNAME("TextEdit"));
+	const int margin = style.is_valid() ? (int)(style->get_margin(SIDE_TOP) + style->get_margin(SIDE_BOTTOM)) : INPUT_FALLBACK_MARGIN;
+	const int height = CLAMP(input_field->get_total_visible_line_count() * input_field->get_line_height() + margin, INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT);
+	if ((int)input_field->get_custom_minimum_size().y != height) {
+		input_field->set_custom_minimum_size(Size2(0, height));
+	}
+}
+
+// =============================================================================
+// Controller events
+// =============================================================================
+
+void AIAssistantPanel::_on_state_changed(int p_state) {
+	const bool busy = p_state != AIAgentController::STATE_IDLE;
+	send_button->set_visible(!busy);
+	stop_button->set_visible(busy);
+	if (p_state != AIAgentController::STATE_AWAITING_PERMISSION && permission_dialog->is_visible()) {
+		permission_dialog->hide(); // The question it asks is no longer open.
+	}
+	if (!busy && settings_reload_pending) {
+		settings_reload_pending = false;
+		controller->reload_settings();
+	}
+}
+
+void AIAssistantPanel::_on_permission_requested(const String &p_text) {
+	permission_dialog->set_text(p_text);
+	permission_dialog->popup_centered();
+}
+
+void AIAssistantPanel::_on_session_changed() {
+	chat_view->show_history(controller->get_session().get_full_history(), controller->get_response_parser());
+}
+
+void AIAssistantPanel::on_game_session_started() {
+	runtime_watch->on_game_session_started();
+}
+
+// =============================================================================
+// History view
+// =============================================================================
 
 void AIAssistantPanel::_show_history_view() {
 	_populate_history_list();
-	chat_display->set_visible(false);
+	chat_view->set_visible(false);
 	input_bar->set_visible(false);
 	history_scroll->set_visible(true);
 	history_visible = true;
@@ -3530,249 +463,10 @@ void AIAssistantPanel::_show_history_view() {
 
 void AIAssistantPanel::_show_chat_view() {
 	history_scroll->set_visible(false);
-	chat_display->set_visible(true);
+	chat_view->set_visible(true);
 	input_bar->set_visible(true);
 	history_visible = false;
 	history_button->set_text(TR(STR_BTN_HISTORY));
-}
-
-// --- Chat History Persistence ---
-
-String AIAssistantPanel::_get_chats_dir() const {
-	return "user://ai_assistant_chats";
-}
-
-void AIAssistantPanel::_generate_chat_id() {
-	Dictionary dt = Time::get_singleton()->get_datetime_dict_from_system();
-	current_chat_id = "chat_" +
-			itos((int)dt["year"]) +
-			String::num_int64((int)dt["month"]).lpad(2, "0") +
-			String::num_int64((int)dt["day"]).lpad(2, "0") + "_" +
-			String::num_int64((int)dt["hour"]).lpad(2, "0") +
-			String::num_int64((int)dt["minute"]).lpad(2, "0") +
-			String::num_int64((int)dt["second"]).lpad(2, "0");
-	AI_LOG("New chat ID: " + current_chat_id);
-}
-
-void AIAssistantPanel::_save_current_chat() {
-	if (conversation_history.is_empty() || current_chat_id.is_empty()) {
-		return;
-	}
-
-	String dir_path = _get_chats_dir();
-
-	// Resolve the actual filesystem path and create directory.
-	String absolute_dir = ProjectSettings::get_singleton()->globalize_path(dir_path);
-	if (!DirAccess::dir_exists_absolute(absolute_dir)) {
-		DirAccess::make_dir_recursive_absolute(absolute_dir);
-	}
-
-	// Use full_conversation_history for the title (first user message).
-	String title = "Untitled";
-	for (int i = 0; i < full_conversation_history.size(); i++) {
-		Dictionary msg = full_conversation_history[i];
-		if (String(msg["role"]) == "user") {
-			title = String(msg["content"]).left(60);
-			break;
-		}
-	}
-
-	Dictionary chat_data;
-	chat_data["id"] = current_chat_id;
-	chat_data["title"] = title;
-	// Always save the FULL history so old messages are never lost on reload.
-	chat_data["message_count"] = full_conversation_history.size();
-	chat_data["messages"] = full_conversation_history;
-	// context_summary is still saved for API use on reload,
-	// but display always comes from the full messages list.
-	if (!context_summary.is_empty()) {
-		chat_data["context_summary"] = context_summary;
-		// How many leading messages the summary stands in for, so a reload can
-		// rebuild the same working copy instead of sending them twice.
-		chat_data["compressed_count"] = MAX(0, full_conversation_history.size() - conversation_history.size());
-	}
-
-	String json_str = JSON::stringify(chat_data, "\t");
-
-	String file_path = dir_path + "/" + current_chat_id + ".json";
-	Ref<FileAccess> f = FileAccess::open(file_path, FileAccess::WRITE);
-	if (f.is_valid()) {
-		f->store_string(json_str);
-		AI_LOG("Chat saved: " + file_path);
-	} else {
-		AI_ERR("Failed to save chat: " + file_path);
-	}
-}
-
-void AIAssistantPanel::_load_chat(const String &p_file_path) {
-	if (is_waiting_response) {
-		_show_chat_view();
-		_append_message("System", AI_L("Stop the current response before loading another chat.", "请先停止当前回复，再载入其他对话。"), Color(1.0, 0.7, 0.3));
-		return;
-	}
-	Ref<FileAccess> f = FileAccess::open(p_file_path, FileAccess::READ);
-	if (!f.is_valid()) {
-		AI_ERR("Failed to open chat file: " + p_file_path);
-		return;
-	}
-
-	String json_str = f->get_as_text();
-	JSON json;
-	Error err = json.parse(json_str);
-	if (err != OK) {
-		AI_ERR("Failed to parse chat file: " + p_file_path);
-		return;
-	}
-
-	Dictionary chat_data = json.get_data();
-
-	if (!conversation_history.is_empty()) {
-		_save_current_chat();
-	}
-
-	current_chat_id = chat_data["id"];
-	// Load full history (all messages, never trimmed).
-	full_conversation_history = chat_data["messages"];
-	// Also restore working copy — compression will re-trim on next API call if needed.
-	conversation_history = full_conversation_history.duplicate();
-	context_summary = chat_data.has("context_summary") ? String(chat_data["context_summary"]) : "";
-	if (!context_summary.is_empty()) {
-		const int compressed_count = chat_data.has("compressed_count") ? (int)chat_data["compressed_count"] : -1;
-		if (compressed_count > 0 && compressed_count < full_conversation_history.size()) {
-			// The summary replaces exactly these messages in the working copy.
-			conversation_history = full_conversation_history.slice(compressed_count);
-		} else {
-			// Older save without the count: the full history is authoritative, so
-			// drop the summary rather than send the same content twice.
-			context_summary = "";
-		}
-	}
-	_cancel_pending_summary();
-	displayed_code_blocks.clear();
-
-	// Disable scroll_follow while bulk-loading history so the scroll bar
-	// doesn't chase every added paragraph and end up at the bottom.
-	chat_display->set_scroll_follow(false);
-	chat_display->clear();
-	stored_thinking_texts.clear();
-	for (int i = 0; i < conversation_history.size(); i++) {
-		Dictionary msg = conversation_history[i];
-		String role = msg["role"];
-		String content = msg["content"];
-
-		if (role == "user") {
-			_append_message("You", content, Color(0.9, 0.9, 0.9));
-		} else if (role == "assistant") {
-			// Render thinking as collapsed clickable link if present.
-			String thinking_text = msg.has("thinking") ? String(msg["thinking"]) : "";
-
-			// Also handle <think>...</think> tags embedded in content by some models.
-			String clean_content = content;
-			if (clean_content.find("<think>") != -1) {
-				int think_start = clean_content.find("<think>");
-				int think_end = clean_content.find("</think>");
-				if (think_end != -1) {
-					if (thinking_text.is_empty()) {
-						thinking_text = clean_content.substr(think_start + 7, think_end - think_start - 7).strip_edges();
-					}
-					clean_content = clean_content.substr(0, think_start) + clean_content.substr(think_end + 8);
-					clean_content = clean_content.strip_edges();
-				}
-			}
-
-			if (!thinking_text.is_empty()) {
-				int thinking_id = stored_thinking_texts.size();
-				stored_thinking_texts.push_back(thinking_text);
-
-				chat_display->push_color(Color(0.5, 0.5, 0.6));
-				chat_display->push_italics();
-				chat_display->add_text("[");
-				chat_display->push_meta("thinking:" + itos(thinking_id));
-				chat_display->push_color(Color(0.4, 0.7, 1.0));
-				chat_display->add_text(TR(STR_THINKING_COLLAPSED));
-				chat_display->pop(); // color
-				chat_display->pop(); // meta
-				chat_display->add_text("]");
-				chat_display->pop(); // italics
-				chat_display->pop(); // color
-				chat_display->add_newline();
-			}
-
-			Dictionary parsed_msg = response_parser->parse(clean_content);
-			Array text_segs = parsed_msg["text_segments"];
-			Array code_blks_raw = parsed_msg["code_blocks"];
-
-			// Deduplicate consecutive identical code blocks.
-			Array code_blks;
-			for (int j = 0; j < code_blks_raw.size(); j++) {
-				if (j == 0 || String(code_blks_raw[j]) != String(code_blks_raw[j - 1])) {
-					code_blks.push_back(code_blks_raw[j]);
-				}
-			}
-
-			if (!code_blks.is_empty()) {
-				// Store full response for [▶ Details] popup.
-				int detail_id = stored_detail_responses.size();
-				stored_detail_responses.push_back(clean_content);
-
-				// Store each code block for [Save].
-				for (int j = 0; j < code_blks.size(); j++) {
-					displayed_code_blocks.push_back(code_blks[j]);
-				}
-				int last_block_idx = displayed_code_blocks.size() - 1;
-
-				// Show any non-empty text segments (brief descriptions).
-				for (int j = 0; j < text_segs.size(); j++) {
-					String seg = String(text_segs[j]).strip_edges();
-					if (!seg.is_empty()) {
-						_append_message("AI", seg, Color(0.7, 0.85, 1.0));
-					}
-				}
-
-				// Compact format: "AI: [summary]  [▶ Details] [Save]"
-				String summary = _extract_code_summary(code_blks[code_blks.size() - 1]);
-
-				chat_display->push_color(Color(0.7, 0.85, 1.0));
-				chat_display->push_bold();
-				chat_display->add_text("AI: ");
-				chat_display->pop();
-				chat_display->pop();
-
-				chat_display->push_color(Color(0.5, 1.0, 0.5));
-				chat_display->add_text(summary);
-				chat_display->pop();
-				chat_display->add_text("  ");
-
-				chat_display->push_color(Color(0.6, 0.6, 0.8));
-				chat_display->push_meta("details:" + itos(detail_id));
-				chat_display->add_text(String::utf8("[\xe2\x96\xb6 Details]"));
-				chat_display->pop();
-				chat_display->pop();
-				chat_display->add_text(" ");
-
-				chat_display->push_color(Color(0.4, 0.8, 1.0));
-				chat_display->push_meta("save:" + itos(last_block_idx));
-				chat_display->add_text("[Save]");
-				chat_display->pop();
-				chat_display->pop();
-
-				chat_display->add_newline();
-				chat_display->add_newline();
-			} else {
-				// Text-only response: render normally.
-				for (int j = 0; j < text_segs.size(); j++) {
-					_append_message("AI", text_segs[j], Color(0.7, 0.85, 1.0));
-				}
-			}
-		}
-	}
-
-	AI_LOG("Loaded chat: " + current_chat_id + " (" + itos(conversation_history.size()) + " messages)");
-
-	// Scroll to the top so the user sees the conversation from the beginning,
-	// then re-enable scroll_follow for new incoming messages.
-	chat_display->scroll_to_line(0);
-	chat_display->set_scroll_follow(true);
 }
 
 void AIAssistantPanel::_populate_history_list() {
@@ -3781,11 +475,9 @@ void AIAssistantPanel::_populate_history_list() {
 		history_container->remove_child(child);
 		memdelete(child);
 	}
-	history_file_list.clear();
 
-	String dir_path = _get_chats_dir();
-	Ref<DirAccess> dir = DirAccess::open(dir_path);
-	if (!dir.is_valid()) {
+	const Vector<AIChatStore::Entry> chats = AIChatStore::list();
+	if (chats.is_empty()) {
 		Label *empty_label = memnew(Label);
 		empty_label->set_text(TR(STR_SYS_NO_HISTORY));
 		empty_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
@@ -3793,211 +485,172 @@ void AIAssistantPanel::_populate_history_list() {
 		return;
 	}
 
-	Vector<String> files;
-	dir->list_dir_begin();
-	String fname = dir->get_next();
-	while (!fname.is_empty()) {
-		if (!dir->current_is_dir() && fname.ends_with(".json")) {
-			files.push_back(fname);
-		}
-		fname = dir->get_next();
-	}
-	dir->list_dir_end();
-
-	files.sort();
-	files.reverse();
-
-	if (files.is_empty()) {
-		Label *empty_label = memnew(Label);
-		empty_label->set_text(TR(STR_SYS_NO_HISTORY));
-		empty_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-		history_container->add_child(empty_label);
-		return;
-	}
-
-	for (int i = 0; i < files.size(); i++) {
-		String full_path = dir_path + "/" + files[i];
-		Ref<FileAccess> f = FileAccess::open(full_path, FileAccess::READ);
-		if (!f.is_valid()) {
-			continue;
-		}
-
-		String json_str = f->get_as_text();
-		JSON json;
-		if (json.parse(json_str) != OK) {
-			continue;
-		}
-
-		Dictionary chat_data = json.get_data();
-		String title = chat_data.get("title", "Untitled");
-		int msg_count = chat_data.get("message_count", 0);
-
+	for (int i = 0; i < chats.size(); i++) {
 		HBoxContainer *row = memnew(HBoxContainer);
 		history_container->add_child(row);
 
-		Button *title_btn = memnew(Button);
-		title_btn->set_text(title + "  (" + itos(msg_count) + " msgs)");
-		title_btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		title_btn->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-		title_btn->set_flat(true);
-		title_btn->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_item_clicked).bind(full_path));
-		row->add_child(title_btn);
+		Button *title_button = memnew(Button);
+		title_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
+		title_button->set_text(chats[i].title + "  (" + itos(chats[i].message_count) + " msgs)");
+		title_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		title_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		title_button->set_flat(true);
+		title_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_item_clicked).bind(chats[i].path));
+		row->add_child(title_button);
 
-		Button *del_btn = memnew(Button);
-		del_btn->set_text("X");
-		del_btn->set_tooltip_text(AI_L("Delete this chat", "删除此对话"));
-		del_btn->set_custom_minimum_size(Size2(28, 0));
-		del_btn->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_item_deleted).bind(full_path));
-		row->add_child(del_btn);
-
-		history_file_list.push_back(full_path);
+		Button *delete_button = memnew(Button);
+		delete_button->set_text("X");
+		delete_button->set_tooltip_text(AI_L("Delete this chat", "删除此对话"));
+		delete_button->set_custom_minimum_size(Size2(DELETE_BUTTON_WIDTH, 0) * EDSCALE);
+		delete_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_delete_pressed).bind(chats[i].path));
+		row->add_child(delete_button);
 	}
 }
 
 void AIAssistantPanel::_on_history_item_clicked(const String &p_file_path) {
-	_load_chat(p_file_path);
 	_show_chat_view();
+	if (!controller->load_session(p_file_path) && controller->is_busy()) {
+		_system_message(AI_L("Stop the current response before loading another chat.", "请先停止当前回复，再载入其他对话。"), AIAgentController::NOTICE_WARNING);
+	}
+}
+
+void AIAssistantPanel::_on_history_delete_pressed(const String &p_file_path) {
+	_ask_to_confirm(AI_L("Delete this chat? This cannot be undone.", "删除这个对话？此操作无法撤销。"),
+			callable_mp(this, &AIAssistantPanel::_on_history_item_deleted).bind(p_file_path));
+}
+
+void AIAssistantPanel::_ask_to_confirm(const String &p_text, const Callable &p_action) {
+	confirm_action = p_action;
+	confirm_dialog->set_text(p_text);
+	confirm_dialog->popup_centered();
+}
+
+void AIAssistantPanel::_on_confirm_accepted() {
+	const Callable action = confirm_action;
+	confirm_action = Callable();
+	if (action.is_valid()) {
+		action.call();
+	}
 }
 
 void AIAssistantPanel::_on_history_item_deleted(const String &p_file_path) {
-	bool is_current = !current_chat_id.is_empty() && p_file_path.contains(current_chat_id);
-
-	Ref<DirAccess> dir = DirAccess::open(_get_chats_dir());
-	if (dir.is_valid()) {
-		dir->remove(p_file_path.get_file());
-		AI_LOG("Deleted chat: " + p_file_path);
+	const bool had_messages = !controller->get_session().is_empty();
+	if (!controller->delete_chat(p_file_path)) {
+		_show_chat_view();
+		_system_message(AI_L("Stop the current response before deleting a chat.", "请先停止当前回复，再删除对话。"), AIAgentController::NOTICE_WARNING);
+		return;
 	}
-
-	if (is_current) {
-		chat_display->clear();
-		conversation_history.clear();
-		full_conversation_history.clear();
-		pending_code = "";
-		plan_execution_steps.clear();
-		plan_execution_step_idx = 0;
-		plan_step_execution_mode = false;
-		pending_plan_md_path = "";
-		active_plan_md_path = "";
-		current_chat_id = "";
-		_append_message("System", TR(STR_SYS_CHAT_DELETED), Color(0.6, 0.8, 1.0));
+	if (had_messages && controller->get_session().is_empty()) {
+		_system_message(TR(STR_SYS_CHAT_DELETED));
 	}
-
 	callable_mp(this, &AIAssistantPanel::_populate_history_list).call_deferred();
 }
 
-// --- Constructor ---
+void AIAssistantPanel::_restore_last_chat() {
+	const String latest = AIChatStore::get_latest_path();
+	if (!latest.is_empty() && controller->get_session().is_empty()) {
+		controller->load_session(latest);
+	}
+}
 
-AIAssistantPanel::AIAssistantPanel() {
-	set_name("Godot AI");
+// =============================================================================
+// Mentions
+// =============================================================================
 
-	response_parser.instantiate();
-	script_executor.instantiate();
-	context_collector.instantiate();
-	error_monitor.instantiate();
-	checkpoint_manager.instantiate();
-	permission_manager.instantiate();
-	image_generator.instantiate();
-	audio_generator.instantiate();
-	profiler_collector.instantiate();
+void AIAssistantPanel::insert_mention_of_selected_node() {
+	EditorSelection *selection = EditorInterface::get_singleton()->get_selection();
+	if (!selection) {
+		return;
+	}
+	const TypedArray<Node> nodes = selection->get_selected_nodes();
+	if (nodes.is_empty()) {
+		_system_message(TR(STR_SYS_NO_NODES_SELECTED), AIAgentController::NOTICE_WARNING);
+		return;
+	}
+	mention_nodes_from_context(nodes);
+}
 
-	// --- Toolbar ---
+void AIAssistantPanel::mention_nodes_from_context(const Variant &p_arg) {
+	const Array nodes = p_arg;
+	for (int i = 0; i < nodes.size(); i++) {
+		const Node *node = Object::cast_to<Node>(nodes[i]);
+		if (node) {
+			input_field->insert_mention(String(node->get_name()), String(node->get_path()), node->get_class());
+		}
+	}
+	if (!nodes.is_empty()) {
+		input_field->grab_focus();
+	}
+}
+
+void AIAssistantPanel::mention_files_from_context(const Variant &p_arg) {
+	const PackedStringArray paths = p_arg;
+	for (int i = 0; i < paths.size(); i++) {
+		// Directory paths end with '/', which would leave get_file() empty.
+		const String name = paths[i].rstrip("/").get_file();
+		if (!name.is_empty()) {
+			input_field->insert_file_mention(name, paths[i]);
+		}
+	}
+	if (!paths.is_empty()) {
+		input_field->grab_focus();
+	}
+}
+
+// =============================================================================
+// Construction
+// =============================================================================
+
+Button *AIAssistantPanel::_add_button(Control *p_parent, void (AIAssistantPanel::*p_handler)()) {
+	Button *button = memnew(Button);
+	// Labels come from AILocalization, not the editor's translation catalog.
+	button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
+	button->connect("pressed", callable_mp(this, p_handler));
+	p_parent->add_child(button);
+	return button;
+}
+
+void AIAssistantPanel::_build_toolbar() {
 	HBoxContainer *toolbar = memnew(HBoxContainer);
 	add_child(toolbar);
 
 	title_label = memnew(Label);
 	title_label->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	title_label->set_text(TR(STR_PANEL_TITLE));
 	title_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	toolbar->add_child(title_label);
 
-	new_chat_button = memnew(Button);
-	new_chat_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	new_chat_button->set_text(TR(STR_BTN_NEW));
-	new_chat_button->set_tooltip_text(TR(STR_TIP_NEW_CHAT));
-	new_chat_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_new_chat_pressed));
-	toolbar->add_child(new_chat_button);
+	new_chat_button = _add_button(toolbar, &AIAssistantPanel::_on_new_chat_pressed);
+	history_button = _add_button(toolbar, &AIAssistantPanel::_on_history_pressed);
+	screenshot_button = _add_button(toolbar, &AIAssistantPanel::_on_screenshot_pressed);
+	settings_button = _add_button(toolbar, &AIAssistantPanel::_on_settings_pressed);
 
-	history_button = memnew(Button);
-	history_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	history_button->set_text(TR(STR_BTN_HISTORY));
-	history_button->set_tooltip_text(TR(STR_TIP_HISTORY));
-	history_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_history_pressed));
-	toolbar->add_child(history_button);
-
-	screenshot_button = memnew(Button);
-	screenshot_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	screenshot_button->set_text(TR(STR_BTN_SCREENSHOT));
-	screenshot_button->set_tooltip_text(TR(STR_TIP_SCREENSHOT));
-	screenshot_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_screenshot_pressed));
-	toolbar->add_child(screenshot_button);
-
-	settings_button = memnew(Button);
-	settings_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	settings_button->set_text(TR(STR_BTN_SETTINGS));
-	settings_button->set_tooltip_text(TR(STR_TIP_SETTINGS));
-	settings_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_settings_pressed));
-	toolbar->add_child(settings_button);
-
-	// Mode selector.
 	mode_selector = memnew(OptionButton);
+	mode_selector->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
+	// Item ids are the AIAgentController::Mode values.
 	mode_selector->add_item(TR(STR_MODE_ASK));
 	mode_selector->add_item(TR(STR_MODE_AGENT));
 	mode_selector->add_item(TR(STR_MODE_PLAN));
-	mode_selector->select(1); // Default: AGENT
-	mode_selector->set_tooltip_text(TR(STR_MODE_TOOLTIP));
-	mode_selector->connect("item_selected", callable_mp(this, &AIAssistantPanel::_on_mode_changed));
+	mode_selector->select(AIAgentController::MODE_AGENT);
 	toolbar->add_child(mode_selector);
+}
 
-	// Runtime poll timer (200 ms, continuous) — always-on, no toggle button needed.
-	runtime_poll_timer = memnew(Timer);
-	runtime_poll_timer->set_wait_time(0.2);
-	runtime_poll_timer->set_one_shot(false);
-	runtime_poll_timer->set_autostart(false); // Started in NOTIFICATION_READY.
-	runtime_poll_timer->connect("timeout", callable_mp(this, &AIAssistantPanel::_on_runtime_poll_timeout));
-	add_child(runtime_poll_timer);
+void AIAssistantPanel::_build_chat_area() {
+	chat_view = memnew(AIChatView);
+	chat_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	chat_view->connect("link_clicked", callable_mp(this, &AIAssistantPanel::_on_link_clicked));
+	add_child(chat_view);
 
-	// Error collect timer (2 s, one-shot — stops scene after first error).
-	runtime_collect_timer = memnew(Timer);
-	runtime_collect_timer->set_wait_time(2.0);
-	runtime_collect_timer->set_one_shot(true);
-	runtime_collect_timer->set_autostart(false);
-	runtime_collect_timer->connect("timeout", callable_mp(this, &AIAssistantPanel::_on_runtime_collect_timeout));
-	add_child(runtime_collect_timer);
-
-	// --- Chat Display ---
-	chat_display = memnew(RichTextLabel);
-	chat_display->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	chat_display->set_scroll_follow(true);
-	chat_display->set_selection_enabled(true);
-	chat_display->set_context_menu_enabled(true);
-	chat_display->set_use_bbcode(true);
-	chat_display->connect("meta_clicked", callable_mp(this, &AIAssistantPanel::_on_meta_clicked));
-	add_child(chat_display);
-
-	// --- Preset Buttons ---
-	preset_bar = memnew(HBoxContainer);
+	HBoxContainer *preset_bar = memnew(HBoxContainer);
 	add_child(preset_bar);
-
-	struct PresetInfo {
-		AILocalization::StringID label_id;
-		const char *prompt;
-	};
-	// Only keep high-frequency presets: Fix Errors and Performance.
-	PresetInfo presets[] = {
-		{ AILocalization::STR_PRESET_FIX_ERRORS, "Analyze the recent errors and warnings from both the editor console and the game debugger panel, then fix them" },
-		{ AILocalization::STR_PRESET_PERFORMANCE, "Analyze the current performance metrics and suggest optimizations" },
-	};
-
-	for (int i = 0; i < 2; i++) {
-		Button *btn = memnew(Button);
-		btn->set_text(AILocalization::get(presets[i].label_id));
-		btn->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		btn->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_preset_pressed).bind(String(presets[i].prompt)));
-		preset_bar->add_child(btn);
-		preset_buttons.push_back(btn);
+	for (const auto &preset : PRESETS) {
+		Button *button = memnew(Button);
+		button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
+		button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_preset_pressed).bind(String(preset.prompt_id)));
+		preset_bar->add_child(button);
+		preset_buttons.push_back(button);
 	}
 
-	// --- History View ---
 	history_scroll = memnew(ScrollContainer);
 	history_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	history_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
@@ -4007,1014 +660,112 @@ AIAssistantPanel::AIAssistantPanel() {
 	history_container = memnew(VBoxContainer);
 	history_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	history_scroll->add_child(history_container);
+}
 
-	// --- Input Area ---
+void AIAssistantPanel::_build_input_bar() {
 	input_bar = memnew(HBoxContainer);
 	add_child(input_bar);
 
-	// N4: File attach button — opens EditorFileDialog to pick a text/script file.
-	attach_button = memnew(Button);
+	Button *attach_button = _add_button(input_bar, &AIAssistantPanel::_on_attach_pressed);
 	attach_button->set_text("+");
-	attach_button->set_tooltip_text(TTR("Attach file (.md, .mermaid, .txt, .json, .yaml, .gd ...)"));
-	attach_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_attach_pressed));
-	input_bar->add_child(attach_button);
+	attach_button->set_tooltip_text(AI_L("Attach file (.md, .mermaid, .txt, .json, .yaml, .gd ...)", "附加文件（.md、.mermaid、.txt、.json、.yaml、.gd 等）"));
 
-	// @ Mention button — inserts @NodeName for currently selected scene node.
-	mention_button = memnew(Button);
+	Button *mention_button = _add_button(input_bar, &AIAssistantPanel::insert_mention_of_selected_node);
 	mention_button->set_text("@");
-	mention_button->set_tooltip_text(TTR("Insert mention of selected scene node (@NodeName)"));
-	mention_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_mention_button_pressed));
-	input_bar->add_child(mention_button);
+	mention_button->set_tooltip_text(AI_L("Insert mention of selected scene node (@NodeName)", "插入所选场景节点的提及（@节点名）"));
 
 	input_field = memnew(AIMentionTextEdit);
-	input_field->set_placeholder(TR(STR_INPUT_PLACEHOLDER_ENTER));
-	input_field->set_custom_minimum_size(Size2(0, 60));
+	input_field->set_custom_minimum_size(Size2(0, INPUT_MIN_HEIGHT * EDSCALE));
 	input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	// Do NOT set SIZE_EXPAND_FILL vertically — height is controlled manually.
+	// Height is driven by _update_input_height(), not by the container.
 	input_field->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
 	input_field->set_line_wrapping_mode(TextEdit::LineWrappingMode::LINE_WRAPPING_BOUNDARY);
 	input_field->connect("gui_input", callable_mp(this, &AIAssistantPanel::_on_input_gui_input));
-	input_field->connect("text_changed", callable_mp(this, &AIAssistantPanel::_on_input_text_changed));
+	input_field->connect("text_changed", callable_mp(this, &AIAssistantPanel::_update_input_height), CONNECT_DEFERRED);
 	input_bar->add_child(input_field);
 
-	// SyntaxHighlighter that hides PUA placeholder characters (rendered as chips).
-	mention_highlighter = Ref<AIMentionHighlighter>(memnew(AIMentionHighlighter));
+	// Hides the placeholder characters that stand for mention chips.
+	mention_highlighter.instantiate();
 	input_field->set_syntax_highlighter(mention_highlighter);
 
-	// Autocomplete overlay panel — a plain Control child of the editor root.
-	// Avoids OS-window focus stealing that PopupPanel causes.
-	// Added to EditorInterface::get_base_control() in NOTIFICATION_READY.
-	autocomplete_panel = memnew(Panel);
-	autocomplete_panel_id = autocomplete_panel->get_instance_id();
-	autocomplete_panel->set_mouse_filter(Control::MOUSE_FILTER_STOP);
-	autocomplete_panel->hide();
-	autocomplete_list = memnew(ItemList);
-	autocomplete_list->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
-	autocomplete_list->set_focus_mode(Control::FOCUS_NONE);
-	// Single-click on a list item commits the autocomplete.
-	autocomplete_list->connect("item_selected",
-			callable_mp(this, &AIAssistantPanel::_commit_mention_autocomplete));
-	autocomplete_panel->add_child(autocomplete_list);
+	autocomplete = memnew(AIMentionAutocomplete);
+	autocomplete->attach(input_field);
+	add_child(autocomplete);
 
-	send_button = memnew(Button);
-	send_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	send_button->set_text(TR(STR_BTN_SEND));
-	send_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_send_pressed));
-	input_bar->add_child(send_button);
-
-	stop_button = memnew(Button);
-	stop_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	stop_button->set_text(U"\u25A0 Stop");
+	send_button = _add_button(input_bar, &AIAssistantPanel::_on_send_pressed);
+	stop_button = _add_button(input_bar, &AIAssistantPanel::_on_stop_pressed);
+	stop_button->set_text(U"■ Stop");
 	stop_button->set_visible(false);
-	stop_button->connect("pressed", callable_mp(this, &AIAssistantPanel::_on_stop_pressed));
-	input_bar->add_child(stop_button);
+}
 
-	// --- HTTP Request Nodes ---
-	http_request = memnew(HTTPRequest);
-	http_request->set_use_threads(true);
-	http_request->set_timeout(120.0);
-	http_request->connect("request_completed", callable_mp(this, &AIAssistantPanel::_on_request_completed));
-	add_child(http_request);
-
-	// N8/N9: Asset generation HTTP request.
-	asset_http_request = memnew(HTTPRequest);
-	asset_http_request->set_use_threads(true);
-	asset_http_request->set_timeout(120.0);
-	asset_http_request->connect("request_completed", callable_mp(this, &AIAssistantPanel::_on_asset_request_completed));
-	add_child(asset_http_request);
-
-	// Web search HTTP request.
-	web_search.instantiate();
-	web_http_request = memnew(HTTPRequest);
-	web_http_request->set_use_threads(true);
-	web_http_request->set_timeout(30.0);
-	web_http_request->set_body_size_limit(2 * 1024 * 1024); // A page, not a download.
-	web_http_request->connect("request_completed", callable_mp(this, &AIAssistantPanel::_on_web_request_completed));
-	add_child(web_http_request);
-
-	// AI-summary background request (context compression).
-	summary_http_request = memnew(HTTPRequest);
-	summary_http_request->set_use_threads(true);
-	summary_http_request->set_timeout(60.0);
-	summary_http_request->connect("request_completed", callable_mp(this, &AIAssistantPanel::_on_summary_completed));
-	add_child(summary_http_request);
-
-	// --- Stream Poll Timer ---
-	stream_poll_timer = memnew(Timer);
-	stream_poll_timer->set_one_shot(false);
-	stream_poll_timer->set_wait_time(0.05);
-	stream_poll_timer->connect("timeout", callable_mp(this, &AIAssistantPanel::_on_stream_poll));
-	add_child(stream_poll_timer);
-
-	// --- N1: Deferred Error Check Timer ---
-	deferred_error_timer = memnew(Timer);
-	deferred_error_timer->set_one_shot(true);
-	deferred_error_timer->set_wait_time(0.5);
-	deferred_error_timer->connect("timeout", callable_mp(this, &AIAssistantPanel::_on_deferred_error_check));
-	add_child(deferred_error_timer);
-
-	// --- N6: Permission Confirmation Dialog ---
+void AIAssistantPanel::_build_dialogs() {
 	permission_dialog = memnew(ConfirmationDialog);
-	permission_dialog->set_title("AI Code Execution");
 	permission_dialog->connect("confirmed", callable_mp(this, &AIAssistantPanel::_on_permission_confirmed));
 	permission_dialog->connect("canceled", callable_mp(this, &AIAssistantPanel::_on_permission_cancelled));
 	add_child(permission_dialog);
 
-	// --- Details Popup Dialog ---
 	details_dialog = memnew(AcceptDialog);
-	details_dialog->set_title("AI Response Details");
-	details_dialog->set_ok_button_text("Close");
+	details_dialog->set_ok_button_text(AI_L("Close", "关闭"));
 	add_child(details_dialog);
 
-	details_rtl = memnew(RichTextLabel);
-	details_rtl->set_custom_minimum_size(Size2(650, 400));
-	details_rtl->set_selection_enabled(true);
-	details_rtl->set_use_bbcode(true);
-	details_rtl->set_scroll_follow(false);
-	details_dialog->add_child(details_rtl);
+	details_text = memnew(RichTextLabel);
+	details_text->set_custom_minimum_size(DETAILS_TEXT_MIN_SIZE * EDSCALE);
+	details_text->set_selection_enabled(true);
+	details_text->set_scroll_follow(false);
+	details_dialog->add_child(details_text);
 
-	// --- File Attachment Dialog ---
 	file_dialog = memnew(EditorFileDialog);
 	file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
-	file_dialog->set_title(TTR("Attach File to AI Assistant"));
-	// AI-friendly text / diagram / data / script formats.
-	file_dialog->add_filter("*.md,*.mmd,*.mermaid", TTR("Markdown / Diagram"));
-	file_dialog->add_filter("*.txt,*.json,*.yaml,*.yml,*.toml,*.csv", TTR("Text / Data"));
-	file_dialog->add_filter("*.gd,*.gdscript", TTR("GDScript"));
-	file_dialog->connect("file_selected",
-			callable_mp(this, &AIAssistantPanel::_on_file_attach_selected));
+	file_dialog->set_title(AI_L("Attach File to AI Assistant", "向 AI 助手附加文件"));
+	file_dialog->add_filter("*.md,*.mmd,*.mermaid", "Markdown / Diagram");
+	file_dialog->add_filter("*.txt,*.json,*.yaml,*.yml,*.toml,*.csv", "Text / Data");
+	file_dialog->add_filter("*.gd,*.gdscript", "GDScript");
+	file_dialog->connect("file_selected", callable_mp(this, &AIAssistantPanel::_on_file_attach_selected));
 	add_child(file_dialog);
 
-	// --- Settings Dialog ---
+	// The settings dialog registers the default values of every setting.
+	confirm_dialog = memnew(ConfirmationDialog);
+	confirm_dialog->set_title("Godot AI");
+	confirm_dialog->connect("confirmed", callable_mp(this, &AIAssistantPanel::_on_confirm_accepted));
+	add_child(confirm_dialog);
+
 	settings_dialog = memnew(AISettingsDialog);
 	add_child(settings_dialog);
-	settings_dialog->connect("confirmed", callable_mp(this, &AIAssistantPanel::_update_provider));
+	settings_dialog->connect("confirmed", callable_mp(this, &AIAssistantPanel::_on_settings_confirmed));
 	settings_dialog->connect("confirmed", callable_mp(this, &AIAssistantPanel::_refresh_ui_texts), CONNECT_DEFERRED);
 	settings_dialog->connect("language_changed", callable_mp(this, &AIAssistantPanel::_refresh_ui_texts), CONNECT_DEFERRED);
-
-	// --- Register default settings ---
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (es) {
-		if (!es->has_setting("ai_assistant/provider")) {
-			es->set_setting("ai_assistant/provider", "anthropic");
-		}
-		if (!es->has_setting("ai_assistant/api_key")) {
-			es->set_setting("ai_assistant/api_key", "");
-		}
-		if (!es->has_setting("ai_assistant/model")) {
-			es->set_setting("ai_assistant/model", "");
-		}
-		if (!es->has_setting("ai_assistant/api_endpoint")) {
-			es->set_setting("ai_assistant/api_endpoint", "");
-		}
-		if (!es->has_setting("ai_assistant/max_tokens")) {
-			es->set_setting("ai_assistant/max_tokens", 4096);
-		}
-		if (!es->has_setting("ai_assistant/temperature")) {
-			es->set_setting("ai_assistant/temperature", 0.7);
-		}
-		if (!es->has_setting("ai_assistant/send_on_enter")) {
-			es->set_setting("ai_assistant/send_on_enter", true);
-		}
-		if (!es->has_setting("ai_assistant/autorun")) {
-			es->set_setting("ai_assistant/autorun", true);
-		}
-		if (!es->has_setting("ai_assistant/restore_last_chat")) {
-			es->set_setting("ai_assistant/restore_last_chat", true);
-		}
-		if (!es->has_setting("ai_assistant/api_key_glm")) {
-			es->set_setting("ai_assistant/api_key_glm", "");
-		}
-		if (!es->has_setting("ai_assistant/api_key_deepseek")) {
-			es->set_setting("ai_assistant/api_key_deepseek", "");
-		}
-	}
 }
 
-// --- Web Search ---
-
-// URLs in [FETCH_URL:] come from model output, which fetched pages and attached
-// files can steer. Only plain public web addresses are allowed: no loopback or
-// private-network hosts (the editor would act as a proxy into the local network)
-// and no oversized URLs (a long query string is the easy way to smuggle data out).
-static bool _is_public_web_url(const String &p_url, String &r_reason) {
-	const int MAX_URL_LENGTH = 500;
-	if (p_url.length() > MAX_URL_LENGTH) {
-		r_reason = "URL is too long";
-		return false;
-	}
-	String rest;
-	if (p_url.begins_with("https://")) {
-		rest = p_url.substr(8);
-	} else if (p_url.begins_with("http://")) {
-		rest = p_url.substr(7);
-	} else {
-		r_reason = "only http(s) URLs are allowed";
-		return false;
-	}
-	String host = rest.get_slice("/", 0).get_slice("?", 0).get_slice("#", 0).to_lower();
-	if (host.find("@") >= 0) {
-		host = host.get_slice("@", host.get_slice_count("@") - 1);
-	}
-	if (host.begins_with("[")) {
-		r_reason = "IPv6 literal hosts are not allowed";
-		return false;
-	}
-	host = host.get_slice(":", 0);
-
-	bool is_private = host.is_empty() || host.find(".") < 0 || host == "localhost" ||
-			host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal") ||
-			host.begins_with("127.") || host.begins_with("10.") || host.begins_with("0.") ||
-			host.begins_with("192.168.") || host.begins_with("169.254.");
-	if (!is_private && host.begins_with("172.")) {
-		const int second = host.get_slice(".", 1).to_int();
-		is_private = second >= 16 && second <= 31;
-	}
-	if (is_private) {
-		r_reason = "local and private-network addresses are not allowed";
-		return false;
-	}
-	return true;
+void AIAssistantPanel::_connect_controller() {
+	// What the controller reports goes straight to the transcript...
+	controller->connect("notice", callable_mp(chat_view, &AIChatView::append_notice));
+	controller->connect("request_started", callable_mp(chat_view, &AIChatView::begin_stream));
+	controller->connect("stream_delta", callable_mp(chat_view, &AIChatView::add_stream_delta));
+	controller->connect("request_finished", callable_mp(chat_view, &AIChatView::end_stream));
+	controller->connect("response_received", callable_mp(chat_view, &AIChatView::show_response));
+	controller->connect("execution_finished", callable_mp(chat_view, &AIChatView::show_execution));
+	controller->connect("plan_ready", callable_mp(chat_view, &AIChatView::show_plan));
+	// ...except what needs the rest of the dock.
+	controller->connect("state_changed", callable_mp(this, &AIAssistantPanel::_on_state_changed));
+	controller->connect("permission_requested", callable_mp(this, &AIAssistantPanel::_on_permission_requested));
+	controller->connect("session_changed", callable_mp(this, &AIAssistantPanel::_on_session_changed));
 }
 
-// One web request per response, and a few per user message: each result is fed
-// back to the model, whose reply may ask for another, so without a cap a page
-// can keep the loop going indefinitely.
-bool AIAssistantPanel::_begin_web_request() {
-	const int MAX_WEB_REQUESTS_PER_TURN = 3;
-	if (web_request_active) {
-		AI_WARN("Web request skipped: another one is still in progress.");
-		return false;
-	}
-	if (web_requests_this_turn >= MAX_WEB_REQUESTS_PER_TURN) {
-		_append_message("System", AI_L("Web request skipped: limit of ", "已跳过网络请求：已达每条消息 ") + itos(MAX_WEB_REQUESTS_PER_TURN) + AI_L(" per message reached.", " 次的上限。"), Color(1.0, 0.7, 0.4));
-		return false;
-	}
-	web_requests_this_turn++;
-	return true;
-}
-
-void AIAssistantPanel::_handle_web_search(const String &p_query, const String &p_user_message) {
-	if (!web_search.is_valid() || !web_http_request) return;
-	if (!_begin_web_request()) return;
-
-	pending_web_action = "search";
-	pending_web_query = p_query;
-	pending_web_user_message = p_user_message;
-
-	String url = web_search->build_search_url(p_query);
-	AI_LOG("Web search: " + p_query);
-	AI_LOG("  URL: " + url);
-
-	_append_message("System", String::utf8("🔍 Searching: ") + p_query + "...", Color(0.6, 0.8, 1.0));
-
-	Vector<String> headers;
-	headers.push_back("User-Agent: GodotAI/1.0");
-	web_request_active = web_http_request->request(url, headers, HTTPClient::METHOD_GET) == OK;
-}
-
-void AIAssistantPanel::_handle_fetch_url(const String &p_url, const String &p_user_message) {
-	if (!web_search.is_valid() || !web_http_request) return;
-
-	String url = web_search->sanitize_url(p_url);
-	String reject_reason;
-	if (!_is_public_web_url(url, reject_reason)) {
-		AI_WARN("FETCH_URL rejected (" + reject_reason + "): " + url.left(120));
-		_append_message("System", AI_L("Fetch skipped: ", "已跳过抓取：") + reject_reason + ".", Color(1.0, 0.7, 0.4));
-		return;
-	}
-	if (!_begin_web_request()) return;
-
-	pending_web_action = "fetch";
-	pending_web_query = p_url;
-	pending_web_user_message = p_user_message;
-
-	AI_LOG("Fetching URL: " + url);
-
-	_append_message("System", String::utf8("🌐 Fetching: ") + url + "...", Color(0.6, 0.8, 1.0));
-
-	Vector<String> headers;
-	headers.push_back("User-Agent: GodotAI/1.0");
-	headers.push_back("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-	web_request_active = web_http_request->request(url, headers, HTTPClient::METHOD_GET) == OK;
-}
-
-// --- Cross-session learning ---
-
-void AIAssistantPanel::_handle_write_memory(const String &p_content) {
-	// Only write when a project is open (res:// is valid).
-	if (!ProjectSettings::get_singleton()->is_project_loaded()) {
-		return;
-	}
-
-	const String path = "res://godot_ai.md";
-	const String section_header = "## AI-Discovered Quirks";
-
-	// This file is loaded into every future system prompt, so what goes into it
-	// is kept small and inert: it follows the file-write permission, is a single
-	// short line (no headings or blocks of injected instructions), and is always
-	// shown to the user.
-	if (permission_manager.is_valid() &&
-			permission_manager->get_permission(AIPermissionManager::PERM_FILE_WRITE) == AIPermissionManager::LEVEL_DENY) {
-		AI_LOG("WRITE_MEMORY skipped: file writes are denied by permission settings.");
-		return;
-	}
-	const int MAX_MEMORY_CHARS = 300;
-	String note = p_content.replace("\r", " ").replace("\n", " ").strip_edges();
-	while (note.begins_with("#")) {
-		note = note.substr(1).strip_edges();
-	}
-	if (note.is_empty()) {
-		return;
-	}
-	if (note.length() > MAX_MEMORY_CHARS) {
-		note = note.left(MAX_MEMORY_CHARS) + "...";
-	}
-
-	// Read existing file (may not exist yet). If it exists but cannot be read,
-	// stop: writing now would replace its contents with just this one entry.
-	String existing_text;
-	if (FileAccess::exists(path)) {
-		Ref<FileAccess> rf = FileAccess::open(path, FileAccess::READ);
-		if (!rf.is_valid()) {
-			AI_WARN("WRITE_MEMORY: " + path + " exists but could not be read; not overwriting it.");
-			return;
-		}
-		existing_text = rf->get_as_text();
-	}
-
-	// Build timestamped entry.
-	Dictionary dt = Time::get_singleton()->get_datetime_dict_from_system();
-	String timestamp = vformat("%04d-%02d-%02d",
-		(int)dt["year"], (int)dt["month"], (int)dt["day"]);
-	String new_entry = "- [" + timestamp + "] " + note + "\n";
-
-	String new_text;
-	int section_pos = existing_text.find(section_header);
-	if (section_pos >= 0) {
-		// Insert after the section header line.
-		int line_end = existing_text.find("\n", section_pos);
-		if (line_end >= 0) {
-			new_text = existing_text.substr(0, line_end + 1) + new_entry +
-			           existing_text.substr(line_end + 1);
-		} else {
-			new_text = existing_text + "\n" + new_entry;
-		}
-	} else {
-		// Section doesn't exist — append it.
-		if (!existing_text.is_empty() && !existing_text.ends_with("\n")) {
-			existing_text += "\n";
-		}
-		new_text = existing_text + "\n" + section_header + "\n" +
-		           "_Quirks recorded automatically by Godot AI during your sessions._\n\n" +
-		           new_entry;
-	}
-
-	Ref<FileAccess> wf = FileAccess::open(path, FileAccess::WRITE);
-	if (wf.is_valid()) {
-		wf->store_string(new_text);
-		AI_LOG("WRITE_MEMORY: Appended quirk to " + path);
-		_append_message("System", AI_L("Saved to godot_ai.md: ", "已写入 godot_ai.md：") + note, Color(0.6, 0.8, 1.0));
-	} else {
-		AI_WARN("WRITE_MEMORY: Could not write to " + path);
-	}
-}
-
-void AIAssistantPanel::_on_web_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	web_request_active = false;
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
-		AI_ERR("Web request failed: result=" + itos(p_result) + " code=" + itos(p_response_code));
-		_append_message("System", AI_L("Web request failed (HTTP ", "网络请求失败 (HTTP ") + itos(p_response_code) + AI_L("). The AI will respond without web data.", ")，AI 将在没有网页数据的情况下回答。"), Color(1.0, 0.7, 0.4));
-		return;
-	}
-
-	String body_text = String::utf8((const char *)p_body.ptr(), p_body.size());
-
-	String web_context;
-	if (pending_web_action == "search") {
-		web_context = web_search->parse_search_results(body_text);
-		AI_LOG("Search results parsed: " + itos(web_context.length()) + " chars");
-	} else if (pending_web_action == "fetch") {
-		// Check if it's HTML or plain text.
-		bool is_html = body_text.strip_edges().begins_with("<") || body_text.find("<html") >= 0;
-		if (is_html) {
-			web_context = web_search->extract_text_from_html(body_text);
-		} else {
-			web_context = body_text;
-			if (web_context.length() > 8000) {
-				web_context = web_context.left(8000) + "\n\n[Content truncated at 8000 characters]";
-			}
-		}
-		AI_LOG("URL content extracted: " + itos(web_context.length()) + " chars");
-	}
-
-	if (web_context.is_empty()) {
-		_append_message("System", AI_L("No useful content found.", "未找到有用内容。"), Color(1.0, 0.7, 0.4));
-		return;
-	}
-
-	// Feed web results back to AI as a follow-up message.
-	String follow_up = "Here are the web results for your reference:\n\n";
-	follow_up += "--- WEB " + pending_web_action.to_upper() + " RESULTS ---\n";
-	if (pending_web_action == "search") {
-		follow_up += "Query: " + pending_web_query + "\n\n";
-	} else {
-		follow_up += "URL: " + pending_web_query + "\n\n";
-	}
-	follow_up += web_context;
-	follow_up += "\n--- END WEB RESULTS ---\n\n";
-	follow_up += "Based on these web results, please provide a comprehensive answer to the user's question. Summarize the key information concisely.";
-
-	_append_message("System", String::utf8("✅ Web results received. Analyzing..."), Color(0.6, 0.8, 1.0));
-
-	// Send to AI with web context.
-	_send_to_api(follow_up);
-}
-
-// --- Context Compression ---
-
-int AIAssistantPanel::_estimate_tokens(const String &p_text) const {
-	// CJK characters (Chinese / Japanese / Korean) each tokenise as roughly 1 token.
-	// All other characters average ~4 per token (ASCII, punctuation, whitespace).
-	// This gives far more accurate estimates than a flat "÷3" average, especially
-	// for mixed Chinese–English conversations.
-	int cjk_chars = 0;
-	int other_chars = 0;
-	for (int i = 0; i < p_text.length(); i++) {
-		const char32_t c = p_text[i];
-		if ((c >= 0x4E00 && c <= 0x9FFF)   ||  // CJK Unified Ideographs
-		    (c >= 0x3400 && c <= 0x4DBF)   ||  // CJK Extension A
-		    (c >= 0x20000 && c <= 0x2A6DF) ||  // CJK Extension B
-		    (c >= 0x3040 && c <= 0x309F)   ||  // Hiragana
-		    (c >= 0x30A0 && c <= 0x30FF)   ||  // Katakana
-		    (c >= 0xAC00 && c <= 0xD7AF)) {    // Hangul syllables
-			cjk_chars++;
-		} else {
-			other_chars++;
-		}
-	}
-	// CJK: 1 token/char.  Other: 1 token per 4 chars.
-	return MAX(1, cjk_chars + other_chars / 4);
-}
-
-String AIAssistantPanel::_build_message_summary(const Dictionary &p_msg) const {
-	const String role    = p_msg["role"];
-	const String content = p_msg["content"];
-
-	if (role == "user") {
-		// Strip large attachment/context blocks — they dwarf the actual request.
-		String trimmed = content;
-		static const char *noise_markers[] = {
-			"--- ATTACHED CONTEXT ---", "--- FILE:", "--- END FILE",
-			"[CONTEXT SUMMARY", "[Node:", nullptr
-		};
-		for (int m = 0; noise_markers[m]; m++) {
-			int pos = trimmed.find(noise_markers[m]);
-			if (pos >= 0) {
-				trimmed = trimmed.left(pos).strip_edges();
-				break;
-			}
-		}
-		// Keep the first 300 characters of the actual request.
-		trimmed = trimmed.strip_edges();
-		if (trimmed.length() > 300) {
-			trimmed = trimmed.left(300) + "...";
-		}
-		return "User: " + trimmed;
-
-	} else if (role == "assistant") {
-		String summary;
-
-		if (content.find("```") >= 0) {
-			// --- Code response: extract rich metadata ---
-			// 1. Collect all func/class definitions.
-			Vector<String> symbols;
-			{
-				static const char *kw[] = { "func ", "class ", "var ", nullptr };
-				for (int k = 0; kw[k]; k++) {
-					int pos = 0;
-					while (true) {
-						pos = content.find(kw[k], pos);
-						if (pos < 0) break;
-						int end = content.find("\n", pos);
-						if (end < 0) end = MIN(pos + 60, content.length());
-						String line = content.substr(pos, end - pos).strip_edges();
-						if (line.length() > 60) line = line.left(60);
-						symbols.push_back(line);
-						pos = end + 1;
-						if (symbols.size() >= 5) break;  // cap at 5 symbols
-					}
-					if (symbols.size() >= 5) break;
-				}
-			}
-			// 2. Find the first code-block language tag (e.g. ```gdscript).
-			String lang_tag;
-			{
-				int tick = content.find("```");
-				if (tick >= 0) {
-					int nl = content.find("\n", tick);
-					if (nl > tick + 3) {
-						lang_tag = content.substr(tick + 3, nl - tick - 3).strip_edges();
-					}
-				}
-			}
-			// 3. Collect mentioned file paths (res://).
-			Vector<String> files;
-			{
-				int pos = 0;
-				while (true) {
-					pos = content.find("res://", pos);
-					if (pos < 0) break;
-					int end = pos + 6;
-					while (end < content.length() && content[end] != '"' &&
-					       content[end] != '\'' && content[end] != '\n' &&
-					       content[end] != ' ') {
-						end++;
-					}
-					String path = content.substr(pos, end - pos);
-					if (!files.has(path)) files.push_back(path);
-					pos = end;
-					if (files.size() >= 3) break;
-				}
-			}
-			// Assemble summary.
-			summary = "AI: [Code";
-			if (!lang_tag.is_empty()) {
-				summary += "/" + lang_tag;
-			}
-			summary += "]";
-			if (!files.is_empty()) {
-				summary += " files=" + String(",").join(files);
-			}
-			if (!symbols.is_empty()) {
-				summary += " defines=[" + String(", ").join(symbols) + "]";
-			}
-		} else {
-			// --- Text-only response: keep 300 chars ---
-			String trimmed = content.strip_edges();
-			if (trimmed.length() > 300) {
-				trimmed = trimmed.left(300) + "...";
-			}
-			summary = "AI: " + trimmed;
-		}
-		return summary;
-	}
-	return "";
-}
-
-void AIAssistantPanel::_compress_context_if_needed() {
-	// Estimate total tokens in conversation history.
-	int total_tokens = _estimate_tokens(context_summary);
-	for (int i = 0; i < conversation_history.size(); i++) {
-		Dictionary msg = conversation_history[i];
-		total_tokens += _estimate_tokens(String(msg["content"]));
-	}
-
-	// Calculate threshold based on model's context length.
-	// The window left for history is what remains after the max output tokens and
-	// the system prompt (base prompt + injected context, measured on the last send).
-	int context_length = 8192;
-	int output_tokens  = 4096;
-	if (current_provider.is_valid()) {
-		context_length = current_provider->get_model_context_length();
-		output_tokens  = current_provider->get_max_tokens();
-	}
-	// User-configurable threshold fraction (default 70%).
-	// Clamp to reasonable range: minimum 4000, maximum 500000.
-	const int TOKEN_THRESHOLD = CLAMP(
-		(int)((context_length - output_tokens - last_system_prompt_tokens) * compression_threshold_pct),
-		4000, 500000);
-
-	// User-configurable: how many recent messages to always preserve. Rounded up to
-	// an even count so the retained history starts on a user turn, not mid-pair.
-	const int KEEP_RECENT = MAX(2, compression_keep_recent + (compression_keep_recent & 1));
-
-	if (total_tokens <= TOKEN_THRESHOLD || conversation_history.size() <= KEEP_RECENT) {
-		return;
-	}
-
-	const int compress_count = conversation_history.size() - KEEP_RECENT;
-	AI_LOG(vformat("Context compression triggered: ~%d tokens (threshold %d), %d messages -> keeping last %d.",
-		total_tokens, TOKEN_THRESHOLD, conversation_history.size(), KEEP_RECENT));
-
-	// --- Collect the messages that will be compressed ---
-	Array to_compress;
-	for (int i = 0; i < compress_count; i++) {
-		to_compress.push_back(conversation_history[i]);
-	}
-
-	// ── Heuristic summary (always built; used immediately or as fallback) ───
-	String heuristic_block = "--- Compressed messages ---\n";
-	for (int i = 0; i < compress_count; i++) {
-		Dictionary msg = conversation_history[i];
-		String line = _build_message_summary(msg);
-		if (!line.is_empty()) {
-			heuristic_block += line + "\n";
-		}
-	}
-	String new_summary;
-	if (!context_summary.is_empty()) {
-		new_summary = context_summary + "\n";
-	}
-	new_summary += heuristic_block;
-
-	if (compression_use_ai_summary && !summary_request_active) {
-		// ── AI-summary path ──────────────────────────────────────────────────
-		// Fire a background summary request; the heuristic block stays in place
-		// until the AI response arrives and replaces exactly that block.
-		_request_ai_summary(to_compress, heuristic_block);
-	}
-
-	// Remove compressed messages from the working copy.
-	for (int i = 0; i < compress_count; i++) {
-		conversation_history.remove_at(0);
-	}
-	context_summary = new_summary;
-
-	// Post-compaction file restoration — re-inject currently open scripts so the
-	// AI doesn't immediately "forget" the files it was working on.
-	{
-		String scripts_snapshot = context_collector->get_open_scripts_snapshot(3, 4000);
-		if (!scripts_snapshot.is_empty()) {
-			context_summary += scripts_snapshot;
-			AI_LOG("Post-compaction: injected open scripts snapshot into context summary.");
-		}
-	}
-
-	int new_tokens = _estimate_tokens(context_summary);
-	for (int i = 0; i < conversation_history.size(); i++) {
-		new_tokens += _estimate_tokens(String(conversation_history[i].operator Dictionary()["content"]));
-	}
-	AI_LOG(vformat("Context compressed: %d messages -> summary (%d chars). New total: ~%d tokens, %d messages remaining.",
-		compress_count, context_summary.length(), new_tokens, conversation_history.size()));
-}
-
-// ── AI Summary helpers ──────────────────────────────────────────────────────
-
-void AIAssistantPanel::_load_compression_settings() {
-	EditorSettings *es = EditorSettings::get_singleton();
-	if (!es) {
-		return;
-	}
-	if (es->has_setting("ai_assistant/compression_keep_recent")) {
-		compression_keep_recent = (int)es->get_setting("ai_assistant/compression_keep_recent");
-	}
-	if (es->has_setting("ai_assistant/compression_threshold_pct")) {
-		compression_threshold_pct = (float)es->get_setting("ai_assistant/compression_threshold_pct");
-	}
-	if (es->has_setting("ai_assistant/compression_use_ai_summary")) {
-		compression_use_ai_summary = (bool)es->get_setting("ai_assistant/compression_use_ai_summary");
-	}
-	AI_LOG(vformat("Compression settings: keep_recent=%d, threshold=%.0f%%, ai_summary=%s",
-		compression_keep_recent,
-		compression_threshold_pct * 100.0f,
-		compression_use_ai_summary ? "on" : "off"));
-}
-
-void AIAssistantPanel::_cancel_pending_summary() {
-	if (summary_request_active && summary_http_request) {
-		summary_http_request->cancel_request();
-		AI_LOG("Pending AI summary request cancelled.");
-	}
-	summary_request_active = false;
-	summary_placeholder_block = "";
-}
-
-void AIAssistantPanel::_request_ai_summary(const Array &p_messages, const String &p_placeholder_block) {
-	if (!current_provider.is_valid() || !summary_http_request) {
-		return;
-	}
-	if (summary_request_active) {
-		return; // A summary is already in-flight.
-	}
-
-	// Build conversation text for the summarisation prompt.
-	String history_text;
-	for (int i = 0; i < p_messages.size(); i++) {
-		Dictionary msg = p_messages[i];
-		const String role    = String(msg["role"]) == "user" ? "User" : "AI";
-		// Cap each message at 800 chars so the summary prompt stays reasonable.
-		String content = String(msg["content"]).left(800);
-		if (String(msg["content"]).length() > 800) {
-			content += "...";
-		}
-		history_text += role + ": " + content + "\n---\n";
-	}
-
-	const String system_prompt =
-		"You are a conversation-history compressor for an AI coding assistant. "
-		"Your ONLY job: produce a dense, structured summary that preserves everything "
-		"a coding AI needs to continue the work — decisions made, files created/modified "
-		"(with res:// paths), function/class names defined, bugs fixed, approaches tried "
-		"and rejected, and the overall goal. "
-		"Respond in the SAME language the user used. "
-		"Output ONLY the summary, no preamble.";
-
-	const String user_prompt =
-		"Summarize the following conversation history:\n\n" + history_text;
-
-	// Build a non-streaming request. Temporarily cap max_tokens for the summary
-	// so we don't pay for a long reply; 1024 tokens is plenty for a summary.
-	String body = current_provider->build_request_body(system_prompt, Array(), user_prompt);
-
-	// Patch max_tokens / max_completion_tokens in the JSON to 1024.
-	{
-		Ref<JSON> j;
-		j.instantiate();
-		if (j->parse(body) == OK) {
-			Dictionary d = j->get_data();
-			if (d.has("max_tokens"))            d["max_tokens"]            = 1024;
-			if (d.has("max_completion_tokens")) d["max_completion_tokens"] = 1024;
-			if (d.has("generationConfig")) {
-				Dictionary gc = d["generationConfig"];
-				gc["maxOutputTokens"] = 1024;
-				d["generationConfig"] = gc;
-			}
-			body = JSON::stringify(d);
-		}
-	}
-
-	Vector<String> headers = current_provider->get_headers();
-	// get_api_endpoint() is only the user's override and is empty by default, so
-	// resolve the URL through the provider like the streaming path does. Gemini
-	// selects streaming by URL, the others by the "stream" body flag.
-	String url;
-	GeminiProvider *gemini = Object::cast_to<GeminiProvider>(current_provider.ptr());
-	if (gemini) {
-		url = gemini->get_request_url();
-	} else {
-		url = current_provider->get_stream_url();
-	}
-
-	Error err = summary_http_request->request(url, headers, HTTPClient::METHOD_POST, body);
-	if (err == OK) {
-		summary_request_active    = true;
-		summary_placeholder_block = p_placeholder_block;
-		AI_LOG("AI summary request fired for " + itos(p_messages.size()) + " messages.");
-	} else {
-		AI_WARN("Failed to start AI summary request — heuristic summary will be kept.");
-	}
-}
-
-void AIAssistantPanel::_on_summary_completed(int p_result, int p_response_code,
-                                              const PackedStringArray & /*p_headers*/,
-                                              const PackedByteArray   &p_body) {
-	const String placeholder = summary_placeholder_block;
-	summary_request_active    = false;
-	summary_placeholder_block = "";
-
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
-		AI_WARN(vformat("AI summary request failed (result=%d, code=%d) — heuristic summary kept.",
-			p_result, p_response_code));
-		return;
-	}
-	if (!current_provider.is_valid()) {
-		return;
-	}
-
-	const String body_str = String::utf8((const char *)p_body.ptr(), p_body.size());
-	const String ai_text  = current_provider->parse_response(body_str);
-	// parse_response() reports failures as "Error: ..." / "API Error: ..." strings.
-	if (ai_text.is_empty() || ai_text.begins_with("Error: ") || ai_text.begins_with("API Error: ")) {
-		AI_WARN("AI summary response was empty or an error — heuristic summary kept.");
-		return;
-	}
-
-	// Swap exactly the heuristic block this request was fired for. If it is no
-	// longer in the summary (the block was rewritten since), keep what is there
-	// rather than guessing where the AI text belongs.
-	const int block_pos = placeholder.is_empty() ? -1 : context_summary.find(placeholder);
-	if (block_pos < 0) {
-		AI_WARN("AI summary arrived but its placeholder block is gone — discarded.");
-		return;
-	}
-	context_summary = context_summary.left(block_pos) +
-			"--- AI Summary ---\n" + ai_text + "\n" +
-			context_summary.substr(block_pos + placeholder.length());
-
-	AI_LOG("AI summary received and applied (" + itos(ai_text.length()) + " chars).");
-}
-
-// ── Reactive compression ────────────────────────────────────────────────────
-
-// Supported error formats:
-//   Anthropic: "prompt is too long: 195432 tokens > 180000 maximum"
-//   OpenAI:    "This model's maximum context length is 128000 tokens. However,
-//               your messages resulted in 130500 tokens."
-//
-// Returns true if a retry was launched (caller must return immediately).
-bool AIAssistantPanel::_try_reactive_compress(const String &p_error_msg) {
-	// Guard: never retry a retry (prevents infinite loops).
-	if (reactive_retry_pending) {
-		reactive_retry_pending = false;
-		return false;
-	}
-
-	// We need at least the last user message in history to retry.
-	if (conversation_history.is_empty()) {
-		return false;
-	}
-
-	// ── Parse token counts ───────────────────────────────────────────────────
-	int actual_tokens = -1;
-	int limit_tokens  = -1;
-
-	// Anthropic: "Y tokens > X maximum"
-	{
-		// Look for pattern like "195432 tokens > 180000"
-		int gt_pos = p_error_msg.find(" tokens > ");
-		if (gt_pos >= 0) {
-			// actual is the number before " tokens >"
-			int num_start = gt_pos;
-			while (num_start > 0 && is_digit(p_error_msg[num_start - 1])) {
-				num_start--;
-			}
-			String actual_str = p_error_msg.substr(num_start, gt_pos - num_start);
-			// limit is the number after "> "
-			int limit_start = gt_pos + 10; // skip " tokens > "
-			int limit_end = limit_start;
-			while (limit_end < p_error_msg.length() && is_digit(p_error_msg[limit_end])) {
-				limit_end++;
-			}
-			String limit_str = p_error_msg.substr(limit_start, limit_end - limit_start);
-			if (actual_str.is_valid_int() && limit_str.is_valid_int()) {
-				actual_tokens = actual_str.to_int();
-				limit_tokens  = limit_str.to_int();
-			}
-		}
-	}
-
-	// OpenAI: "maximum context length is X tokens. ...resulted in Y tokens"
-	if (actual_tokens < 0) {
-		int max_pos = p_error_msg.find("maximum context length is ");
-		int res_pos = p_error_msg.find("resulted in ");
-		if (max_pos >= 0 && res_pos >= 0) {
-			int max_num_start = max_pos + 26;
-			int max_num_end = max_num_start;
-			while (max_num_end < p_error_msg.length() && is_digit(p_error_msg[max_num_end])) {
-				max_num_end++;
-			}
-			int res_num_start = res_pos + 12;
-			int res_num_end = res_num_start;
-			while (res_num_end < p_error_msg.length() && is_digit(p_error_msg[res_num_end])) {
-				res_num_end++;
-			}
-			String max_str = p_error_msg.substr(max_num_start, max_num_end - max_num_start);
-			String res_str = p_error_msg.substr(res_num_start, res_num_end - res_num_start);
-			if (max_str.is_valid_int() && res_str.is_valid_int()) {
-				limit_tokens  = max_str.to_int();
-				actual_tokens = res_str.to_int();
-			}
-		}
-	}
-
-	// Fallback: if error mentions "context" or "too long" but no numbers, treat
-	// as a generic overflow and try dropping half the history.
-	bool generic_overflow = (actual_tokens < 0) &&
-		(p_error_msg.find("context_length_exceeded") >= 0 ||
-		 p_error_msg.find("too long") >= 0 ||
-		 p_error_msg.find("maximum context") >= 0);
-
-	if (actual_tokens < 0 && !generic_overflow) {
-		return false; // Not a context-length error.
-	}
-
-	int gap_tokens = (actual_tokens > 0 && limit_tokens > 0)
-		? (actual_tokens - limit_tokens + 500) // +500 safety margin
-		: _estimate_tokens(context_summary);   // generic fallback
-
-	if (gap_tokens <= 0) {
-		return false;
-	}
-
-	// ── Recover the current user message ────────────────────────────────────
-	// It was appended to conversation_history just before the streaming call.
-	Dictionary last_user_msg = conversation_history[conversation_history.size() - 1];
-	conversation_history.resize(conversation_history.size() - 1);
-
-	// ── Drop oldest message groups until the gap is covered ─────────────────
-	int freed = 0;
-	int dropped_count = 0;
-	while (!conversation_history.is_empty() && freed < gap_tokens) {
-		Dictionary msg = conversation_history[0];
-		int msg_tokens = _estimate_tokens(String(msg["content"]));
-		freed += msg_tokens;
-		String summary_line = _build_message_summary(msg);
-		if (!context_summary.is_empty()) {
-			context_summary += "\n";
-		}
-		context_summary += "[reactive-compacted] " + summary_line;
-		conversation_history.remove_at(0);
-		dropped_count++;
-	}
-
-	if (freed == 0) {
-		// Nothing to drop — restore and give up.
-		conversation_history.push_back(last_user_msg);
-		return false;
-	}
-
-	AI_LOG(vformat("Reactive compress: dropped %d messages (~%d tokens, gap was %d). Retrying...",
-		dropped_count, freed, gap_tokens));
-
-	String notice = vformat(
-		U"⚠ Context too long — dropped %d messages (~%d tokens) and retrying automatically.",
-		dropped_count, freed);
-	_append_message("System", notice, Color(1.0f, 0.75f, 0.2f));
-
-	// ── Retry ────────────────────────────────────────────────────────────────
-	reactive_retry_pending = true;
-	// Restore UI so _send_to_api can re-arm it cleanly.
-	is_waiting_response = false;
-	send_button->set_visible(true);
-	stop_button->set_visible(false);
-
-	// _send_to_api() appends the message again, so take the failed copy out of
-	// the full history too (it was already popped from the working copy above).
-	if (!full_conversation_history.is_empty()) {
-		const Dictionary last_full = full_conversation_history[full_conversation_history.size() - 1];
-		if (String(last_full.get("role", "")) == "user") {
-			full_conversation_history.resize(full_conversation_history.size() - 1);
-		}
-	}
-	String user_content = String(last_user_msg["content"]);
-	_send_to_api(user_content);
-	return true;
-}
-
-String AIAssistantPanel::_temperature_key() const {
-	if (!current_provider.is_valid()) {
-		return String();
-	}
-	const String model = current_provider->get_model().is_empty() ? current_provider->get_default_model() : current_provider->get_model();
-	return current_provider->get_provider_name() + "/" + model;
-}
-
-void AIAssistantPanel::_retry_last_user_message() {
-	if (conversation_history.is_empty()) {
-		return;
-	}
-	const Dictionary last_msg = conversation_history[conversation_history.size() - 1];
-	if (String(last_msg.get("role", "")) != "user") {
-		return;
-	}
-	conversation_history.resize(conversation_history.size() - 1);
-	if (!full_conversation_history.is_empty()) {
-		const Dictionary last_full = full_conversation_history[full_conversation_history.size() - 1];
-		if (String(last_full.get("role", "")) == "user") {
-			full_conversation_history.resize(full_conversation_history.size() - 1);
-		}
-	}
-	is_waiting_response = false;
-	send_button->set_visible(true);
-	stop_button->set_visible(false);
-	_send_to_api(String(last_msg.get("content", "")));
-}
-
-bool AIAssistantPanel::_try_retry_without_temperature(const String &p_error_msg) {
-	if (!current_provider.is_valid() || !current_provider->is_sending_temperature()) {
-		return false; // Already off: the error is about something else.
-	}
-	const String lower = p_error_msg.to_lower();
-	if (lower.find("temperature") < 0 || lower.find("http 400") < 0) {
-		return false;
-	}
-	models_without_temperature.insert(_temperature_key());
-	current_provider->set_send_temperature(false);
-	AI_LOG("Model rejected the temperature parameter; retrying without it: " + _temperature_key());
-	_append_message("System",
-			AI_L("This model does not accept a custom temperature; retrying with its default.", "该模型不接受自定义温度，已改用默认值重试。"),
-			Color(1.0f, 0.75f, 0.2f));
-	_retry_last_user_message();
-	return true;
-}
-
-AIAssistantPanel::~AIAssistantPanel() {
-	if (stream_thread.is_started()) {
-		// Ask the thread to stop first; otherwise closing the editor waits for
-		// the whole response to finish generating.
-		stream_mutex.lock();
-		stream_stop_requested = true;
-		stream_mutex.unlock();
-		stream_thread.wait_to_finish();
-	}
-	// The autocomplete overlay is parented to the editor root. If that root is
-	// already gone it took the overlay with it, so look it up by id.
-	if (Node *overlay = Object::cast_to<Node>(ObjectDB::get_instance(autocomplete_panel_id))) {
-		if (!overlay->get_parent()) {
-			memdelete(overlay); // Never attached — still ours.
-		} else if (overlay->is_inside_tree()) {
-			overlay->queue_free();
-		}
-		// Otherwise its parent is being torn down and will free it.
-	}
-	autocomplete_panel = nullptr;
-	autocomplete_list = nullptr;
-	if (!conversation_history.is_empty()) {
-		_save_current_chat();
-	}
-	// Must remove error handler before panel is destroyed to avoid dangling callback.
-	_remove_runtime_error_handler();
+AIAssistantPanel::AIAssistantPanel() {
+	set_name("Godot AI");
+
+	controller = memnew(AIAgentController);
+	add_child(controller);
+	runtime_watch = memnew(AIRuntimeWatch);
+	runtime_watch->set_controller(controller);
+	add_child(runtime_watch);
+
+	_build_toolbar();
+	_build_chat_area();
+	_build_input_bar();
+	_build_dialogs();
+	_connect_controller();
+	_refresh_ui_texts();
 }
 
 #endif // TOOLS_ENABLED

@@ -1,0 +1,6 @@
+; Scratch project used by the eval runner. Each task runs in a fresh copy.
+config_version=5
+
+[application]
+
+config/name="godot-ai-eval"

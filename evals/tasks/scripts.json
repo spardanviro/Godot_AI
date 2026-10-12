@@ -1,0 +1,331 @@
+[
+  {
+    "id": "script.create_attach",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Player",
+          "class": "CharacterBody2D"
+        }
+      ]
+    },
+    "prompt": "Create the script res://player.gd for the Player node: it extends CharacterBody2D and has an exported float variable named speed with a default of 200. Attach it to Player.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "file_exists",
+        "file": "res://player.gd"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://player.gd"
+      },
+      {
+        "type": "has_script",
+        "path": "Player"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://player.gd",
+        "text": "@export"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://player.gd",
+        "text": "speed"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var source = \"extends CharacterBody2D\\n\\n@export var speed: float = 200.0\\n\"",
+        "var file = FileAccess.open(\"res://player.gd\", FileAccess.WRITE)",
+        "file.store_string(source)",
+        "file.close()",
+        "get_scene().get_node(\"Player\").set_script(load(\"res://player.gd\"))",
+        "print(\"Created res://player.gd and attached it to Player\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "script.topdown_movement",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Player",
+          "class": "CharacterBody2D"
+        }
+      ]
+    },
+    "prompt": "Write res://player.gd for Player (a CharacterBody2D): top-down movement at 200 pixels per second using the ui_left, ui_right, ui_up and ui_down actions. Attach it to Player.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://player.gd"
+      },
+      {
+        "type": "has_script",
+        "path": "Player"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://player.gd",
+        "text": "move_and_slide()"
+      },
+      {
+        "type": "file_contains_any",
+        "file": "res://player.gd",
+        "any": [
+          "get_vector",
+          "get_axis",
+          "is_action_pressed"
+        ]
+      },
+      {
+        "type": "file_not_contains",
+        "file": "res://player.gd",
+        "text": "move_and_slide(velocity"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var source = \"extends CharacterBody2D\\n\\n@export var speed: float = 200.0\\n\\nfunc _physics_process(_delta: float) -> void:\\n\\tvelocity = Input.get_vector(\\\"ui_left\\\", \\\"ui_right\\\", \\\"ui_up\\\", \\\"ui_down\\\") * speed\\n\\tmove_and_slide()\\n\"",
+        "var file = FileAccess.open(\"res://player.gd\", FileAccess.WRITE)",
+        "file.store_string(source)",
+        "file.close()",
+        "get_scene().get_node(\"Player\").set_script(load(\"res://player.gd\"))",
+        "print(\"Wrote top-down movement to res://player.gd and attached it\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "script.signal_button",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Control",
+      "nodes": [
+        {
+          "path": "StartButton",
+          "class": "Button"
+        }
+      ]
+    },
+    "prompt": "Create res://menu.gd on the scene root: it prints \"start\" when StartButton is pressed. Connect the signal in code.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://menu.gd"
+      },
+      {
+        "type": "has_script",
+        "path": "."
+      },
+      {
+        "type": "file_contains",
+        "file": "res://menu.gd",
+        "text": "pressed"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://menu.gd",
+        "text": "connect("
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var source = \"extends Control\\n\\nfunc _ready() -> void:\\n\\t$StartButton.pressed.connect(_on_start_pressed)\\n\\nfunc _on_start_pressed() -> void:\\n\\tprint(\\\"start\\\")\\n\"",
+        "var file = FileAccess.open(\"res://menu.gd\", FileAccess.WRITE)",
+        "file.store_string(source)",
+        "file.close()",
+        "get_scene().set_script(load(\"res://menu.gd\"))",
+        "print(\"Created res://menu.gd and attached it to the scene root\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "script.godot3_to_4",
+    "mode": "agent",
+    "setup": {
+      "files": {
+        "res://legacy.gd": [
+          "extends KinematicBody2D",
+          "",
+          "export var speed = 200",
+          "onready var sprite = $Sprite",
+          "",
+          "func _ready():",
+          "\tyield(get_tree().create_timer(1.0), \"timeout\")",
+          "\tprint(\"ready\")",
+          "",
+          "func _physics_process(delta):",
+          "\tvar velocity = Vector2.ZERO",
+          "\tvelocity.x = speed",
+          "\tvelocity = move_and_slide(velocity)"
+        ]
+      }
+    },
+    "prompt": "res://legacy.gd is written for Godot 3. Convert it to Godot 4 syntax, keeping its behaviour.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://legacy.gd"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://legacy.gd",
+        "text": "@export"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://legacy.gd",
+        "text": "@onready"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://legacy.gd",
+        "text": "await"
+      },
+      {
+        "type": "file_not_contains",
+        "file": "res://legacy.gd",
+        "text": "yield("
+      },
+      {
+        "type": "file_not_contains",
+        "file": "res://legacy.gd",
+        "text": "KinematicBody2D"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var source = \"extends CharacterBody2D\\n\\n@export var speed = 200\\n@onready var sprite = $Sprite\\n\\nfunc _ready():\\n\\tawait get_tree().create_timer(1.0).timeout\\n\\tprint(\\\"ready\\\")\\n\\nfunc _physics_process(delta):\\n\\tvelocity = Vector2.ZERO\\n\\tvelocity.x = speed\\n\\tmove_and_slide()\\n\"",
+        "var file = FileAccess.open(\"res://legacy.gd\", FileAccess.WRITE)",
+        "file.store_string(source)",
+        "file.close()",
+        "print(\"Converted res://legacy.gd to Godot 4 syntax\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "script.resource_class",
+    "mode": "agent",
+    "setup": {},
+    "prompt": "Create res://game_state.gd: a Resource with class_name GameState, an integer variable score, and a signal score_changed that is emitted whenever score is set.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://game_state.gd"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://game_state.gd",
+        "text": "class_name GameState"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://game_state.gd",
+        "text": "signal score_changed"
+      },
+      {
+        "type": "file_contains_any",
+        "file": "res://game_state.gd",
+        "any": [
+          "set(",
+          "set ="
+        ]
+      },
+      {
+        "type": "file_contains",
+        "file": "res://game_state.gd",
+        "text": "emit"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://game_state.gd",
+        "text": "extends Resource"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var source = \"class_name GameState\\nextends Resource\\n\\nsignal score_changed(value: int)\\n\\nvar score: int = 0:\\n\\tset(value):\\n\\t\\tscore = value\\n\\t\\tscore_changed.emit(value)\\n\"",
+        "var file = FileAccess.open(\"res://game_state.gd\", FileAccess.WRITE)",
+        "file.store_string(source)",
+        "file.close()",
+        "print(\"Created res://game_state.gd\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "script.state_machine",
+    "mode": "agent",
+    "setup": {},
+    "prompt": "Create res://enemy.gd extending CharacterBody2D with an enum State { IDLE, CHASE, ATTACK }, a variable holding the current state, and a match statement in _physics_process that handles each state.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://enemy.gd"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://enemy.gd",
+        "text": "enum State"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://enemy.gd",
+        "text": "match"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://enemy.gd",
+        "text": "_physics_process"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://enemy.gd",
+        "text": "State.ATTACK"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var source = \"extends CharacterBody2D\\n\\nenum State { IDLE, CHASE, ATTACK }\\n\\nvar state: State = State.IDLE\\n\\nfunc _physics_process(_delta: float) -> void:\\n\\tmatch state:\\n\\t\\tState.IDLE:\\n\\t\\t\\tvelocity = Vector2.ZERO\\n\\t\\tState.CHASE:\\n\\t\\t\\tmove_and_slide()\\n\\t\\tState.ATTACK:\\n\\t\\t\\tvelocity = Vector2.ZERO\\n\"",
+        "var file = FileAccess.open(\"res://enemy.gd\", FileAccess.WRITE)",
+        "file.store_string(source)",
+        "file.close()",
+        "print(\"Created res://enemy.gd with a three-state machine\")",
+        "```"
+      ]
+    ]
+  }
+]

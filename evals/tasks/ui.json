@@ -1,0 +1,198 @@
+[
+  {
+    "id": "ui.main_menu",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Control"
+    },
+    "prompt": "Build a main menu: a VBoxContainer centred on the screen with three buttons labelled Start, Options and Quit.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_count",
+        "class": "VBoxContainer",
+        "min": 1
+      },
+      {
+        "type": "node_count",
+        "class": "Button",
+        "min": 3
+      },
+      {
+        "type": "expression",
+        "code": "texts(\"Button\").has(\"Start\") and texts(\"Button\").has(\"Options\") and texts(\"Button\").has(\"Quit\")"
+      },
+      {
+        "type": "expression",
+        "code": "(is_equal_approx(find(\"VBoxContainer\")[0].anchor_left, 0.5) and is_equal_approx(find(\"VBoxContainer\")[0].anchor_top, 0.5)) or find(\"VBoxContainer\")[0].get_parent().is_class(\"CenterContainer\")"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var box = VBoxContainer.new()",
+        "box.name = \"Menu\"",
+        "root.add_child(box)",
+        "box.owner = root",
+        "box.set_anchors_and_offsets_preset(Control.PRESET_CENTER)",
+        "for label in [\"Start\", \"Options\", \"Quit\"]:",
+        "\tvar button = Button.new()",
+        "\tbutton.name = label + \"Button\"",
+        "\tbutton.text = label",
+        "\tbox.add_child(button)",
+        "\tbutton.owner = root",
+        "print(\"Built a centred menu with Start, Options and Quit\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "ui.hud",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a HUD: a CanvasLayer named \"HUD\" containing a ProgressBar named \"HealthBar\" (range 0 to 100, currently full) and a Label named \"ScoreLabel\" showing \"Score: 0\".",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "HUD",
+        "class": "CanvasLayer"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"ProgressBar\").size() == 1 and find(\"ProgressBar\")[0].name == \"HealthBar\" and is_equal_approx(find(\"ProgressBar\")[0].value, 100.0)"
+      },
+      {
+        "type": "expression",
+        "code": "texts(\"Label\").has(\"Score: 0\")"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var hud = CanvasLayer.new()",
+        "hud.name = \"HUD\"",
+        "root.add_child(hud)",
+        "hud.owner = root",
+        "",
+        "var health = ProgressBar.new()",
+        "health.name = \"HealthBar\"",
+        "health.min_value = 0",
+        "health.max_value = 100",
+        "health.value = 100",
+        "health.position = Vector2(16, 16)",
+        "health.custom_minimum_size = Vector2(200, 24)",
+        "hud.add_child(health)",
+        "health.owner = root",
+        "",
+        "var score = Label.new()",
+        "score.name = \"ScoreLabel\"",
+        "score.text = \"Score: 0\"",
+        "score.position = Vector2(16, 48)",
+        "hud.add_child(score)",
+        "score.owner = root",
+        "print(\"Added HUD with HealthBar and ScoreLabel\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "ui.anchor_label",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Control"
+    },
+    "prompt": "Add a Label named \"Title\" with the text \"My Game\", anchored to the top centre of the screen.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Title",
+        "class": "Label"
+      },
+      {
+        "type": "property",
+        "path": "Title",
+        "property": "text",
+        "equals": "My Game"
+      },
+      {
+        "type": "expression",
+        "code": "is_equal_approx(node(\"Title\").anchor_top, 0.0) and ((is_equal_approx(node(\"Title\").anchor_left, 0.5) and is_equal_approx(node(\"Title\").anchor_right, 0.5)) or (is_equal_approx(node(\"Title\").anchor_left, 0.0) and is_equal_approx(node(\"Title\").anchor_right, 1.0) and node(\"Title\").horizontal_alignment == 1))"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var title = Label.new()",
+        "title.name = \"Title\"",
+        "title.text = \"My Game\"",
+        "root.add_child(title)",
+        "title.owner = root",
+        "title.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)",
+        "print(\"Added Title label anchored top centre\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "ui.theme_override",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Control",
+      "nodes": [
+        {
+          "path": "Title",
+          "class": "Label",
+          "properties": {
+            "text": "My Game"
+          }
+        }
+      ]
+    },
+    "prompt": "Make the Title label's text red and 32 pixels tall.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "expression",
+        "code": "label_font_color(\"Title\").r > 0.8 and label_font_color(\"Title\").g < 0.3 and label_font_color(\"Title\").b < 0.3"
+      },
+      {
+        "type": "expression",
+        "code": "label_font_size(\"Title\") == 32"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var title = get_scene().get_node(\"Title\")",
+        "title.add_theme_color_override(\"font_color\", Color.RED)",
+        "title.add_theme_font_size_override(\"font_size\", 32)",
+        "print(\"Title is now red at 32 px\")",
+        "```"
+      ]
+    ]
+  }
+]

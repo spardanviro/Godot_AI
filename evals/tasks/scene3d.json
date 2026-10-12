@@ -1,0 +1,232 @@
+[
+  {
+    "id": "3d.basic_scene",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node3D"
+    },
+    "prompt": "Set up a basic 3D scene: a MeshInstance3D named \"Floor\" with a 10x10 plane mesh, a DirectionalLight3D named \"Sun\", and a Camera3D named \"Camera\" at (0, 5, 10).",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Floor",
+        "class": "MeshInstance3D"
+      },
+      {
+        "type": "node_exists",
+        "path": "Sun",
+        "class": "DirectionalLight3D"
+      },
+      {
+        "type": "node_exists",
+        "path": "Camera",
+        "class": "Camera3D"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Floor\").mesh != null and node(\"Floor\").mesh.is_class(\"PlaneMesh\") and node(\"Floor\").mesh.size == Vector2(10, 10)"
+      },
+      {
+        "type": "property",
+        "path": "Camera",
+        "property": "position",
+        "equals": "Vector3(0, 5, 10)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var floor_node = MeshInstance3D.new()",
+        "floor_node.name = \"Floor\"",
+        "var plane = PlaneMesh.new()",
+        "plane.size = Vector2(10, 10)",
+        "floor_node.mesh = plane",
+        "root.add_child(floor_node)",
+        "floor_node.owner = root",
+        "",
+        "var sun = DirectionalLight3D.new()",
+        "sun.name = \"Sun\"",
+        "sun.rotation_degrees = Vector3(-50, 30, 0)",
+        "root.add_child(sun)",
+        "sun.owner = root",
+        "",
+        "var camera = Camera3D.new()",
+        "camera.name = \"Camera\"",
+        "camera.position = Vector3(0, 5, 10)",
+        "root.add_child(camera)",
+        "camera.owner = root",
+        "print(\"Added Floor, Sun and Camera\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "3d.rigidbody_crate",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node3D"
+    },
+    "prompt": "Add a RigidBody3D named \"Crate\" with a box collision shape and a visible box mesh, both one-metre cubes.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Crate",
+        "class": "RigidBody3D"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"CollisionShape3D\").size() >= 1 and find(\"CollisionShape3D\")[0].shape != null and find(\"CollisionShape3D\")[0].shape.is_class(\"BoxShape3D\")"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"MeshInstance3D\").size() >= 1 and find(\"MeshInstance3D\")[0].mesh != null and find(\"MeshInstance3D\")[0].mesh.is_class(\"BoxMesh\")"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"CollisionShape3D\")[0].get_parent().name == \"Crate\""
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var crate = RigidBody3D.new()",
+        "crate.name = \"Crate\"",
+        "root.add_child(crate)",
+        "crate.owner = root",
+        "",
+        "var collision = CollisionShape3D.new()",
+        "collision.name = \"CollisionShape3D\"",
+        "var shape = BoxShape3D.new()",
+        "shape.size = Vector3.ONE",
+        "collision.shape = shape",
+        "crate.add_child(collision)",
+        "collision.owner = root",
+        "",
+        "var mesh_instance = MeshInstance3D.new()",
+        "mesh_instance.name = \"MeshInstance3D\"",
+        "var mesh = BoxMesh.new()",
+        "mesh.size = Vector3.ONE",
+        "mesh_instance.mesh = mesh",
+        "crate.add_child(mesh_instance)",
+        "mesh_instance.owner = root",
+        "print(\"Added Crate with a box shape and mesh\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "3d.environment",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node3D"
+    },
+    "prompt": "Add a WorldEnvironment with a procedural sky.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_count",
+        "class": "WorldEnvironment",
+        "min": 1
+      },
+      {
+        "type": "expression",
+        "code": "find(\"WorldEnvironment\")[0].environment != null and find(\"WorldEnvironment\")[0].environment.background_mode == 2"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"WorldEnvironment\")[0].environment.sky != null and find(\"WorldEnvironment\")[0].environment.sky.sky_material != null and find(\"WorldEnvironment\")[0].environment.sky.sky_material.is_class(\"ProceduralSkyMaterial\")"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var world = WorldEnvironment.new()",
+        "world.name = \"WorldEnvironment\"",
+        "var environment = Environment.new()",
+        "var sky = Sky.new()",
+        "sky.sky_material = ProceduralSkyMaterial.new()",
+        "environment.sky = sky",
+        "environment.background_mode = Environment.BG_SKY",
+        "world.environment = environment",
+        "root.add_child(world)",
+        "world.owner = root",
+        "print(\"Added WorldEnvironment with a procedural sky\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "3d.character",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node3D"
+    },
+    "prompt": "Create a first-person player: a CharacterBody3D named \"Player\" with a capsule CollisionShape3D and a Camera3D child at head height (y = 1.6).",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Player",
+        "class": "CharacterBody3D"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"CollisionShape3D\").size() >= 1 and find(\"CollisionShape3D\")[0].shape != null and find(\"CollisionShape3D\")[0].shape.is_class(\"CapsuleShape3D\")"
+      },
+      {
+        "type": "expression",
+        "code": "find(\"Camera3D\").size() == 1 and find(\"Camera3D\")[0].get_parent().name == \"Player\" and is_equal_approx(find(\"Camera3D\")[0].position.y, 1.6)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var player = CharacterBody3D.new()",
+        "player.name = \"Player\"",
+        "root.add_child(player)",
+        "player.owner = root",
+        "",
+        "var collision = CollisionShape3D.new()",
+        "collision.name = \"CollisionShape3D\"",
+        "collision.shape = CapsuleShape3D.new()",
+        "collision.position.y = 1.0",
+        "player.add_child(collision)",
+        "collision.owner = root",
+        "",
+        "var camera = Camera3D.new()",
+        "camera.name = \"Camera3D\"",
+        "camera.position.y = 1.6",
+        "player.add_child(camera)",
+        "camera.owner = root",
+        "print(\"Created first-person Player\")",
+        "```"
+      ]
+    ]
+  }
+]

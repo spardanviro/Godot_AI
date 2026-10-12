@@ -1,0 +1,138 @@
+[
+  {
+    "id": "zh.add_sprite",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "在场景里添加一个名为 Logo 的 Sprite2D，位置设为 (100, 50)。",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Logo",
+        "class": "Sprite2D"
+      },
+      {
+        "type": "property",
+        "path": "Logo",
+        "property": "position",
+        "equals": "Vector2(100, 50)"
+      },
+      {
+        "type": "all_nodes_owned"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "var node = Sprite2D.new()",
+        "node.name = \"Logo\"",
+        "node.position = Vector2(100, 50)",
+        "root.add_child(node)",
+        "node.owner = root",
+        "print(\"Added Logo\")",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "zh.jump_script",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "写一个脚本 res://hero.gd：继承 CharacterBody2D，实现左右移动和跳跃，受重力影响。",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "file_exists",
+        "file": "res://hero.gd"
+      },
+      {
+        "type": "script_compiles",
+        "file": "res://hero.gd"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://hero.gd",
+        "text": "extends CharacterBody2D"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://hero.gd",
+        "text": "move_and_slide()"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://hero.gd",
+        "text": "is_on_floor"
+      },
+      {
+        "type": "file_not_contains",
+        "file": "res://hero.gd",
+        "text": "move_and_slide(velocity"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var file = FileAccess.open(\"res://hero.gd\", FileAccess.WRITE)",
+        "file.store_string(\"extends CharacterBody2D\\n\\nconst SPEED := 200.0\\nconst JUMP_VELOCITY := -400.0\\n\\nfunc _physics_process(delta: float) -> void:\\n\\tif not is_on_floor():\\n\\t\\tvelocity += get_gravity() * delta\\n\\tif Input.is_action_just_pressed(\\\"ui_accept\\\") and is_on_floor():\\n\\t\\tvelocity.y = JUMP_VELOCITY\\n\\tvelocity.x = Input.get_axis(\\\"ui_left\\\", \\\"ui_right\\\") * SPEED\\n\\tmove_and_slide()\\n\")",
+        "file.close()",
+        "EditorInterface.get_resource_filesystem().scan()",
+        "```"
+      ]
+    ]
+  },
+  {
+    "id": "zh.hide_enemies",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Enemy1",
+          "class": "Node2D"
+        },
+        {
+          "path": "Enemy2",
+          "class": "Node2D"
+        },
+        {
+          "path": "Player",
+          "class": "Node2D"
+        }
+      ]
+    },
+    "prompt": "把场景里名字以 Enemy 开头的节点全部隐藏，其他节点保持可见。",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "expression",
+        "code": "not node(\"Enemy1\").visible and not node(\"Enemy2\").visible"
+      },
+      {
+        "type": "expression",
+        "code": "node(\"Player\").visible"
+      }
+    ],
+    "mock_replies": [
+      [
+        "```gdscript",
+        "var root = get_scene()",
+        "for child in root.get_children():",
+        "\tif String(child.name).begins_with(\"Enemy\"):",
+        "\t\tchild.visible = false",
+        "```"
+      ]
+    ]
+  }
+]

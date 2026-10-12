@@ -1,27 +1,31 @@
 #pragma once
 
-#ifdef TOOLS_ENABLED
+#include "ai_knowledge.h"
 
-#include "core/string/ustring.h"
-#include "core/templates/vector.h"
-
-// AIGotchasIndex
-// On-demand Godot gotchas lookup. Given a user message, returns only the
-// gotcha entries whose keywords appear in that message (word-boundary matched).
-// Maximum ~3000 chars returned to avoid over-injecting context.
+// On-demand gotcha lookup: given a message, returns the entries whose keywords
+// it mentions, most relevant first, within a fixed size budget. The entries
+// themselves are data (knowledge/gotchas.md).
 class AIGotchasIndex {
 public:
-	// Returns relevant gotcha text for p_message, or empty string if none match.
+	// Selects from the loaded knowledge base.
 	static String get_for_message(const String &p_message);
+	// Selects from the given entries (pure).
+	static String select(const Vector<AIKnowledge::Gotcha> &p_entries, const String &p_message);
 
-	struct GotchaEntry {
-		Vector<String> keywords;
-		String content;
-	};
+	// Whether a keyword is specific enough to take part in matching.
+	static bool is_useful_keyword(const String &p_keyword);
+
+	static const int BUDGET_CHARS = 3000;
 
 private:
-	static const Vector<GotchaEntry> &_get_entries();
-	static bool _word_in_string(const String &p_haystack, const String &p_word);
-};
+	// Per-entry lowercase keywords with an inverse-document-frequency weight: a
+	// keyword only a handful of entries carry says far more about relevance
+	// than one shared by fifty.
+	struct Index {
+		Vector<Vector<String>> keywords;
+		Vector<Vector<float>> weights;
+	};
 
-#endif // TOOLS_ENABLED
+	static Index _build_index(const Vector<AIKnowledge::Gotcha> &p_entries);
+	static String _select(const Vector<AIKnowledge::Gotcha> &p_entries, const Index &p_index, const String &p_message);
+};

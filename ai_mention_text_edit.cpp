@@ -261,12 +261,13 @@ String AIMentionTextEdit::get_text_with_mention_bbcode() const {
 			if (md.is_file) {
 				// File chip: dark green pill.
 				result += "[bgcolor=#0F2018][color=#5DEA80][b] \U0001F4C4 ";
-				result += md.node_name;
+				// The name comes from the project: it must not open BBCode tags.
+				result += md.node_name.replace("[", "[lb]");
 				result += " [/b][/color][/bgcolor]";
 			} else {
 				// Node chip: navy-blue pill.  Use "@" as node marker — always renders.
 				result += "[bgcolor=#102030][color=#5DC4F0][b] @ ";
-				result += md.node_name;
+				result += md.node_name.replace("[", "[lb]");
 				result += " [/b][/color][/bgcolor]";
 			}
 		} else {

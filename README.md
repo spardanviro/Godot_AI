@@ -65,7 +65,9 @@ The panel is mounted in the right dock area of the editor.
 
 The OpenAI provider path can also be pointed at compatible custom endpoints through the endpoint setting.
 
-The settings dialog can auto-fetch model lists from provider APIs and select from the fetched models. It stores separate API keys per provider and swaps them automatically when you change providers.
+The settings dialog can auto-fetch model lists from provider APIs and select from the fetched models. It keeps a separate API key per provider and swaps them automatically when you change providers.
+
+OpenAI, DeepSeek and GLM speak the same chat-completions wire format and share one implementation (`OpenAICompatibleProvider`); each of them only declares what differs (endpoint, model tables, the name of the output-limit field).
 
 ### On-demand API reference injection (`AIAPIDocLoader`)
 
@@ -73,7 +75,7 @@ The system prompt stays lean. Instead of statically including all Godot API docu
 
 ### On-demand gotchas injection (`AIGotchasIndex`)
 
-445 Godot-specific gotchas and pitfalls are stored in a keyword-indexed table. At request time, only entries whose keywords match the user's message are injected, most relevant first, within a hard 3000-character budget. This replaces static sections that were injected on every request regardless of relevance.
+395 Godot-specific gotchas and pitfalls are stored in `knowledge/gotchas.md`, each with its keywords. At request time, only entries whose keywords match the user's message are injected, most relevant first, within a hard 3000-character budget. This replaces static sections that were injected on every request regardless of relevance.
 
 Matching ignores generic keywords (ordinary English words, `gdscript`, `node`, `int`, ...) and weights the rest by rarity, so an entry needs at least one reasonably specific hit — typically a class or method name — to be injected. A message that names no specific API gets no gotchas. Class names are matched even when written directly against CJK text.
 
@@ -97,8 +99,9 @@ Specialized system prompt fragments for domain-focused requests (UI/Control layo
 Safety policy for editor-executed code (checked on the token stream, so comments and string contents are not mistaken for code):
 
 - `OS`, `Engine` and `ClassDB` may only be used as `Name.method(...)` with a harmless method (`OS.get_name()`, `Engine.is_editor_hint()`, `ClassDB.class_exists()`, ...). They cannot be assigned, passed or indexed, so process-spawning methods cannot be reached through an alias, `Engine.get_singleton()` or `ClassDB.instantiate()`
-- `Expression`, `JavaClassWrapper`, `JavaScriptBridge`, `GDExtensionManager` and `EditorSettings` are rejected, as is any access to the assistant's own settings (API keys, permissions)
+- `Expression`, `JavaClassWrapper`, `JavaScriptBridge`, `GDExtensionManager` and `EditorSettings` are rejected, as is any access to the assistant's own settings (permissions) and to the editor's data directories (where the credential store lives). `OS.get_environment()` is not on the allowed list either, so keys supplied through environment variables are out of reach
 - Network calls (`request`, `connect_to_host`, `listen`, ...) are rejected. Creating networking nodes for the game is fine; using the network from the editor is not
+- `ProjectSettings.globalize_path()` is only accepted in the form `DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://folder"))`; the other ways of obtaining a real filesystem path (`OS.get_user_data_dir()`, ...) are rejected
 - String literals may not name absolute paths, UNC or `file://` locations, or `res://`/`user://` paths that climb out with `..`
 - When code is rejected, the reason is sent back to the model so it can rewrite within the rules
 
@@ -116,7 +119,11 @@ Execution permissions are categorized and configurable per operation type:
 - Write files
 - Delete files
 
-Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny.
+Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny, and modifying scripts defaults to ask: a script is code that runs later, and what is inside a script file is not seen by the safety check. Writing a `.gd` file counts as modifying scripts, as attaching one does.
+
+Generated code cannot reach the assistant's own controls: its classes, the editor's interface tree (`get_tree().root`, `EditorInterface.get_base_control()`, `Engine.get_main_loop()`) and the switches on the controller are rejected by the safety check, and the two controller methods that exist for the headless eval runner (`set_auto_approve`, `configure_provider`) do nothing unless the editor was started by `evals/run_evals.py`.
+
+A reply is only executed if it is complete and is the model's answer. Code is shown but not run when the reply was cut off at the output limit, was withheld by the provider's filter, consists only of reasoning, or was written in PLAN mode. When code fails half-way, the scene and files are put back to the checkpoint taken before it ran, and only then is the model asked to try again.
 
 The table is consulted for every piece of generated code, whatever its risk tier: `Deny` blocks it and `Ask` always shows a confirmation dialog, including when auto-execute is on. With auto-execute off, every execution is confirmed first.
 
@@ -153,7 +160,7 @@ If the provider still rejects a request as too long, the oldest messages are dro
 - Separates AI-caused execution errors from unrelated console noise
 - Feeds failures back into the assistant for automatic retry
 - Supports up to 3 auto-retry attempts
-- Watches the running game: when a played scene stops with runtime errors, the assistant is asked for a fix and the scene is restarted, up to 5 attempts
+- Watches the running game: when a played scene stops with runtime errors, the assistant is asked for a fix and the scene is restarted, up to 5 attempts. Can be switched off (Settings > General); with auto-execute off, each fix waits for approval. The error text is passed to the model as untrusted data
 
 ### Checkpoints and revert flow
 
@@ -180,7 +187,7 @@ Generated assets are written into project paths such as `res://ai_generated_imag
 ### Web search and page fetch
 
 - DuckDuckGo HTML search integration
-- Direct URL fetch support, limited to public http(s) addresses (no localhost or private-network hosts) and to 3 web requests per user message
+- Direct URL fetch support, limited to public http(s) addresses and to 3 web requests per user message. The host is checked by name and by every address it resolves to, and the connection is then made to one of exactly those addresses (the name is not resolved a second time, so the answer cannot change between the check and the connection; the TLS certificate is still verified against the name). Redirects are followed one hop at a time through the same checks, so a public page cannot bounce the editor to a local or private address. When a proxy is in use (see [Network proxy](#network-proxy)) the proxy resolves the name, so only the checks on the URL itself remain for fetches that go through it.
 - HTML-to-text extraction for prompt augmentation
 
 ### Localization
@@ -189,42 +196,144 @@ UI strings are localized for English and Chinese.
 
 ## Architecture
 
-Core components:
+The agent loop, the conversation, the network client and the UI are separate pieces. The dock only shows what the controller reports and forwards what the user does, so the same controller also runs headless (see [Evals](#evals)).
+
+```text
+AIAssistantPanel (dock: widgets, dialogs)
+ |- AIChatView             transcript, streaming display, links
+ |- AIMentionAutocomplete  "@" completion popup
+ |- AIRuntimeWatch         watches the running game, asks for fixes
+ `- AIAgentController      the agent loop as a state machine
+     |- AISession              history, compression, attachments
+     |- AIStreamClient         one streaming request on a worker thread
+     |- AICodeRunner           review (syntax, safety, permissions) + execution
+     |- AIPromptBuilder        system prompt = knowledge + editor state
+     |- AIPlan                 PLAN-mode steps and their checklist file
+     |- AIWebRequester         search / fetch asked for by a reply
+     |- AIHistorySummarizer    optional model-written history summary
+     `- AIAssetService         image / speech generation queue
+```
+
+`AIAgentController` is always in exactly one state, and everything in flight belongs to one `Run`:
+
+```text
+IDLE --submit / plan step / runtime fix--> STREAMING
+STREAMING --reply has code--> (AWAITING_PERMISSION --ok-->) execute --> VERIFYING
+STREAMING --reply needs a fix / execution failed--> STREAMING   (at most 3 automatic retries)
+VERIFYING --late errors--> STREAMING        VERIFYING --clean--> settle
+settle --web marker--> WEB_REQUEST --result--> STREAMING
+settle --next plan step--> STREAMING        settle --otherwise--> IDLE
+any state --stop / error / denied--> IDLE
+```
+
+Whether a request may start, whether code may run and what Stop means all follow from the state. The run's bookkeeping (retry count, pending code, markers) is one struct that is reset as a whole when the run ends, so nothing can leak into the next one.
 
 | File | Role |
 |------|------|
-| `ai_assistant_panel.*` | Main editor dock, request flow, mentions, attachments, history, streaming |
 | `ai_assistant_plugin.*` | Editor plugin entry point |
-| `ai_settings_dialog.*` | Provider and behavior configuration UI |
-| `ai_mention_text_edit.*` | Mention-capable chat input with inline chips and drag-and-drop |
-| `ai_mention_highlighter.*` | Syntax highlighter that hides the mention placeholder characters (the chips are drawn by `ai_mention_text_edit`) |
-| `ai_provider.*` | Abstract provider interface |
-| `ai_response_parser.*` | Extracts text and code blocks from model replies |
-| `ai_script_executor.*` | Wraps and runs generated GDScript in editor context |
-| `ai_context_collector.*` | Collects scene, selection, script, and project information |
-| `ai_error_monitor.*` | Tracks editor/runtime errors around AI execution |
-| `ai_checkpoint_manager.*` | Checkpoint and restore support |
+| `ai_assistant_panel.*` | The dock: layout, user actions, dialogs |
+| `ai_chat_view.*` | Chat transcript, streaming display, clickable links |
+| `ai_mention_autocomplete.*` | `@` completion popup for scene nodes and project files |
+| `ai_mention_text_edit.*`, `ai_mention_highlighter.*` | Mention-capable input field with inline chips |
+| `ai_settings_dialog.*`, `ai_settings_dialog_model.cpp`, `ai_settings_dialog_layout.cpp` | Settings window (tabs: model, general, permissions, advanced): reading and writing the `ai_assistant/*` settings; provider, key and model handling; widgets and captions |
+| `ai_model_selector.*`, `ai_model_list_fetcher.*` | Model dropdown with a free-text entry; live model list from the provider's API |
+| `ai_provider_catalog.h`, `providers/ai_provider_catalog.cpp` | Display names and known models per provider |
+| `ai_agent_controller.*`, `ai_agent_controller_replies.cpp` | Agent loop as an explicit state machine; signals instead of UI calls |
+| `ai_session.*` | Conversation history, context compression, overflow recovery, attachment de-duplication |
+| `ai_chat_store.*` | Saved chats (`user://ai_assistant_chats`) |
+| `ai_stream_client.*`, `ai_stream_protocol.*` | Streaming HTTP client; SSE decoding, UTF-8 boundaries, `<think>` tag splitting |
+| `ai_code_runner.*` | Review gate and execution with checkpoints and error monitoring |
+| `ai_script_executor.*` | Wraps, checks and runs generated GDScript as an `EditorScript` |
 | `ai_permission_manager.*` | Rule-based execution gating |
-| `ai_web_search.*` | Search and page text extraction |
-| `ai_image_generator.*` | Image generation helpers |
-| `ai_audio_generator.*` | Audio generation helpers |
-| `ai_ui_agent.*` | UI-specific prompting helper |
-| `ai_profiler_collector.*` | Profiler data collection for performance prompts |
-| `ai_system_prompt.*` | Base system prompt builder (about 57K characters) |
-| `ai_api_doc_loader.*` | On-demand Godot API reference injection |
-| `ai_gotchas_index.*` | On-demand gotchas injection (445 entries, keyword-indexed, relevance-ranked) |
-| `ai_domain_prompts.*` | Domain-specific prompt fragments |
+| `ai_checkpoint_manager.*` | Checkpoint and restore support |
+| `ai_error_monitor.*` | Tracks editor/runtime errors around AI execution |
+| `ai_runtime_watch.*` | Detects runtime errors of the running game and requests fixes |
+| `ai_response_parser.*`, `ai_response_analysis.*` | Code blocks, side-effect markers, plan steps, URL and path policy |
+| `ai_plan.*` | PLAN-mode steps and their Markdown checklist |
+| `ai_web_requester.*`, `ai_web_fetch.*`, `ai_web_search.*` | Web search and page fetch; the fetch runs on a worker thread and connects only to addresses it has checked |
+| `ai_asset_service.*`, `ai_image_generator.*`, `ai_audio_generator.*` | Image and speech generation |
+| `ai_proxy.*`, `ai_proxy_os.cpp` | Which HTTP proxy the assistant's requests use (system, none, custom) |
+| `ai_network_thread.h` | Marks the network worker threads, so their engine errors are not taken for project errors |
+| `ai_history_summarizer.*` | Optional model-written summary of compressed history |
+| `ai_project_memory.*` | Notes the model asks to remember in `res://godot_ai.md` |
+| `ai_prompt_builder.*`, `ai_context_collector.*`, `ai_profiler_collector.*` | System prompt assembly and editor context |
+| `ai_knowledge.*` | Loads the knowledge files (built-in defaults + override directory) |
+| `ai_system_prompt.*`, `ai_gotchas_index.*`, `ai_domain_prompts.*`, `ai_api_doc_loader.*` | Select from the knowledge base what a message needs |
+| `ai_provider.*`, `ai_provider_setup.*`, `providers/` | Provider interface, configuration, implementations |
+| `ai_credential_store.*` | API key storage outside the settings file |
 | `ai_localization.h` | UI string localization table |
+| `knowledge/` | Prompts, gotchas, API notes and domain guidance as Markdown |
+| `tests/` | Unit tests |
+| `evals/` | Task set and headless runner for scoring prompt and agent changes |
 
 Provider implementations in `providers/`:
 
 | File | Provider |
 |------|----------|
-| `anthropic_provider.*` | Anthropic Claude |
+| `openai_compatible_provider.*` | Shared OpenAI chat-completions implementation |
 | `openai_provider.*` | OpenAI and OpenAI-compatible endpoints |
-| `gemini_provider.*` | Google Gemini |
 | `deepseek_provider.*` | DeepSeek |
 | `glm_provider.*` | Zhipu AI GLM |
+| `anthropic_provider.*` | Anthropic Claude |
+| `gemini_provider.*` | Google Gemini |
+
+## Knowledge files
+
+Everything the assistant is told that is not code lives in `knowledge/` as plain Markdown:
+
+| Path | Content |
+|------|---------|
+| `system_prompt.md` | The base system prompt. `{{project_instructions}}` marks where the project's `godot_ai.md` goes |
+| `prompts/<id>.md` | Short templates with `{{name}}` placeholders: mode instructions, the retry messages, plan step, runtime fix, web results, summary, preset buttons |
+| `domains/<id>.md` | Guidance for one domain. Front matter lists the keywords that select it (`match: stem` or `match: word`) and its `order` in the prompt |
+| `gotchas.md` | One entry per `<!-- keywords: a, b -->` line; the text that follows is injected when a message mentions those keywords |
+| `api_docs.md` | One `## ClassName` section per class, injected when the class is named |
+| `glossary.md` | Terms a message may use, in any language, and the engine names they stand for (`跳跃 => CharacterBody2D, move_and_slide`). Lets a message that names no class still select gotchas and API notes |
+
+These files are embedded into the editor binary at build time as the defaults. To change them **without rebuilding**, point the assistant at a directory with the same layout:
+
+- the editor setting `ai_assistant/knowledge_dir`, or
+- the environment variable `GODOT_AI_KNOWLEDGE_DIR`, or
+- the folder `ai_assistant/knowledge` in the editor's config directory (used automatically if it exists).
+
+A file there replaces the built-in file with the same relative path; additional files under `domains/` and `gotchas/` are added. The directory is checked before every request, so an edit takes effect with the next message. A file that does not parse is reported in the editor output and skipped; the built-in content stays in place.
+
+While developing prompts, set `ai_assistant/knowledge_dir` to this repository's `knowledge/` folder and edit the files in place. Use the eval set to see whether a change helped.
+
+## API keys
+
+Keys are not stored in the editor settings file (`editor_settings-*.tres` is plain text and tends to get copied, synced and attached to bug reports). For each provider the key is looked up in this order:
+
+1. The environment variable `GODOT_AI_API_KEY_<PROVIDER>` (for example `GODOT_AI_API_KEY_DEEPSEEK`), then the vendor's usual variable: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `ZHIPUAI_API_KEY`.
+2. The credential store, `ai_assistant/credentials.json` in the editor's config directory. Keys typed into the settings dialog go here.
+
+On Windows each stored key is sealed with DPAPI, so it can only be read by the same Windows user on the same machine. On other platforms it is AES-encrypted with a key derived from the machine id: that keeps the key out of sight and makes a copied file useless elsewhere, but it is obfuscation rather than a keychain — prefer environment variables there.
+
+Keys found in the settings file by an older version are moved into the store the first time the panel loads, and the settings entries are blanked. The settings dialog never shows a stored key: the field is empty and only takes a new key to replace the stored one.
+
+## Tests
+
+Unit tests cover the logic that does not need a running editor: the response parser, side-effect markers, URL and path policy, the safety policy and risk tiers, gotcha / domain / API-doc selection, the knowledge file formats and overrides, history compression and overflow recovery, SSE decoding, the providers' request and response handling, and the credential store.
+
+```bash
+scons platform=windows target=editor tests=yes
+bin/godot.windows.editor.x86_64.console.exe --test --test-case="*AIAssistant*"
+```
+
+Adding `extra_suffix=tests` to the build keeps the test build's objects and binary apart from your normal editor build, so switching between the two does not trigger full rebuilds.
+
+## Evals
+
+Whether the assistant is any good is decided by what the model produces, and that changes with every edit to a prompt or to the retry logic. `evals/` holds 30 standard tasks (scene building, scripts, UI, 3D, gameplay, ASK / PLAN modes, safety) and a runner that scores them without a human in the loop. See [evals/README.md](evals/README.md).
+
+```bash
+# The harness and the agent loop themselves, against canned replies (no API key, ~1 minute):
+python evals/run_evals.py --godot bin/godot.windows.editor.x86_64.console.exe --mock
+
+# A real model; compare a prompt change against an earlier run:
+python evals/run_evals.py --godot <editor> --provider deepseek --out before.json
+python evals/run_evals.py --godot <editor> --provider deepseek --knowledge-dir knowledge --baseline before.json
+```
 
 ## Build and Installation
 
@@ -248,29 +357,43 @@ Adjust `platform`, `arch`, and other SCons flags for your environment. The modul
 
 After compiling, open Godot using the built editor executable. The AI panel appears in the right dock.
 
+## Network proxy
+
+Everything the assistant sends — chat requests, the model list, summaries, image and speech generation, web search and page fetch — goes through one proxy choice (Settings > Advanced):
+
+- **Follow the system** (default): the editor's own `network/http_proxy` setting if set, else `HTTPS_PROXY` / `HTTP_PROXY`, else on Windows the proxy configured for the user account. Proxy auto-configuration scripts are not evaluated.
+- **None**: connect directly.
+- **Custom**: `host:port`.
+
+Only HTTP proxies are supported (no SOCKS, no proxy credentials). Local addresses — `localhost`, loopback and private-network literals — are always reached directly, so a local model server keeps working.
+
+A page fetch through a proxy cannot check which address a name resolves to, because the proxy does the resolving; the checks on the URL (scheme, local names, address literals, every redirect hop) still apply. Set the proxy to **None** if that matters more to you than reaching sites the proxy is needed for.
+
 ## Configuration
 
-Settings are stored in `EditorSettings` under the `ai_assistant/*` namespace.
+Settings are stored in `EditorSettings` under the `ai_assistant/*` namespace. API keys are not among them; see [API keys](#api-keys).
 
 | Key | Description |
 |-----|-------------|
 | `ai_assistant/provider` | Active provider (`anthropic`, `openai`, `gemini`, `deepseek`, `glm`) |
-| `ai_assistant/api_key_anthropic` | Anthropic API key |
-| `ai_assistant/api_key_openai` | OpenAI API key |
-| `ai_assistant/api_key_gemini` | Gemini API key |
-| `ai_assistant/api_key_deepseek` | DeepSeek API key |
-| `ai_assistant/api_key_glm` | GLM API key |
 | `ai_assistant/model` | Model name |
 | `ai_assistant/api_endpoint` | Custom endpoint override |
 | `ai_assistant/max_tokens` | Max response tokens (default: 4096) |
-| `ai_assistant/temperature` | Sampling temperature (default: 0.7) |
+| `ai_assistant/custom_temperature` | Send the temperature below instead of leaving it to the model (default: off) |
+| `ai_assistant/temperature` | Sampling temperature, used when the setting above is on (default: 0.7) |
 | `ai_assistant/send_on_enter` | Send on Enter key (default: true) |
 | `ai_assistant/autorun` | Auto-execute generated code (default: true) |
 | `ai_assistant/restore_last_chat` | Reload the most recent chat on editor startup (default: true) |
+| `ai_assistant/runtime_fix` | Fix script errors of the running game automatically (default: true) |
 | `ai_assistant/compression_keep_recent` | Recent messages never compressed (default: 6) |
 | `ai_assistant/compression_threshold_pct` | Fraction of the history window that triggers compression (default: 0.7) |
 | `ai_assistant/compression_use_ai_summary` | Summarize compressed messages with the model (default: false) |
 | `ai_assistant/language` | UI language (`en` or `zh`) |
+| `ai_assistant/knowledge_dir` | Folder of knowledge files that override the built-in ones (default: empty) |
+| `ai_assistant/proxy_mode` | `system` (default), `off` or `custom` |
+| `ai_assistant/proxy_address` | `host:port` of the HTTP proxy for `custom` |
+| `ai_assistant/image_model` | OpenAI image model (default: empty = `gpt-image-1`) |
+| `ai_assistant/speech_model` | OpenAI speech model (default: empty = `gpt-4o-mini-tts`) |
 | `ai_assistant/permissions/*` | Per-category execution permissions |
 
 ## Project-local AI instructions
@@ -294,34 +417,12 @@ Create `res://godot_ai.md` in your project to define project-specific instructio
 
 ```text
 ai_assistant/
-|- providers/
-|  |- anthropic_provider.*
-|  |- openai_provider.*
-|  |- gemini_provider.*
-|  |- deepseek_provider.*
-|  `- glm_provider.*
-|- ai_api_doc_loader.*
-|- ai_assistant_panel.*
-|- ai_assistant_plugin.*
-|- ai_audio_generator.*
-|- ai_checkpoint_manager.*
-|- ai_context_collector.*
-|- ai_domain_prompts.*
-|- ai_error_monitor.*
-|- ai_gotchas_index.*
-|- ai_image_generator.*
-|- ai_localization.h
-|- ai_mention_highlighter.*
-|- ai_mention_text_edit.*
-|- ai_permission_manager.*
-|- ai_profiler_collector.*
-|- ai_provider.*
-|- ai_response_parser.*
-|- ai_script_executor.*
-|- ai_settings_dialog.*
-|- ai_system_prompt.*
-|- ai_ui_agent.*
-|- ai_web_search.*
+|- providers/     provider implementations
+|- knowledge/     prompts, gotchas, API notes, domain guidance (Markdown)
+|- tests/         unit tests (doctest)
+|- evals/         eval tasks, headless runner, driver script
+|- ai_*.h / ai_*.cpp   see the table under Architecture
+|- ai_knowledge_builders.py   embeds knowledge/ into the build
 |- register_types.*
 |- SCsub
 `- config.py
@@ -332,6 +433,8 @@ ai_assistant/
 - Requires user-provided API keys for all LLM providers.
 - Web search is implemented via HTML scraping; provider pages may require maintenance.
 - Asset generation currently uses OpenAI-specific endpoints and needs an OpenAI API key in Settings, whichever provider is active. Generated assets can only be saved under `res://`.
+- The dock itself (layout, dialogs) is not covered by automated tests; the agent loop behind it is, through the eval runner's mock mode.
+- On platforms other than Windows the credential store is obfuscation, not OS-level protection.
 - No automated CI or cross-platform packaging workflows yet.
 
 ## License

@@ -23,10 +23,13 @@ public:
 	// AI response and performing the HTTP call from C++.
 
 	// Build DALL-E API request body.
-	static String build_dalle_request(const String &p_prompt, const String &p_size = "1024x1024", const String &p_quality = "standard");
+	static constexpr const char *DEFAULT_MODEL = "gpt-image-1";
+	// The images API body for a model. The DALL-E models take other
+	// parameters than the GPT image models that replaced them.
+	static String build_request(const String &p_prompt, const String &p_model = DEFAULT_MODEL, const String &p_size = "1024x1024");
 
 	// Parse DALL-E response and return base64 image data.
-	static String parse_dalle_response(const String &p_response_body);
+	static String parse_response(const String &p_response_body);
 
 	// Save base64 PNG data as a texture file in the project.
 	static bool save_base64_as_texture(const String &p_base64_data, const String &p_save_path);

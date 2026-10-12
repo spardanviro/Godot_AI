@@ -25,13 +25,15 @@ static String _strip_tags(const String &p_html) {
 		}
 	}
 	// Decode common HTML entities.
-	result = result.replace("&amp;", "&");
 	result = result.replace("&lt;", "<");
 	result = result.replace("&gt;", ">");
 	result = result.replace("&quot;", "\"");
 	result = result.replace("&#x27;", "'");
 	result = result.replace("&apos;", "'");
+	result = result.replace("&#39;", "'");
 	result = result.replace("&nbsp;", " ");
+	// Last, or "&amp;lt;" (a literal "&lt;" in the page) would be decoded twice.
+	result = result.replace("&amp;", "&");
 	return result.strip_edges();
 }
 
@@ -65,12 +67,15 @@ String AIWebSearch::parse_search_results(const String &p_response_body) const {
 					// DuckDuckGo redirects through their URL, extract actual URL.
 					int uddg_pos = href.find("uddg=");
 					if (uddg_pos >= 0) {
-						href = href.substr(uddg_pos + 5).uri_decode();
-						// Remove any trailing parameters after &
+						// The value ends at the next parameter of the redirect link.
+						// Decode afterwards: the target's own "&" are encoded (%26)
+						// inside it and belong to the target.
+						href = href.substr(uddg_pos + 5);
 						int amp_pos = href.find("&");
 						if (amp_pos >= 0) {
 							href = href.left(amp_pos);
 						}
+						href = href.uri_decode();
 					}
 				}
 			}
@@ -141,7 +146,9 @@ String AIWebSearch::extract_text_from_html(const String &p_html) const {
 		if (in_tag) {
 			if (c == '>') {
 				in_tag = false;
-				String lower_tag = tag_name.to_lower().strip_edges();
+				// The element name ends at the first whitespace of any kind:
+				// `<script\n src=...>` is a script tag too.
+				String lower_tag = tag_name.to_lower().replace("\n", " ").replace("\t", " ").replace("\r", " ").strip_edges();
 				if (lower_tag == "script" || lower_tag.begins_with("script ")) {
 					in_script = true;
 				} else if (lower_tag == "/script") {
@@ -185,7 +192,12 @@ String AIWebSearch::extract_text_from_html(const String &p_html) const {
 				else if (entity == "quot") { text += "\""; }
 				else if (entity == "nbsp") { text += " "; }
 				else if (entity == "apos") { text += "'"; }
-				else { text += "?"; }
+				else if (entity.begins_with("#x") && entity.substr(2).is_valid_hex_number(false)) { text += String::chr(entity.substr(2).hex_to_int()); }
+				else if (entity.begins_with("#") && entity.substr(1).is_valid_int()) { text += String::chr(entity.substr(1).to_int()); }
+				else if (entity == "mdash") { text += String::chr(0x2014); }
+				else if (entity == "ndash") { text += String::chr(0x2013); }
+				else if (entity == "hellip") { text += "..."; }
+				else { text += " "; } // Unknown: better a gap than a wrong character.
 				i = j;
 				consecutive_whitespace = 0;
 				continue;

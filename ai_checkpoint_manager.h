@@ -53,6 +53,11 @@ private:
 	int next_id = 0;
 	FileSnapshot pending_files; // Taken by begin_file_snapshot(), adopted by the next checkpoint.
 	RestoreReport last_report;
+	// What is snapshotted and where the copies go. Other than "the project"
+	// and "the editor's user folder" only in unit tests.
+	String project_root = "res://";
+	String backup_root;
+	bool trash_new_files = true;
 
 	int _find_index(int p_id) const;
 	// Removes a checkpoint together with its snapshot files.
@@ -72,11 +77,17 @@ public:
 	// Create a checkpoint of the current scene state.
 	// Returns false when no scene is open (nothing to snapshot).
 	bool create_checkpoint(const String &p_description);
+	// For code that cannot touch files: the next checkpoint covers the scene only.
+	void skip_file_snapshot();
 
 	// Create a "scene-open" checkpoint: records that p_scene_path was opened by
 	// the code execution so that reverting can close the scene.
 	// Always succeeds. Returns the id of the new checkpoint.
 	int create_scene_open_checkpoint(const String &p_scene_path, const String &p_description);
+
+	// For tests: snapshot p_project_root instead of res://, keep the copies
+	// under p_backup_root, and delete (not trash) files a restore removes.
+	void set_storage_for_tests(const String &p_project_root, const String &p_backup_root);
 
 	// Create a checkpoint that only carries the pending file snapshot.
 	// Returns its id, or -1 if there is no pending snapshot.

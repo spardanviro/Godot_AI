@@ -2,399 +2,133 @@
 
 #ifdef TOOLS_ENABLED
 
-#include "ai_provider.h"
-#include "ai_response_parser.h"
-#include "ai_script_executor.h"
-#include "ai_context_collector.h"
-#include "ai_error_monitor.h"
-#include "ai_checkpoint_manager.h"
-#include "ai_permission_manager.h"
-#include "ai_image_generator.h"
-#include "ai_audio_generator.h"
-#include "ai_profiler_collector.h"
-#include "ai_ui_agent.h"
-#include "ai_domain_prompts.h"
-#include "ai_api_doc_loader.h"
-#include "ai_web_search.h"
+#include "ai_agent_controller.h"
 #include "ai_mention_highlighter.h"
 #include "ai_mention_text_edit.h"
 
 #include "scene/gui/box_container.h"
-#include "scene/gui/item_list.h"
-#include "core/os/thread.h"
-#include "core/os/mutex.h"
-#include "core/error/error_macros.h"
 
-class RichTextLabel;
-class Button;
-class HTTPRequest;
-class AISettingsDialog;
-class ScrollContainer;
-class Timer;
 class AcceptDialog;
+class AIChatView;
+class AIMentionAutocomplete;
+class AIRuntimeWatch;
+class AISettingsDialog;
+class Button;
 class ConfirmationDialog;
-class Panel;
 class EditorFileDialog;
-
+class Label;
 class OptionButton;
+class RichTextLabel;
+class ScrollContainer;
 
+// The dock. It lays out the widgets, forwards what the user does to
+// AIAgentController and shows what the controller reports in the chat view.
+// It holds no conversation or automation state of its own.
 class AIAssistantPanel : public VBoxContainer {
 	GDCLASS(AIAssistantPanel, VBoxContainer);
 
-public:
-	// Public struct used by autocomplete and external code.
-	struct NodeInfo {
-		String name;
-		String path;
-		String type;
-	};
+	AIAgentController *controller = nullptr;
+	AIRuntimeWatch *runtime_watch = nullptr;
 
-	// Filesystem file entry for @file autocomplete.
-	struct FileInfo {
-		String name; // Filename only (e.g. "player.gd").
-		String path; // Full res:// path (e.g. "res://scripts/player.gd").
-	};
-
-private:
-	enum AIMode { MODE_ASK, MODE_AGENT, MODE_PLAN };
-
-	// UI elements — chat view.
-	RichTextLabel *chat_display = nullptr;
-	AIMentionTextEdit *input_field = nullptr;
-	Button *send_button = nullptr;
-	Button *stop_button = nullptr;
-	HBoxContainer *input_bar = nullptr;
-	HBoxContainer *preset_bar = nullptr;
-
-	// Toolbar buttons.
+	// Toolbar.
 	Label *title_label = nullptr;
 	Button *new_chat_button = nullptr;
 	Button *history_button = nullptr;
 	Button *screenshot_button = nullptr;
 	Button *settings_button = nullptr;
 	OptionButton *mode_selector = nullptr;
+
+	// Chat view and input.
+	AIChatView *chat_view = nullptr;
 	Vector<Button *> preset_buttons;
+	HBoxContainer *input_bar = nullptr;
+	AIMentionTextEdit *input_field = nullptr;
+	Ref<AIMentionHighlighter> mention_highlighter;
+	AIMentionAutocomplete *autocomplete = nullptr;
+	Button *send_button = nullptr;
+	Button *stop_button = nullptr;
 
-	// Screenshot state.
-	String pending_screenshot_path;
-
-	// History view (inline, replaces chat view when visible).
+	// History view (replaces the chat view while visible).
 	ScrollContainer *history_scroll = nullptr;
 	VBoxContainer *history_container = nullptr;
 	bool history_visible = false;
-	Vector<String> history_file_list;
 
-	// Components.
-	HTTPRequest *http_request = nullptr;
-	Ref<AIProvider> current_provider;
-	Ref<AIResponseParser> response_parser;
-	Ref<AIScriptExecutor> script_executor;
-	Ref<AIContextCollector> context_collector;
+	// Dialogs.
 	AISettingsDialog *settings_dialog = nullptr;
-
-	// N1: Error monitor.
-	Ref<AIErrorMonitor> error_monitor;
-
-	// N3: Checkpoint manager.
-	Ref<AICheckpointManager> checkpoint_manager;
-
-	// N6: Permission manager.
-	Ref<AIPermissionManager> permission_manager;
+	bool settings_reload_pending = false; // Settings changed while a run was in flight.
 	ConfirmationDialog *permission_dialog = nullptr;
-	String pending_permission_code; // Code waiting for permission confirmation.
-
-	// N7: Profiler collector.
-	Ref<AIProfilerCollector> profiler_collector;
-
-	// N8/N9: Asset generators.
-	Ref<AIImageGenerator> image_generator;
-	Ref<AIAudioGenerator> audio_generator;
-	HTTPRequest *asset_http_request = nullptr; // For image/audio generation API calls.
-	String pending_asset_type;   // "image" or "audio"
-	String pending_asset_path;   // Where to save the generated asset.
-
-	// Web search.
-	Ref<AIWebSearch> web_search;
-	HTTPRequest *web_http_request = nullptr;
-	String pending_web_action; // "search" or "fetch"
-	String pending_web_query;  // Original query or URL.
-	String pending_web_user_message; // Original user message to re-send with results.
-	bool web_request_active = false;  // web_http_request handles one request at a time.
-	int web_requests_this_turn = 0;   // Reset when the user sends a message.
-	bool _begin_web_request();
-
-	// N4: File attachment.
-	Vector<String> pending_attachments;
-	Button *attach_button = nullptr;
+	// For actions that cannot be taken back (restoring a checkpoint,
+	// deleting a chat): asks first, then runs confirm_action.
+	ConfirmationDialog *confirm_dialog = nullptr;
+	Callable confirm_action;
+	AcceptDialog *details_dialog = nullptr;
+	RichTextLabel *details_text = nullptr;
 	EditorFileDialog *file_dialog = nullptr;
 
-	// Paste store: large attached file content is stored here by ID so it can be
-	// de-duplicated across turns. Keyed by file path to detect re-attachments.
-	// Within a session, re-attaching the same file just inserts a back-reference.
-	static const int PASTE_INLINE_LIMIT = 1500; // chars below which no dedup needed
-	HashMap<String, int> paste_path_to_id;  // file path → paste ID
-	HashMap<int, String> paste_id_to_content; // paste ID → full content
-	int paste_next_id = 1;
-	String _make_paste_ref(int p_id, const String &p_path, int p_char_count) const;
-	String _build_attachment_content(const String &p_path, const String &p_raw_content);
-
-	// N5: Saved code blocks for "Save" feature.
-	Vector<String> displayed_code_blocks;
-
-	// Collapse: store full AI responses for [Details] popup.
-	String last_full_response;
-	Vector<String> stored_detail_responses;  // Full AI responses indexed by detail_id.
-	Vector<String> stored_thinking_texts;    // Thinking texts indexed by thinking_id.
-	AcceptDialog *details_dialog = nullptr;
-	RichTextLabel *details_rtl = nullptr;
-
-	// State.
-	Array conversation_history;      // Working copy sent to AI — may be compressed.
-	Array full_conversation_history; // Complete record — never trimmed, used for display & save.
-	String context_summary; // Compressed summary of older messages.
-	String pending_code;
-	String pending_plan_md_path; // Path of plan MD file saved when plan was generated (set before user clicks Execute).
-	String active_plan_md_path;  // Plan MD being executed right now (copied from pending at click time).
-	// Step-by-step plan execution state.
-	Vector<String> plan_execution_steps;    // Parsed numbered steps from last plan.
-	int plan_execution_step_idx = 0;        // Current step index during execution.
-	bool plan_step_execution_mode = false;  // True while iterating steps (bypasses plan intercept).
-	bool is_waiting_response = false;
-	String current_chat_id;
-	String last_user_input; // Raw text of the most recent user-originated message (not auto-retry prompts).
-	int auto_retry_count = 0;
-	static const int MAX_AUTO_RETRIES = 3; // Increased from 2 to 3.
-
-	// N1: Deferred error check timer.
-	Timer *deferred_error_timer = nullptr;
-
-	// --- Runtime Error Auto-Fix (always-on, passive) ---
-	bool runtime_was_playing = false;
-	bool runtime_fix_in_progress = false;   // AI response should be auto-executed
-	bool runtime_restart_after_fix = false; // Restart scene after successful execution
-	int runtime_fix_attempt = 0;
-	static const int RUNTIME_MAX_ATTEMPTS = 5;
-	String runtime_last_play_path;          // Scene path recorded when play started
-	Timer *runtime_poll_timer = nullptr;    // 200 ms — detects play start/stop
-	Timer *runtime_collect_timer = nullptr; // 2 s one-shot — stop scene after first error
-	bool runtime_eh_installed = false;
-	ErrorHandlerList runtime_eh;
-	static String s_runtime_errors; // Captured error text (main-thread only)
-
-	// --- Streaming state ---
-	struct StreamChunk {
-		String text;
-		bool is_thinking = false;
-	};
-
-	Thread stream_thread;
-	Mutex stream_mutex;
-	Vector<StreamChunk> stream_chunk_queue;
-	String stream_accumulated;         // Content text only.
-	String stream_thinking_accumulated; // Thinking text only.
-	bool stream_inside_think_tag = false; // Tracking <think>...</think> in content.
-	String stream_tag_buffer;          // Buffer for partial tag detection.
-	bool stream_active = false;
-	bool stream_finished = false;
-	bool stream_error = false;
-	bool stream_stop_requested = false;
-	String stream_error_msg;
-	int stream_response_code = 0;
-	Timer *stream_poll_timer = nullptr;
-	bool stream_display_started = false;
-
-	// Thinking display state.
-	bool thinking_phase_active = false;    // Currently receiving thinking tokens.
-	bool thinking_collapsed = false;       // Thinking has been collapsed into a link.
-	bool ai_prefix_shown = false;          // Whether "AI: " prefix was added.
-	int thinking_display_para_start = 0;   // Paragraph index where thinking display starts.
-	bool generic_thinking_shown = false;   // Generic "Thinking..." shown for non-thinking models.
-
-	String _stream_url;
-	Vector<String> _stream_headers;
-	String _stream_body;
-	Ref<AIProvider> _stream_provider;
-
-	// Methods.
+	// --- User actions ---
 	void _on_send_pressed();
-	// Clears retry / runtime-fix / plan-step flags so they can't outlive the run that set them.
-	void _reset_automation_state();
 	void _on_stop_pressed();
 	void _on_new_chat_pressed();
 	void _on_history_pressed();
 	void _on_screenshot_pressed();
-	void _on_settings_pressed();
-	void _on_preset_pressed(const String &p_prompt);
-	void _on_input_gui_input(const Ref<class InputEvent> &p_event);
-	void _on_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-
-	void _send_to_api(const String &p_message);
-	// p_is_stopped_partial: true when the user pressed Stop and the response is
-	// incomplete.  In that case code blocks are NOT executed and the auto-retry
-	// loop is suppressed — we never want Stop to trigger new API requests.
-	void _handle_ai_response(const String &p_response, bool p_is_stopped_partial = false);
-	void _append_message(const String &p_sender, const String &p_text, const Color &p_color, bool p_bbcode = false);
-	void _append_code_block(const String &p_code);
-	void _update_provider();
-
-	String _get_system_prompt(const String &p_current_message) const;
-
-	// Streaming methods.
-	void _start_streaming(const String &p_url, const Vector<String> &p_headers, const String &p_body);
-	static void _stream_thread_func_static(void *p_userdata);
-	void _stream_thread_func();
-	bool _stream_stop_requested_locked();
-	void _on_stream_poll();
-	void _finish_streaming();
-	void _collapse_thinking_display();
-
-	// N1: Self-healing deferred error check.
-	void _execute_code_with_monitoring(const String &p_code);
-	void _on_deferred_error_check();
-	String _extract_code_summary(const String &p_code) const;
-
-	// Node mention system (chip-based via inline objects).
-	Ref<AIMentionHighlighter> mention_highlighter; // Hides PUA placeholder chars.
-	Panel *autocomplete_panel = nullptr;
-	ObjectID autocomplete_panel_id; // For safe release: the editor root may free the overlay first.
-	ItemList *autocomplete_list = nullptr;
-	int autocomplete_at_line = -1;
-	int autocomplete_at_col = -1;
-	bool _suppress_autocomplete = false; // Prevents re-opening during commit.
-	Button *mention_button = nullptr;
-
-	void _update_input_height();
-	void _on_input_text_changed();
-	void _show_mention_autocomplete(int p_line, int p_col, const String &p_partial);
-	void _hide_mention_autocomplete();
-	void _commit_mention_autocomplete(int p_item_idx);
-	void _on_mention_button_pressed();
-	Vector<String> _get_all_scene_node_names() const;
-
-	Vector<NodeInfo> _get_all_scene_node_infos() const;
-	Vector<NodeInfo> autocomplete_node_infos; // Cached during autocomplete show.
-
-	// File autocomplete — populated alongside node items when @ is typed.
-	Vector<FileInfo> _get_file_infos(const String &p_partial) const;
-	Vector<FileInfo> autocomplete_file_infos; // Cached during autocomplete show.
-
-	// N4: Attachment methods.
 	void _on_attach_pressed();
+	void _on_settings_pressed();
+	void _on_settings_confirmed();
+	void _on_preset_pressed(const String &p_prompt_id);
 	void _on_file_attach_selected(const String &p_path);
-
-	// N5: Code save.
-	void _on_meta_clicked(const Variant &p_meta);
-
-	// N6: Permission confirmation.
+	void _on_link_clicked(int p_kind, int p_id);
 	void _on_permission_confirmed();
 	void _on_permission_cancelled();
+	void _on_input_gui_input(const Ref<class InputEvent> &p_event);
+	void _update_input_height();
+	void _save_code_block(int p_index);
+	void _revert_checkpoint(int p_checkpoint_id);
+	void _show_details(const String &p_response);
+	void _show_thinking(const String &p_thinking);
 
-	// N8/N9: Asset generation.
-	void _handle_image_generation(const String &p_prompt, const String &p_save_path);
-	void _handle_audio_generation(const String &p_prompt, const String &p_save_path);
-	void _on_asset_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	// --- Controller events ---
+	void _on_state_changed(int p_state);
+	void _on_permission_requested(const String &p_text);
+	void _on_session_changed();
 
-	// Chat history persistence.
-	String _get_chats_dir() const;
-	void _generate_chat_id();
-	void _save_current_chat();
-	void _load_chat(const String &p_file_path);
+	// --- History view ---
 	void _show_history_view();
 	void _show_chat_view();
 	void _populate_history_list();
 	void _on_history_item_clicked(const String &p_file_path);
 	void _on_history_item_deleted(const String &p_file_path);
+	void _on_history_delete_pressed(const String &p_file_path);
+	void _ask_to_confirm(const String &p_text, const Callable &p_action);
+	void _on_confirm_accepted();
+	void _restore_last_chat();
+
+	// --- Construction ---
+	void _build_toolbar();
+	void _build_chat_area();
+	void _build_input_bar();
+	void _build_dialogs();
+	void _connect_controller();
+	Button *_add_button(Control *p_parent, void (AIAssistantPanel::*p_handler)());
 
 	void _refresh_ui_texts();
+	void _system_message(const String &p_text, AIAgentController::NoticeLevel p_level = AIAgentController::NOTICE_INFO);
 	bool _get_send_on_enter() const;
-	bool _get_autorun() const;
-	AIMode _get_current_mode() const;
-	void _on_mode_changed(int p_index);
-
-	// Runtime error auto-fix.
-	static void _runtime_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
-	void _on_runtime_poll_timeout();
-	void _on_runtime_collect_timeout();
-	String _save_plan_to_md(const Vector<String> &p_steps, const String &p_full_plan_text);
-	void _mark_plan_steps_done(const String &p_md_path);
-	void _mark_one_plan_step_done(const String &p_md_path, int p_step_idx);
-	void _execute_plan_next_step();
-
-public:
-	// Called by AIAssistantPlugin when the debugger session starts (game connected).
-	// Clears stale error buffers before any new-run errors can arrive, eliminating
-	// the race condition where _ready() errors arrive before the 200 ms poll fires.
-	void on_game_session_started();
-private:
-	void _install_runtime_error_handler();
-	void _remove_runtime_error_handler();
-	void _trigger_runtime_fix();
-
-	// Web search.
-	void _handle_web_search(const String &p_query, const String &p_user_message);
-	void _handle_fetch_url(const String &p_url, const String &p_user_message);
-	void _on_web_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-
-	// Cross-session learning — appends a discovered quirk to res://godot_ai.md.
-	void _handle_write_memory(const String &p_content);
-
-	// Context compression.
-	void _compress_context_if_needed();
-	// Reactive compression: parses "context too long" API errors, extracts the
-	// exact token gap, drops the minimum number of message groups to cover it,
-	// then retries the request. Returns true if a retry was initiated.
-	bool _try_reactive_compress(const String &p_error_msg);
-	bool reactive_retry_pending = false; // Guard against recursive retries.
-	// "provider/model" pairs that rejected an explicit temperature this session.
-	HashSet<String> models_without_temperature;
-	String _temperature_key() const;
-	// Re-sends the last user message after a recoverable API error.
-	void _retry_last_user_message();
-	// If the API rejected the `temperature` parameter, stop sending it and retry.
-	bool _try_retry_without_temperature(const String &p_error_msg);
-	String _build_message_summary(const Dictionary &p_msg) const;
-	int _estimate_tokens(const String &p_text) const;
-
-	// Compression settings (loaded from EditorSettings).
-	int    compression_keep_recent    = 6;    // How many recent messages to always preserve.
-	float  compression_threshold_pct  = 0.70f; // Compress when history exceeds this fraction of available window.
-	bool   compression_use_ai_summary = false; // Send old messages to AI for a rich summary instead of truncating.
-	void   _load_compression_settings();
-
-	// AI-summary background request (only active when compression_use_ai_summary=true).
-	HTTPRequest *summary_http_request  = nullptr;
-	bool         summary_request_active = false;
-	// Exact heuristic block the in-flight AI summary will replace. Matching on the
-	// full text (not just the marker) keeps later compression rounds, the scripts
-	// snapshot and reactive-compaction lines intact, and makes a stale reply a no-op.
-	String       summary_placeholder_block;
-	// Estimated size of the last system prompt sent, so the compression threshold
-	// is computed against the window that is actually left for history.
-	int          last_system_prompt_tokens = 0;
-	void _request_ai_summary(const Array &p_messages, const String &p_placeholder_block);
-	// Drops an in-flight summary so it can't land in a different conversation.
-	void _cancel_pending_summary();
-	void _on_summary_completed(int p_result, int p_response_code,
-	                           const PackedStringArray &p_headers,
-	                           const PackedByteArray   &p_body);
 
 protected:
 	void _notification(int p_what);
-	static void _bind_methods();
+	static void _bind_methods() {}
 
 public:
-	// Called by AIAssistantPlugin when "Mention in AI Assistant" is picked
-	// from the scene-tree right-click menu.
-	void insert_mention_of_selected_node();
+	// Called by AIAssistantPlugin when the debugger connects to a started game.
+	void on_game_session_started();
 
-	// Context-menu callbacks — invoked by AIContextMenuPlugin instances.
-	// p_arg for scene tree: Array of Node* (TypedArray<Node>).
-	// p_arg for filesystem: PackedStringArray of file paths.
+	// Toolbar "@" button and the scene-tree menu entry.
+	void insert_mention_of_selected_node();
+	// Context-menu callbacks: an Array of Node, or a PackedStringArray of paths.
 	void mention_nodes_from_context(const Variant &p_arg);
 	void mention_files_from_context(const Variant &p_arg);
 
 	AIAssistantPanel();
-	~AIAssistantPanel();
 };
 
 #endif // TOOLS_ENABLED

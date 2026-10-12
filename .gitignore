@@ -10,3 +10,5 @@ Thumbs.db
 .idea/
 
 *.log
+*.gen.h
+evals/results/

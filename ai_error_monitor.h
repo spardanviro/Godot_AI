@@ -5,6 +5,7 @@
 #include "core/object/ref_counted.h"
 #include "core/error/error_macros.h"
 #include "core/string/ustring.h"
+#include "core/os/mutex.h"
 #include "core/os/time.h"
 
 // Monitors editor console errors/warnings AND game runtime debugger errors.
@@ -34,8 +35,15 @@ public:
 
 private:
 	static AIErrorMonitor *singleton;
+	// Guards `singleton` against the monitor being destroyed while the
+	// debugger hands it an error.
+	static Mutex singleton_mutex;
 
 	ErrorHandlerList error_handler;
+	// Errors are reported on whichever thread printed them (resource
+	// loading, imports, HTTP workers), while the main thread reads the
+	// buffers: every access to the members below takes this lock.
+	mutable Mutex mutex;
 	Vector<ErrorEntry> all_errors;           // Ring buffer of all editor/console errors.
 	Vector<ErrorEntry> ai_errors;            // Errors captured during AI execution window.
 	Vector<DebuggerErrorEntry> debugger_errors; // Ring buffer of game runtime errors.
@@ -51,14 +59,19 @@ protected:
 public:
 	static AIErrorMonitor *get_singleton() { return singleton; }
 
+	// Files an error as the engine's error handler does. Public so that
+	// tests can report one without going through the engine's printing.
+	void record(const String &p_function, const String &p_file, int p_line, const String &p_error, const String &p_message, bool p_is_warning);
+
 	// Called before/after AI code execution.
 	void begin_ai_execution();
 	void end_ai_execution();
-	bool is_ai_executing() const { return ai_execution_active; }
+	bool is_ai_executing() const;
 
 	// Get errors captured during the most recent AI execution window.
-	Vector<ErrorEntry> get_ai_execution_errors() const { return ai_errors; }
-	String get_ai_execution_errors_text() const;
+	Vector<ErrorEntry> get_ai_execution_errors() const;
+	// p_include_warnings false: only what actually went wrong.
+	String get_ai_execution_errors_text(bool p_include_warnings = true) const;
 	bool has_ai_execution_errors() const;
 
 	// Get recent non-AI errors for user-initiated analysis.

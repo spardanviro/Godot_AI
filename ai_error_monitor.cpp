@@ -1,9 +1,13 @@
 #ifdef TOOLS_ENABLED
 
 #include "ai_error_monitor.h"
+#include "ai_network_thread.h"
+
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 
 AIErrorMonitor *AIErrorMonitor::singleton = nullptr;
+Mutex AIErrorMonitor::singleton_mutex;
 
 void AIErrorMonitor::_bind_methods() {
 }
@@ -14,73 +18,89 @@ void AIErrorMonitor::_error_handler_func(void *p_userdata, const char *p_functio
 		return;
 	}
 
+	// What the assistant's own network threads print (a refused connection,
+	// a TLS alert) is neither the user's code nor the model's.
+	if (AINetworkThread::is_current()) {
+		return;
+	}
+
 	// Only capture errors and warnings, skip shader/script parsing noise.
 	if (p_type != ERR_HANDLER_ERROR && p_type != ERR_HANDLER_WARNING && p_type != ERR_HANDLER_SCRIPT) {
 		return;
 	}
 
-	// Filter out errors from the AI assistant module (e.g., chat save failures).
-	// These are internal panel issues, not user or AI code errors.
-	String file_str = p_file ? String(p_file) : "";
-	if (file_str.find("ai_assistant") >= 0 ||
-		file_str.find("ai_error_monitor") >= 0 ||
-		file_str.find("ai_checkpoint") >= 0 ||
-		file_str.find("ai_permission") >= 0 ||
-		file_str.find("ai_web_search") >= 0 ||
-		file_str.find("ai_image_gen") >= 0 ||
-		file_str.find("ai_audio_gen") >= 0 ||
-		file_str.find("ai_profiler") >= 0 ||
-		file_str.find("ai_context") >= 0 ||
-		file_str.find("ai_ui_agent") >= 0) {
-		return;
-	}
+	// Nothing from here on may print an error: the engine's error lock is held.
+	self->record(p_function ? String(p_function) : String(), p_file ? String(p_file) : String(), p_line,
+			p_error ? String(p_error) : String(), p_message ? String(p_message) : String(), p_type == ERR_HANDLER_WARNING);
+}
 
-	// Also filter by error message content — some errors (e.g., directory creation)
-	// come from Godot core but are triggered by AI panel operations.
-	String msg_str = p_error ? String(p_error) : "";
-	String detail_str = p_message ? String(p_message) : "";
-	if (msg_str.find("ai_assistant_chats") >= 0 || detail_str.find("ai_assistant_chats") >= 0) {
+void AIErrorMonitor::record(const String &p_function, const String &p_file, int p_line, const String &p_error, const String &p_message, bool p_is_warning) {
+	// Errors of the assistant itself (a chat that could not be saved, a
+	// checkpoint that could not be written) are its own business, not
+	// something to hand to the model as the project's problem.
+	static const char *own_files[] = {
+		"ai_assistant", "ai_error_monitor", "ai_checkpoint", "ai_permission", "ai_web_search",
+		"ai_image_gen", "ai_audio_gen", "ai_profiler", "ai_context", nullptr
+	};
+	for (int i = 0; own_files[i]; i++) {
+		if (p_file.find(own_files[i]) >= 0) {
+			return;
+		}
+	}
+	// Some come from the engine's core but are caused by the panel.
+	if (p_error.find("ai_assistant_chats") >= 0 || p_message.find("ai_assistant_chats") >= 0) {
 		return;
 	}
 
 	ErrorEntry entry;
-	entry.message = String(p_error);
-	if (p_message && p_message[0]) {
-		entry.message += ": " + String(p_message);
-	}
-	entry.function = p_function ? String(p_function) : "";
-	entry.file = p_file ? String(p_file) : "";
+	entry.message = p_message.is_empty() ? p_error : p_error + ": " + p_message;
+	entry.function = p_function;
+	entry.file = p_file;
 	entry.line = p_line;
-	entry.is_warning = (p_type == ERR_HANDLER_WARNING);
-	entry.during_ai_execution = self->ai_execution_active;
-	entry.timestamp = Time::get_singleton()->get_ticks_msec();
+	entry.is_warning = p_is_warning;
+	// OS outlives every thread that can still print; Time does not.
+	entry.timestamp = OS::get_singleton()->get_ticks_msec();
 
-	// Add to appropriate buffers.
-	if (self->ai_execution_active) {
-		self->ai_errors.push_back(entry);
+	MutexLock lock(mutex);
+	entry.during_ai_execution = ai_execution_active;
+	if (ai_execution_active) {
+		ai_errors.push_back(entry);
 	}
-
-	self->all_errors.push_back(entry);
-	while (self->all_errors.size() > self->max_buffer_size) {
-		self->all_errors.remove_at(0);
+	all_errors.push_back(entry);
+	while (all_errors.size() > max_buffer_size) {
+		all_errors.remove_at(0);
 	}
 }
 
 void AIErrorMonitor::begin_ai_execution() {
+	MutexLock lock(mutex);
 	ai_errors.clear();
 	ai_execution_active = true;
 }
 
 void AIErrorMonitor::end_ai_execution() {
+	MutexLock lock(mutex);
 	ai_execution_active = false;
 }
 
+bool AIErrorMonitor::is_ai_executing() const {
+	MutexLock lock(mutex);
+	return ai_execution_active;
+}
+
+Vector<AIErrorMonitor::ErrorEntry> AIErrorMonitor::get_ai_execution_errors() const {
+	MutexLock lock(mutex);
+	return ai_errors;
+}
+
 bool AIErrorMonitor::has_ai_execution_errors() const {
+	MutexLock lock(mutex);
 	return !ai_errors.is_empty();
 }
 
-String AIErrorMonitor::get_ai_execution_errors_text() const {
-	if (ai_errors.is_empty()) {
+String AIErrorMonitor::get_ai_execution_errors_text(bool p_include_warnings) const {
+	const Vector<ErrorEntry> errors = get_ai_execution_errors();
+	if (errors.is_empty()) {
 		return "";
 	}
 
@@ -88,8 +108,11 @@ String AIErrorMonitor::get_ai_execution_errors_text() const {
 	Vector<String> unique_lines;
 	Vector<int> counts;
 
-	for (int i = 0; i < ai_errors.size(); i++) {
-		const ErrorEntry &e = ai_errors[i];
+	for (int i = 0; i < errors.size(); i++) {
+		const ErrorEntry &e = errors[i];
+		if (e.is_warning && !p_include_warnings) {
+			continue;
+		}
 
 		String line;
 		line += (e.is_warning ? "[WARNING] " : "[ERROR] ");
@@ -132,15 +155,20 @@ String AIErrorMonitor::get_ai_execution_errors_text() const {
 }
 
 String AIErrorMonitor::get_recent_console_errors(int p_count) const {
-	if (all_errors.is_empty()) {
+	Vector<ErrorEntry> errors;
+	{
+		MutexLock lock(mutex);
+		errors = all_errors;
+	}
+	if (errors.is_empty()) {
 		return "No recent errors or warnings in the console.";
 	}
 
 	String result;
-	int start = MAX(0, all_errors.size() - p_count);
+	int start = MAX(0, errors.size() - p_count);
 	int count = 0;
-	for (int i = start; i < all_errors.size(); i++) {
-		const ErrorEntry &e = all_errors[i];
+	for (int i = start; i < errors.size(); i++) {
+		const ErrorEntry &e = errors[i];
 		// Skip AI-execution errors for user analysis — they were already handled.
 		if (e.during_ai_execution) {
 			continue;
@@ -164,9 +192,14 @@ String AIErrorMonitor::get_recent_console_errors(int p_count) const {
 }
 
 int AIErrorMonitor::get_recent_error_count() const {
+	Vector<ErrorEntry> errors;
+	{
+		MutexLock lock(mutex);
+		errors = all_errors;
+	}
 	int count = 0;
-	for (int i = 0; i < all_errors.size(); i++) {
-		if (!all_errors[i].during_ai_execution) {
+	for (int i = 0; i < errors.size(); i++) {
+		if (!errors[i].during_ai_execution) {
 			count++;
 		}
 	}
@@ -174,10 +207,12 @@ int AIErrorMonitor::get_recent_error_count() const {
 }
 
 void AIErrorMonitor::clear_ai_errors() {
+	MutexLock lock(mutex);
 	ai_errors.clear();
 }
 
 void AIErrorMonitor::receive_debugger_error(const String &p_message, const String &p_file, int p_line, bool p_is_warning) {
+	MutexLock singleton_lock(singleton_mutex);
 	AIErrorMonitor *self = singleton;
 	if (!self) {
 		return;
@@ -187,8 +222,9 @@ void AIErrorMonitor::receive_debugger_error(const String &p_message, const Strin
 	entry.file = p_file;
 	entry.line = p_line;
 	entry.is_warning = p_is_warning;
-	entry.timestamp = Time::get_singleton()->get_ticks_msec();
+	entry.timestamp = OS::get_singleton()->get_ticks_msec();
 
+	MutexLock lock(self->mutex);
 	self->debugger_errors.push_back(entry);
 	while (self->debugger_errors.size() > self->max_debugger_buffer_size) {
 		self->debugger_errors.remove_at(0);
@@ -196,13 +232,18 @@ void AIErrorMonitor::receive_debugger_error(const String &p_message, const Strin
 }
 
 String AIErrorMonitor::get_recent_debugger_errors(int p_count) const {
-	if (debugger_errors.is_empty()) {
+	Vector<DebuggerErrorEntry> errors;
+	{
+		MutexLock lock(mutex);
+		errors = debugger_errors;
+	}
+	if (errors.is_empty()) {
 		return "";
 	}
 	String result;
-	int start = MAX(0, debugger_errors.size() - p_count);
-	for (int i = start; i < debugger_errors.size(); i++) {
-		const DebuggerErrorEntry &e = debugger_errors[i];
+	int start = MAX(0, errors.size() - p_count);
+	for (int i = start; i < errors.size(); i++) {
+		const DebuggerErrorEntry &e = errors[i];
 		if (!result.is_empty()) {
 			result += "\n";
 		}
@@ -216,14 +257,17 @@ String AIErrorMonitor::get_recent_debugger_errors(int p_count) const {
 }
 
 int AIErrorMonitor::get_debugger_error_count() const {
+	MutexLock lock(mutex);
 	return debugger_errors.size();
 }
 
 void AIErrorMonitor::clear_debugger_errors() {
+	MutexLock lock(mutex);
 	debugger_errors.clear();
 }
 
 void AIErrorMonitor::clear_all() {
+	MutexLock lock(mutex);
 	ai_errors.clear();
 	all_errors.clear();
 	debugger_errors.clear();
@@ -238,6 +282,7 @@ AIErrorMonitor::AIErrorMonitor() {
 
 AIErrorMonitor::~AIErrorMonitor() {
 	remove_error_handler(&error_handler);
+	MutexLock singleton_lock(singleton_mutex);
 	if (singleton == this) {
 		singleton = nullptr;
 	}

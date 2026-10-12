@@ -1,36 +1,23 @@
 #pragma once
 
-#include "../ai_provider.h"
+#include "openai_compatible_provider.h"
 
-// Zhipu AI GLM provider — OpenAI-compatible chat completions API.
-class GLMProvider : public AIProvider {
-	GDCLASS(GLMProvider, AIProvider);
+// Zhipu AI GLM.
+class GLMProvider : public OpenAICompatibleProvider {
+	GDCLASS(GLMProvider, OpenAICompatibleProvider);
 
 protected:
-	static void _bind_methods();
+	static void _bind_methods() {}
+
+	virtual bool _accepts_listed_model(const String &p_id) const override;
+	// glm-5.1 is undocumented but live.
+	virtual Vector<String> _get_preferred_models() const override { return { "glm-5.1", "glm-5", "glm-5-turbo" }; }
 
 public:
-	virtual String get_provider_name() const override;
-	virtual String get_default_endpoint() const override;
-	virtual String get_default_model() const override;
+	virtual String get_provider_name() const override { return "glm"; }
+	virtual String get_default_endpoint() const override { return "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"; }
+	virtual String get_default_model() const override { return "glm-5.1"; }
 
-	virtual String build_request_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message) const override;
-	virtual String parse_response(const String &p_response_body) const override;
-	virtual Vector<String> get_headers() const override;
-
-	virtual String get_models_list_url() const override;
-	virtual Vector<String> get_models_list_headers() const override;
-	virtual PackedStringArray parse_models_list(const String &p_response_body) const override;
-	virtual String select_best_model(const PackedStringArray &p_models) const override;
-
-	virtual int get_model_context_length() const override;
-	virtual int get_recommended_max_tokens() const override;
-
-	// Streaming.
-	virtual String build_stream_request_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message) const override;
-	virtual String parse_stream_delta(const String &p_data) const override;
-	virtual Dictionary parse_stream_delta_ex(const String &p_data) const override;
-	virtual bool is_stream_done_marker(const String &p_data) const override;
-
-	GLMProvider();
+	virtual int get_model_context_length() const override { return _get_effective_model().find("glm-5") >= 0 ? 200000 : 128000; }
+	virtual int get_recommended_max_tokens() const override { return _get_effective_model().find("glm-5") >= 0 ? 32768 : 16384; }
 };
