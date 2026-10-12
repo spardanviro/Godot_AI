@@ -14,10 +14,12 @@ struct AIToolSpec {
 		KIND_READ, // Looks, changes nothing: needs no permission and nothing to undo.
 		KIND_EDIT, // Changes the scene or a file; subject to the user's permissions.
 		KIND_HOST, // Takes time or the user (running the game, a script): carried out by the agent loop.
+		KIND_WEB, // Looks something up on the web: changes nothing, but takes time, so the agent loop waits for it.
 	};
 	Kind kind = KIND_READ;
 
-	bool is_read_only() const { return kind == KIND_READ; }
+	// Offered in every mode, including the ones in which nothing may change.
+	bool is_read_only() const { return kind == KIND_READ || kind == KIND_WEB; }
 };
 
 // One request by the model to run a tool, as it arrived.

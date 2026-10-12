@@ -30,6 +30,26 @@ void AIAssetService::_notify(int p_level, const String &p_text) {
 	emit_signal(SNAME("notice"), p_level, p_text);
 }
 
+bool AIAssetService::can_generate(const AIAssetRequest &p_request, String &r_reason) {
+	if (!AIAssetRequest::is_safe_path(p_request.save_path)) {
+		r_reason = "'" + p_request.save_path + "' is not a path an asset can be saved to: it has to be an image or audio file inside res://.";
+		return false;
+	}
+	if (AICredentialStore::get_api_key("openai").is_empty()) {
+		r_reason = "image and speech generation use the OpenAI API, and no OpenAI API key is set. Tell the user to add one in the assistant's settings.";
+		return false;
+	}
+	return true;
+}
+
+String AIAssetService::get_save_path(const AIAssetRequest &p_request) {
+	if (p_request.save_path.is_empty()) {
+		return p_request.is_audio ? DEFAULT_AUDIO_PATH : DEFAULT_IMAGE_PATH;
+	}
+	// The speech API is asked for mp3 whatever extension the model picked.
+	return p_request.is_audio && p_request.save_path.ends_with(".wav") ? p_request.save_path.get_basename() + ".mp3" : p_request.save_path;
+}
+
 void AIAssetService::enqueue(const AIAssetRequest &p_request) {
 	const String kind_en = p_request.is_audio ? "Audio" : "Image";
 	const String kind_zh = p_request.is_audio ? U"音频" : U"图像";
@@ -88,11 +108,7 @@ void AIAssetService::_on_request_completed(int p_result, int p_response_code, co
 		const String body_text = String::utf8((const char *)p_body.ptr(), p_body.size());
 		_notify(AI_NOTICE_ERROR, AI_L("Asset generation failed (HTTP ", "资源生成失败 (HTTP ") + itos(p_response_code) + "): " + body_text.left(300));
 	} else if (current.is_audio) {
-		String path = current.save_path.is_empty() ? String(DEFAULT_AUDIO_PATH) : current.save_path;
-		// The speech API is asked for mp3 whatever extension the model picked.
-		if (path.ends_with(".wav")) {
-			path = path.get_basename() + ".mp3";
-		}
+		const String path = get_save_path(current);
 		if (AIAudioGenerator::save_audio_bytes(p_body, path)) {
 			_notify(AI_NOTICE_SUCCESS, AI_L("Audio saved: ", "音频已保存：") + path);
 		} else {
@@ -100,7 +116,7 @@ void AIAssetService::_on_request_completed(int p_result, int p_response_code, co
 		}
 	} else {
 		const String b64 = AIImageGenerator::parse_response(String::utf8((const char *)p_body.ptr(), p_body.size()));
-		const String path = current.save_path.is_empty() ? String(DEFAULT_IMAGE_PATH) : current.save_path;
+		const String path = get_save_path(current);
 		if (b64.is_empty()) {
 			_notify(AI_NOTICE_ERROR, AI_L("Failed to parse image response.", "图像响应解析失败。"));
 		} else if (AIImageGenerator::save_base64_as_texture(b64, path)) {

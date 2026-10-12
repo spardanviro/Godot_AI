@@ -133,7 +133,7 @@ Requests   41 (11 automatic retries)
 
 ### Tool calls
 
-`tasks/tools.json` holds the tasks for tool calling; in a mock run each one scripts the model's side of the exchange. A canned reply can carry tool calls and state what the request it answers must look like:
+`tasks/tools.json` holds the tasks for tool calling (including the web, asset and memory tools, which are exercised on the paths that need no network: refused addresses, the request limit, a missing key); in a mock run each one scripts the model's side of the exchange. A canned reply can carry tool calls and state what the request it answers must look like:
 
 ```json
 { "requires_tool_result": "position = Vector2(120, 80)",

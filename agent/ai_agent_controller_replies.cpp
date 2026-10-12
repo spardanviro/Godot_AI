@@ -68,7 +68,9 @@ void AIAgentController::_handle_response(const String &p_response, const String 
 
 	PackedStringArray text_segments;
 	const Vector<String> code_blocks = _parse_reply(p_response, text_segments);
-	run.markers = AIResponseAnalysis::parse_markers(p_response);
+	// A model that was offered tools asks for the web, assets and notes with
+	// those; the text markers are only for one that has none.
+	run.markers = provider->has_tools() ? AIResponseAnalysis::Markers() : AIResponseAnalysis::parse_markers(p_response);
 	AI_LOG("Reply: " + itos(text_segments.size()) + " text segments, " + itos(code_blocks.size()) + " code blocks");
 
 	if (code_blocks.is_empty()) {
@@ -127,10 +129,14 @@ void AIAgentController::_handle_text_only(const PackedStringArray &p_text_segmen
 
 	// Asked once. A second answer in text is the model's considered reply
 	// (a refusal, a question back), not an oversight to keep pushing on.
-	if (expects_code && !run.no_code_nudged && run.retries < MAX_AUTO_RETRIES) {
+	// A model that has the tools is not asked at all when it answers the
+	// user: it could have acted and chose to speak. Only a step it was sent
+	// to carry out (a plan step, a runtime fix) is asked for again.
+	const bool has_tools = _edits_with_tools();
+	if (expects_code && !(has_tools && run.kind == RUN_USER_TURN) && !run.no_code_nudged && run.retries < MAX_AUTO_RETRIES) {
 		run.no_code_nudged = true;
 		_emit_response(p_text_segments, Vector<String>(), false, false);
-		_retry_or_fail("retry_no_code", Dictionary(), String(U"⚠ ") + TR(STR_NO_CODE_BLOCK_RETRY), String());
+		_retry_or_fail(has_tools ? "retry_no_tools" : "retry_no_code", Dictionary(), String(U"⚠ ") + TR(STR_NO_CODE_BLOCK_RETRY), String());
 		return;
 	}
 
@@ -169,9 +175,11 @@ void AIAgentController::_handle_plan(const PackedStringArray &p_text_segments) {
 void AIAgentController::_handle_code(const String &p_code) {
 	// "Ask" permissions always ask. With auto-execute off everything asks,
 	// a runtime fix included: what it reacts to is text printed by the
-	// running project, which is not the user speaking.
+	// running project, which is not the user speaking. And a model that has
+	// the tools but wrote code to be run anyway is asking for the fallback:
+	// arbitrary code, which the user sees first (see _start_script_tool).
 	const bool autorun = AISettings::get("autorun", true);
-	const AICodeRunner::Review review = code_runner.review(p_code, !autorun);
+	const AICodeRunner::Review review = code_runner.review(p_code, !autorun || _edits_with_tools());
 
 	switch (review.action) {
 		case AICodeRunner::ACTION_FIX_SYNTAX: {
@@ -374,6 +382,10 @@ bool AIAgentController::_start_web_request() {
 void AIAgentController::_on_web_request_finished(const String &p_content) {
 	if (state != STATE_WEB_REQUEST) {
 		return; // Stopped meanwhile.
+	}
+	if (run.tool_waiting_for_web) {
+		_finish_web_tool(p_content);
+		return;
 	}
 	if (p_content.is_empty()) {
 		// Nothing to feed back; finish as if no web data had been asked for.

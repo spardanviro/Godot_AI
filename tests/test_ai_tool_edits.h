@@ -2,6 +2,7 @@
 
 #include "../agent/ai_session.h"
 #include "../execution/ai_permission_manager.h"
+#include "../prompt/ai_knowledge.h"
 #include "../prompt/ai_system_prompt.h"
 #include "../providers/ai_provider.h"
 #include "../tools/ai_tool_values.h"
@@ -242,6 +243,47 @@ TEST_CASE("[AIAssistant][SceneTree][ToolEdits] an anchor preset on a Control tak
 	CHECK(title->get_anchor(SIDE_TOP) == doctest::Approx(0.0));
 }
 
+TEST_CASE("[AIAssistant][SceneTree][ToolEdits] a node moves to another parent with what is under it, and stays owned by the scene") {
+	Scene scene;
+	bool ok = false;
+
+	const String moved = scene.run("move_node", "{\"path\": \"Enemy\", \"parent\": \"Start\"}", &ok);
+
+	CHECK(ok);
+	CHECK(moved.contains("Moved Enemy to Start/Enemy"));
+	const Node *shape = scene.root->get_node_or_null(NodePath("Start/Enemy/Shape"));
+	REQUIRE(shape);
+	// Leaving the tree clears owners; without one a node is not saved with the scene.
+	CHECK(shape->get_owner() == scene.root);
+	CHECK(shape->get_parent()->get_owner() == scene.root);
+	CHECK_FALSE(scene.root->has_node(NodePath("Enemy")));
+}
+
+TEST_CASE("[AIAssistant][SceneTree][ToolEdits] a node is reordered under its parent, and cannot be moved where it cannot go") {
+	Scene scene;
+	bool reordered = false;
+	bool under_itself = true;
+	bool root_moved = true;
+	bool clash = true;
+	bool missing = true;
+
+	scene.run("move_node", "{\"path\": \"Start\", \"parent\": \".\", \"index\": 0}", &reordered);
+	scene.run("move_node", "{\"path\": \"Enemy\", \"parent\": \"Enemy/Shape\"}", &under_itself);
+	scene.run("move_node", "{\"path\": \".\", \"parent\": \"Enemy\"}", &root_moved);
+	scene.run("create_node", "{\"class\": \"Node2D\", \"name\": \"Start\", \"parent\": \"Enemy\"}");
+	const String clash_result = scene.run("move_node", "{\"path\": \"Start\", \"parent\": \"Enemy\"}", &clash);
+	scene.run("move_node", "{\"path\": \"Start\", \"parent\": \"Nowhere\"}", &missing);
+
+	CHECK(reordered);
+	CHECK(scene.root->get_child(0)->get_name() == StringName("Start"));
+	CHECK_FALSE(under_itself);
+	CHECK_FALSE(root_moved);
+	CHECK_FALSE(clash);
+	CHECK(clash_result.contains("already has a child named 'Start'"));
+	CHECK_FALSE(missing);
+	CHECK(scene.root->get_node_or_null(NodePath("Enemy/Shape")));
+}
+
 // --- Files and permissions ---
 
 TEST_CASE("[AIAssistant][ToolEdits] files the editor owns and secret stores are not written; the user's path is") {
@@ -284,6 +326,17 @@ TEST_CASE("[AIAssistant][ToolEdits] each editing tool falls under one permission
 	}
 	CHECK(looking == toolbox.get_specs(true).size());
 	CHECK(toolbox.get_kind("run_editor_script") == AIToolSpec::KIND_HOST);
+	// The web is looked at, not changed: on offer in every mode, but not answered by the toolbox itself.
+	CHECK(toolbox.get_kind("web_search") == AIToolSpec::KIND_WEB);
+	CHECK(toolbox.get_kind("fetch_url") == AIToolSpec::KIND_WEB);
+	bool ok = true;
+	CHECK(toolbox.call("fetch_url", "{\"url\": \"https://example.com\"}", ok).contains("carried out by the agent"));
+	CHECK_FALSE(ok);
+	// What used to be text markers: files written into the project, so under that permission.
+	for (const char *name : { "generate_image", "generate_speech", "remember" }) {
+		CHECK_MESSAGE(toolbox.get_kind(name) == AIToolSpec::KIND_HOST, name);
+		CHECK_MESSAGE(toolbox.get_permission_category(_call("1", name)) == AIPermissionManager::PERM_FILE_WRITE, name);
+	}
 	CHECK(toolbox.get_kind("write_file") == AIToolSpec::KIND_EDIT);
 }
 
@@ -411,15 +464,37 @@ TEST_CASE("[AIAssistant][ToolEdits] Gemini: calls arrive whole, each its own, wi
 
 // --- Prompt variants ---
 
-TEST_CASE("[AIAssistant][ToolEdits] the prompt template yields one variant or the other, without the markers") {
-	const String prompt = "intro\n<!-- SCRIPT-ONLY -->\nwrite a code block\n<!-- END SCRIPT-ONLY -->\n<!-- TOOLS-ONLY -->\nuse the tools\n<!-- END TOOLS-ONLY -->\nshared rules\n";
+TEST_CASE("[AIAssistant][ToolEdits] the prompt template yields one variant, without the marker lines") {
+	const String prompt = "intro\n<!-- SCRIPT-ONLY -->\nwrite a code block\n<!-- END SCRIPT-ONLY -->\n<!-- TOOLS-ONLY -->\nuse the tools\n<!-- END TOOLS-ONLY -->\n"
+						  "<!-- MARKERS-ONLY -->\n[WEB_SEARCH: query]\n<!-- END MARKERS-ONLY -->\nshared rules\n";
 
-	const String script = AISystemPrompt::select_variant(prompt, false);
-	const String tools = AISystemPrompt::select_variant(prompt, true);
+	const String script = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_SCRIPT);
+	const String look_up = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_LOOK_UP);
+	const String tools = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_TOOLS);
 
-	CHECK(script == "intro\nwrite a code block\nshared rules\n");
+	CHECK(script == "intro\nwrite a code block\n[WEB_SEARCH: query]\nshared rules\n");
+	// With tools that only look, the model still writes code to be read, but asks for the web with a tool.
+	CHECK(look_up == "intro\nwrite a code block\nshared rules\n");
 	CHECK(tools == "intro\nuse the tools\nshared rules\n");
-	CHECK(AISystemPrompt::select_variant("no markers\nat all", true) == "no markers\nat all");
+	CHECK(AISystemPrompt::select_variant("no markers\nat all", AISystemPrompt::VARIANT_TOOLS) == "no markers\nat all");
+}
+
+TEST_CASE("[AIAssistant][ToolEdits] the shipped prompt teaches the text markers only to a model without tools") {
+	const String prompt = AIKnowledge::get_singleton()->get_system_prompt();
+
+	const String script = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_SCRIPT);
+	const String look_up = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_LOOK_UP);
+	const String tools = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_TOOLS);
+
+	for (const char *marker : { "[WEB_SEARCH:", "[FETCH_URL:", "[GENERATE_IMAGE:", "[GENERATE_AUDIO:", "[WRITE_MEMORY:" }) {
+		CHECK_MESSAGE(script.contains(marker), marker);
+		CHECK_FALSE_MESSAGE(look_up.contains(marker), marker);
+		CHECK_FALSE_MESSAGE(tools.contains(marker), marker);
+	}
+	CHECK_FALSE(tools.contains("-ONLY -->"));
+	// The variant for tools is the short one: it has no code blocks to teach.
+	CHECK(tools.length() < script.length() / 2);
+	CHECK(tools.length() < 16000);
 }
 
 } // namespace TestAIToolEdits

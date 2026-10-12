@@ -183,8 +183,9 @@ void AIChatView::append_separator() {
 }
 
 void AIChatView::append_tool_call(const String &p_call, bool p_ok, int p_kind) {
-	const String icon = p_kind == AIToolSpec::KIND_READ ? String(U"🔎 ") : (p_kind == AIToolSpec::KIND_EDIT ? String(U"✏ ") : String(U"▶ "));
-	const Color color = !p_ok ? COLOR_WARNING : (p_kind == AIToolSpec::KIND_READ ? COLOR_MUTED : COLOR_SUCCESS);
+	const bool looks = p_kind == AIToolSpec::KIND_READ || p_kind == AIToolSpec::KIND_WEB;
+	const String icon = p_kind == AIToolSpec::KIND_READ ? String(U"🔎 ") : (p_kind == AIToolSpec::KIND_WEB ? String(U"🌐 ") : (p_kind == AIToolSpec::KIND_EDIT ? String(U"✏ ") : String(U"▶ ")));
+	const Color color = !p_ok ? COLOR_WARNING : (looks ? COLOR_MUTED : COLOR_SUCCESS);
 	text->push_color(ai_themed(color));
 	text->add_text(icon + p_call + (p_ok ? String() : AI_L(" — failed", " — 失败")));
 	text->pop();

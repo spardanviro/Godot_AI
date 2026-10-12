@@ -54,6 +54,7 @@ bool AIWebRequester::start(const String &p_search_query, const String &p_fetch_u
 	_join_worker();
 	is_fetch = p_search_query.is_empty();
 	subject = is_fetch ? p_fetch_url : p_search_query;
+	last_error = String();
 
 	options = AIWebFetch::Options();
 	options.should_stop = &AIWebRequester::_should_stop;
@@ -73,6 +74,7 @@ bool AIWebRequester::start(const String &p_search_query, const String &p_fetch_u
 	String reason;
 	if (!AIUrlPolicy::is_public_web_url(url, reason)) {
 		AI_WARN("Web request rejected (" + reason + "): " + _loggable(url));
+		last_error = "the address is not allowed (" + reason + ")";
 		_notify(AI_NOTICE_WARNING, AI_L("Web request skipped: ", "已跳过网络请求：") + reason + ".");
 		return false;
 	}
@@ -103,9 +105,11 @@ void AIWebRequester::_on_poll() {
 	String content;
 	if (!result.ok) {
 		AI_WARN("Web request failed (" + result.error + "): " + _loggable(url));
+		last_error = result.error;
 		_notify(AI_NOTICE_WARNING, AI_L("Web request failed: ", "网络请求失败：") + result.error + ".");
 	} else if (result.response_code != 200) {
 		AI_ERR("Web request failed: HTTP " + itos(result.response_code));
+		last_error = "the server answered HTTP " + itos(result.response_code);
 		_notify(AI_NOTICE_WARNING, AI_L("Web request failed (HTTP ", "网络请求失败 (HTTP ") + itos(result.response_code) + ").");
 	} else {
 		const String body = String::utf8((const char *)result.body.ptr(), result.body.size());
@@ -119,6 +123,7 @@ void AIWebRequester::_on_poll() {
 			content = body;
 		}
 		if (content.is_empty()) {
+			last_error = "nothing useful was found in the response";
 			_notify(AI_NOTICE_WARNING, AI_L("No useful content found.", "未找到有用内容。"));
 		}
 	}

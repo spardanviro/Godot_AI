@@ -115,6 +115,7 @@ AICodeRunner::Result AICodeRunner::execute(const String &p_code) {
 	const Dictionary outcome = script_executor->execute(p_code);
 	result.success = outcome["success"];
 	result.output = outcome["output"];
+	result.printed = outcome.get("printed", "");
 	result.error = outcome["error"];
 
 	Node *scene_root = EditorInterface::get_singleton()->get_edited_scene_root();

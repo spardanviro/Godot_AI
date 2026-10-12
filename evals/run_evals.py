@@ -383,6 +383,13 @@ def run_task(config: RunConfig, task: Task, mock_server: MockModelServer | None,
         result.failed_checks = [f"{check['type']}: {check['detail']}" for check in data.get("checks", []) if not check["passed"]]
         if data.get("error"):
             result.failed_checks.insert(0, str(data["error"]))
+        # The canned exchange went off its script: whatever the checks say, the
+        # run did not show what the task is there to show.
+        response = str(data.get("response", ""))
+        if mock_server is not None and MOCK_UNMET_REPLY in response:
+            result.passed = False
+            unmet = response[response.index(MOCK_UNMET_REPLY) + len(MOCK_UNMET_REPLY):].splitlines()[0]
+            result.failed_checks.insert(0, "the request lacked what the canned reply requires: " + unmet)
         result.status = "passed" if result.passed else "failed"
         result.passes = int(result.passed)
         result.first_try_passes = int(result.passed and result.retries == 0)

@@ -37,6 +37,7 @@ class Timer;
 //   STREAMING ──reply needs a fix / execution failed──▶ STREAMING   (bounded retries)
 //   VERIFYING ──late errors──▶ STREAMING     VERIFYING ──clean──▶ settle
 //   settle ──web marker──▶ WEB_REQUEST ──result──▶ STREAMING
+//   STREAMING ──reply calls tools──▶ run them (AWAITING_PERMISSION / WEB_REQUEST as needed) ──results──▶ STREAMING
 //   settle ──next plan step──▶ STREAMING     settle ──otherwise──▶ IDLE
 //   any state ──stop / error / denied──▶ IDLE
 class AIAgentController : public Node {
@@ -168,6 +169,7 @@ private:
 		String tool_script_code; // run_editor_script: the reviewed code, while the user decides.
 		bool tool_checkpoint_taken = false; // One checkpoint per run, before its first change.
 		bool tool_waiting_for_game = false; // run_scene: the game is running, the timer is on.
+		bool tool_waiting_for_web = false; // web_search / fetch_url: the request is out.
 		int tool_game_errors_before = 0;
 		String tool_image_b64; // A screenshot a tool took, to show with the next request.
 		bool tools_off = false; // No tools for the rest of this run: the model has to answer.
@@ -277,6 +279,10 @@ private:
 	String _take_tool_screenshot(bool &r_ok);
 	bool _start_run_scene(const AIToolCall &p_call);
 	void _on_tool_wait_timeout();
+	bool _start_web_tool(const AIToolCall &p_call);
+	void _finish_web_tool(const String &p_content);
+	String _generate_asset(const AIToolCall &p_call, bool &r_ok);
+	String _remember(const AIToolCall &p_call, bool &r_ok);
 	bool _start_script_tool(const AIToolCall &p_call);
 	void _execute_script_tool(const String &p_code);
 	String _get_mode_prompt_id() const;

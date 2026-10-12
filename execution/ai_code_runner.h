@@ -29,6 +29,7 @@ public:
 	struct Result {
 		bool success = false;
 		String output;
+		String printed; // What the code print()ed: its own account of what it did.
 		String error;
 		String summary; // One line describing what the code did.
 		int checkpoint_id = -1; // For Revert; -1 if nothing could be snapshotted.

@@ -13,14 +13,15 @@ class Node;
 //   - Tools that edit: add, change, connect and delete nodes, attach
 //     scripts, write files. Each scene change is one undoable editor action,
 //     and each falls under one of the user's permission categories.
-//   - Host tools (running the game, a screenshot, an arbitrary script) are
-//     only described here; the agent loop carries them out.
+//   - Host tools (running the game, a screenshot, an arbitrary script,
+//     generated assets, a note to remember) and the web tools (search, fetch)
+//     are only described here; the agent loop carries them out.
 //
 // A tool never fails by raising: what went wrong is the result, as text, and
 // the model reads it like any other.
 class AIToolbox {
 public:
-	// p_read_only: only the tools that look (ASK and PLAN modes).
+	// p_read_only: only the tools that look, in the project or on the web (ASK and PLAN modes).
 	Vector<AIToolSpec> get_specs(bool p_read_only = false) const;
 	bool has_tool(const String &p_name) const;
 	// KIND_READ for a name that is not a tool: calling it only yields an error.
@@ -69,6 +70,7 @@ private:
 	String _instantiate_scene(const Dictionary &p_arguments, bool &r_ok) const;
 	String _set_node_properties(const Dictionary &p_arguments, bool &r_ok) const;
 	String _rename_node(const Dictionary &p_arguments, bool &r_ok) const;
+	String _move_node(const Dictionary &p_arguments, bool &r_ok) const;
 	String _delete_node(const Dictionary &p_arguments, bool &r_ok) const;
 	String _connect_signal(const Dictionary &p_arguments, bool &r_ok) const;
 	String _attach_script(const Dictionary &p_arguments, bool &r_ok) const;

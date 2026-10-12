@@ -185,7 +185,7 @@ TEST_CASE("[AIAssistant][Knowledge] the built-in knowledge base loads completely
 TEST_CASE("[AIAssistant][Knowledge] every prompt template the code asks for exists") {
 	static const char *required[] = {
 		"mode_ask", "mode_plan", "mode_plan_step",
-		"retry_compile_error", "retry_safety", "retry_no_code", "retry_exec_error", "retry_deferred_errors",
+		"retry_compile_error", "retry_safety", "retry_no_code", "retry_no_tools", "retry_exec_error", "retry_deferred_errors",
 		"plan_step", "runtime_fix", "web_results", "summary_system", "summary_user",
 		"preset_fix_errors", "preset_performance", nullptr
 	};

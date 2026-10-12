@@ -357,6 +357,90 @@ String AIToolbox::_rename_node(const Dictionary &p_arguments, bool &r_ok) const 
 	return "Renamed to " + path_of(_get_scene_root(), node) + ". Scripts that used the old path were not changed.";
 }
 
+String AIToolbox::_move_node(const Dictionary &p_arguments, bool &r_ok) const {
+	String error;
+	Node *root = _get_scene_root();
+	Node *node = _find_node(p_arguments.get("path", ""), error);
+	if (!node) {
+		return fail(r_ok, error);
+	}
+	if (node == root) {
+		return fail(r_ok, "the scene root cannot be moved.");
+	}
+	Node *parent = _find_node(p_arguments.get("parent", ""), error);
+	if (!parent) {
+		return fail(r_ok, "'parent': " + error);
+	}
+	if (parent == node || node->is_ancestor_of(parent)) {
+		return fail(r_ok, "a node cannot be moved under itself.");
+	}
+	Node *old_parent = node->get_parent();
+	const int old_index = node->get_index();
+	const String name = node->get_name();
+	if (parent != old_parent && parent->has_node(NodePath(name))) {
+		return fail(r_ok, "'" + path_of(root, parent) + "' already has a child named '" + name + "'. Rename one of them first.");
+	}
+	const Variant index_argument = p_arguments.get("index", Variant());
+	const int last = parent->get_child_count() - (parent == old_parent ? 1 : 0);
+	const int index = index_argument.is_num() ? CLAMP(int(index_argument), 0, last) : last;
+	if (parent == old_parent && index == old_index) {
+		return path_of(root, node) + " is already there.";
+	}
+
+	// Where it is on screen is kept, as the editor does when a node is
+	// dragged to another parent. (Only a node in the tree has such a place.)
+	StringName placement;
+	if (parent != old_parent && node->is_inside_tree() && parent->is_inside_tree()) {
+		if (node->is_class("Node2D") || node->is_class("Node3D")) {
+			placement = "global_transform";
+		} else if (node->is_class("Control")) {
+			placement = "global_position";
+		}
+	}
+	const Variant placed = placement == StringName() ? Variant() : node->get(placement);
+	// The owners under the node are cleared when it leaves its parent; its
+	// own is dropped here, since a node that is added while owned by what is
+	// not yet its ancestor draws a warning. All are set again once it is in.
+	Vector<Node *> owned;
+	collect_owned(node, root, owned);
+	const String old_path = path_of(root, node);
+
+#ifdef TOOLS_ENABLED
+	if (EditorUndoRedoManager *undo = undo_manager(_uses_editor())) {
+		undo->create_action("AI: Move " + name);
+		undo->add_do_method(old_parent, "remove_child", node);
+		undo->add_do_method(node, "set_owner", Variant());
+		undo->add_do_method(parent, "add_child", node, true);
+		undo->add_do_method(parent, "move_child", node, index);
+		undo->add_undo_method(parent, "remove_child", node);
+		undo->add_undo_method(node, "set_owner", Variant());
+		undo->add_undo_method(old_parent, "add_child", node, true);
+		undo->add_undo_method(old_parent, "move_child", node, old_index);
+		for (Node *owned_node : owned) {
+			undo->add_do_method(owned_node, "set_owner", root);
+			undo->add_undo_method(owned_node, "set_owner", root);
+		}
+		if (placement != StringName()) {
+			undo->add_do_property(node, placement, placed);
+			undo->add_undo_property(node, placement, placed);
+		}
+		undo->commit_action();
+		return "Moved " + old_path + " to " + path_of(root, node) + ". Scripts that used the old path were not changed.";
+	}
+#endif
+	old_parent->remove_child(node);
+	node->set_owner(nullptr);
+	parent->add_child(node, true);
+	parent->move_child(node, index);
+	for (Node *owned_node : owned) {
+		owned_node->set_owner(root);
+	}
+	if (placement != StringName()) {
+		node->set(placement, placed);
+	}
+	return "Moved " + old_path + " to " + path_of(root, node) + ". Scripts that used the old path were not changed.";
+}
+
 String AIToolbox::_delete_node(const Dictionary &p_arguments, bool &r_ok) const {
 	String error;
 	Node *root = _get_scene_root();

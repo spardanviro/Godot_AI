@@ -16,6 +16,7 @@
 #include "modules/gdscript/gdscript_parser.h"
 #include "modules/gdscript/gdscript_tokenizer.h"
 #include "core/string/char_utils.h"
+#include "core/string/print_string.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/editor_interface.h"
@@ -29,6 +30,18 @@ static thread_local String _captured_errors;
 // Warnings are kept apart: a script that ran to completion with a warning has
 // already changed the scene, so calling it a failure makes the caller re-run it.
 static thread_local String _captured_warnings;
+
+// What the code print()s is its report on what it did: kept, so that it can
+// be handed back to the model. Thread-local, so that only the thread running
+// the code is listened to.
+static thread_local String _captured_output;
+static const int MAX_CAPTURED_OUTPUT_CHARS = 4000;
+
+static void _ai_print_handler(void *p_userdata, const String &p_string, bool p_error, bool p_rich) {
+	if (!p_error && _captured_output.length() < MAX_CAPTURED_OUTPUT_CHARS) {
+		_captured_output += p_string.left(MAX_CAPTURED_OUTPUT_CHARS - _captured_output.length()) + "\n";
+	}
+}
 
 static void _ai_error_handler(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type) {
 	if (p_type == ERR_HANDLER_WARNING) {
@@ -110,6 +123,7 @@ Dictionary AIScriptExecutor::execute(const String &p_code, const String &p_actio
 	Dictionary result;
 	result["success"] = false;
 	result["output"] = "";
+	result["printed"] = ""; // What the code print()ed while it ran.
 	result["error"] = "";
 
 #ifdef TOOLS_ENABLED
@@ -161,7 +175,14 @@ Dictionary AIScriptExecutor::execute(const String &p_code, const String &p_actio
 	Ref<EditorScript> editor_script;
 	editor_script.instantiate();
 	editor_script->set_script(gd_script);
+	_captured_output = "";
+	PrintHandlerList print_handler;
+	print_handler.printfunc = _ai_print_handler;
+	add_print_handler(&print_handler);
 	editor_script->run();
+	remove_print_handler(&print_handler);
+	result["printed"] = _captured_output.strip_edges();
+	_captured_output = "";
 
 	remove_error_handler(&eh);
 

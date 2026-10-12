@@ -5,6 +5,7 @@
 #include "ai_context_collector.h"
 #include "../execution/ai_error_monitor.h"
 #include "ai_profiler_collector.h"
+#include "ai_system_prompt.h"
 
 // Assembles what goes to the model around the conversation itself: the system
 // prompt (static knowledge + whatever the message calls for + the current
@@ -18,12 +19,12 @@ public:
 	// The part that depends only on the knowledge base and the message: base
 	// prompt, optional mode instructions (a prompts/ id, or ""), and the
 	// domain guidance, API notes and gotchas the message calls for.
-	// p_tools: the model changes the project with tools (see AISystemPrompt).
-	static String build_knowledge_prompt(const String &p_mode_prompt_id, const String &p_message, bool p_tools = false);
+	// p_variant: how the model is to work (see AISystemPrompt).
+	static String build_knowledge_prompt(const String &p_mode_prompt_id, const String &p_message, AISystemPrompt::Variant p_variant = AISystemPrompt::VARIANT_SCRIPT);
 
 	// The full system prompt: the above plus scene, selection, open scripts,
 	// performance and recent errors.
-	String build_system_prompt(const String &p_mode_prompt_id, const String &p_message, bool p_tools = false) const;
+	String build_system_prompt(const String &p_mode_prompt_id, const String &p_message, AISystemPrompt::Variant p_variant = AISystemPrompt::VARIANT_SCRIPT) const;
 
 	// Source of the scripts being edited, re-injected after history compression.
 	String get_open_scripts_snapshot() const;

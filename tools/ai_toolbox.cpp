@@ -117,7 +117,7 @@ int AIToolbox::get_permission_category(const AIToolCall &p_call) const {
 	if (name == "create_node" || name == "instantiate_scene") {
 		return AIPermissionManager::PERM_CREATE_NODES;
 	}
-	if (name == "set_node_properties" || name == "rename_node" || name == "connect_signal") {
+	if (name == "set_node_properties" || name == "rename_node" || name == "move_node" || name == "connect_signal") {
 		return AIPermissionManager::PERM_MODIFY_PROPERTIES;
 	}
 	if (name == "delete_node") {
@@ -126,7 +126,8 @@ int AIToolbox::get_permission_category(const AIToolCall &p_call) const {
 	if (name == "attach_script") {
 		return AIPermissionManager::PERM_MODIFY_SCRIPTS;
 	}
-	if (name == "save_scene") {
+	// A generated asset and a remembered note are files written into the project.
+	if (name == "save_scene" || name == "generate_image" || name == "generate_speech" || name == "remember") {
 		return AIPermissionManager::PERM_FILE_WRITE;
 	}
 	if (name == "write_file") {
@@ -182,6 +183,8 @@ String AIToolbox::call(const String &p_name, const String &p_arguments, bool &r_
 		result = _set_node_properties(arguments, r_ok);
 	} else if (p_name == "rename_node") {
 		result = _rename_node(arguments, r_ok);
+	} else if (p_name == "move_node") {
+		result = _move_node(arguments, r_ok);
 	} else if (p_name == "delete_node") {
 		result = _delete_node(arguments, r_ok);
 	} else if (p_name == "connect_signal") {

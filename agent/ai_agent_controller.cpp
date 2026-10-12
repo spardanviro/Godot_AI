@@ -385,9 +385,10 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend, bo
 	}
 	provider->set_tools(_offers_tools() ? _tool_specs() : Vector<AIToolSpec>());
 	// With the editing tools on offer the prompt teaches those, not how to
-	// write code blocks to be run.
-	const bool edits_with_tools = provider->has_tools() && _may_edit_with_tools();
-	String system_prompt = prompt_builder.build_system_prompt(_get_mode_prompt_id(), run.request_message, edits_with_tools);
+	// write code blocks to be run; with any tools on offer, not the text
+	// markers they replace.
+	const AISystemPrompt::Variant variant = !provider->has_tools() ? AISystemPrompt::VARIANT_SCRIPT : (_may_edit_with_tools() ? AISystemPrompt::VARIANT_TOOLS : AISystemPrompt::VARIANT_LOOK_UP);
+	String system_prompt = prompt_builder.build_system_prompt(_get_mode_prompt_id(), run.request_message, variant);
 	if (provider->has_tools()) {
 		system_prompt += "\n" + AIKnowledge::get_singleton()->get_prompt(_may_edit_with_tools() ? "tools" : "tools_read_only") + "\n";
 	}

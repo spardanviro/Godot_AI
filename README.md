@@ -80,7 +80,7 @@ The system prompt stays lean. Instead of statically including all Godot API docu
 
 Matching ignores generic keywords (ordinary English words, `gdscript`, `node`, `int`, ...) and weights the rest by rarity, so an entry needs at least one reasonably specific hit — typically a class or method name — to be injected. A message that names no specific API gets no gotchas. Class names are matched even when written directly against CJK text.
 
-The always-on base prompt is about 57K characters (~14K tokens).
+The always-on base prompt is about 11K characters (~3K tokens) for a model that works with tools, and about 33K characters for one that writes code blocks, which also has to be taught how an `EditorScript` builds a scene. `system_prompt.md` holds both: what is not for every model sits between `<!-- SCRIPT-ONLY -->`, `<!-- TOOLS-ONLY -->` and `<!-- MARKERS-ONLY -->` lines.
 
 ### Domain-specific prompting (`AIDomainPrompts`)
 
@@ -114,17 +114,19 @@ With a provider that speaks tool calls — all five do — the model works on th
 
 | Kind | Tools | |
 |------|-------|-|
-| Look | `get_scene_tree`, `get_node_properties`, `read_file`, `list_files`, `get_errors` | Change nothing and need no permission. The only tools offered in ASK and PLAN modes. |
-| Edit | `create_node`, `instantiate_scene`, `set_node_properties`, `rename_node`, `delete_node`, `connect_signal`, `attach_script`, `write_file`, `save_scene` | Each falls under one permission category (*Settings > Permissions*): allowed, asked about, or refused, per tool call. |
-| Host | `run_scene`, `take_screenshot`, `run_editor_script` | Run the game for a few seconds and report its errors; show the viewport to the model; run arbitrary editor code. |
+| Look | `get_scene_tree`, `get_node_properties`, `read_file`, `list_files`, `get_errors` | Change nothing and need no permission. With the web tools, the only ones offered in ASK and PLAN modes. |
+| Web | `web_search`, `fetch_url` | Look something up outside the project: public http(s) addresses only, at most 3 requests per message. What comes back is handed to the model marked as untrusted content. |
+| Edit | `create_node`, `instantiate_scene`, `set_node_properties`, `rename_node`, `move_node`, `delete_node`, `connect_signal`, `attach_script`, `write_file`, `save_scene` | Each falls under one permission category (*Settings > Permissions*): allowed, asked about, or refused, per tool call. |
+| Host | `run_scene`, `take_screenshot`, `run_editor_script`, `generate_image`, `generate_speech`, `remember` | Run the game for a few seconds and report its errors; show the viewport to the model; run arbitrary editor code; have an asset generated; write one line into `godot_ai.md`. The last three write files, so they follow the *Write Files* permission. |
 
 - **Undo.** Every scene change a tool makes is one action of the editor's undo history, named after what it did: Ctrl+Z takes it back like a change made by hand. Before the first change for a message a checkpoint is taken, and the transcript gets a link that reverts everything that follows, files included.
 - **Values.** Arguments are JSON; engine values are written as GDScript writes them (`"Vector2(100, 50)"`), as a list of components (`[100, 50]`) or as a colour code. A resource is a `res://` path or is created in place: `{"$resource": "RectangleShape2D", "size": "Vector2(32, 32)"}`.
 - **Files.** `read_file` and `write_file` stay inside `res://`, skip hidden folders, and do not touch `export_presets.cfg` (signing keys) or files the editor owns (`.tscn`, `.import`, `project.godot`). A script that does not parse is not written.
-- **`run_editor_script`** is the fallback for what no tool does (project settings, input actions, animations). It goes through the same gate as a code block — syntax, safety policy, permissions — and its outcome is the tool's result.
+- **`run_editor_script`** is the fallback for what no tool does (project settings, input actions, animations). It goes through the same review as a code block — syntax, safety policy, permissions — but that review reads the code as text, and code can build at run time what the review looks for. So the user decides: the code is shown and runs only once they have allowed it, every time, whatever the auto-execute setting says. The same holds for a code block written by a model that has the tools. Its outcome is the tool's result: what the code `print()`ed, or the error it raised.
+- **A text answer is an answer.** A model that has the tools and replies to the user in text (a refusal, a question back) is not pushed to "output the code block" the way a model without tools is. Only a step it was sent to carry out — a plan step, a runtime fix — is asked for once more, and then with the tools.
 - **Errors are results.** A tool never fails the run: what went wrong is handed back as text for the model to act on. A message may take at most 8 rounds of tool calls.
 
-A reply with a `gdscript` code block is still executed as before, so models and endpoints without tool calls keep working.
+A model or endpoint without tool calls still works the old way: it writes a `gdscript` code block, which is reviewed and executed under the permission and auto-execute settings, and asks for the web, assets and notes with text markers (`[WEB_SEARCH: ...]`, `[FETCH_URL: ...]`, `[GENERATE_IMAGE: ...]`, `[GENERATE_AUDIO: ...]`, `[WRITE_MEMORY: ...]`). The markers are neither taught to nor read from a model that has the tools.
 
 ### Permission system
 
@@ -196,12 +198,12 @@ If the provider still rejects a request as too long, the oldest messages are dro
 
 ### Asset generation
 
-The assistant supports non-code markers that are intercepted by the module:
+With the `generate_image` and `generate_speech` tools (or the corresponding text markers, for a model without tools):
 
 - Image generation via OpenAI image API
 - Audio generation via OpenAI TTS API
 
-Generated assets are written into project paths such as `res://ai_generated_image.png` and `res://ai_generated_audio.mp3`.
+Generation needs an OpenAI API key whatever provider is active, runs beside the conversation, and saves into the path the model named: a new image or audio file inside `res://`. The tool tells the model that the file is not there yet.
 
 ### Web search and page fetch
 
@@ -241,6 +243,7 @@ STREAMING --reply has code--> (AWAITING_PERMISSION --ok-->) execute --> VERIFYIN
 STREAMING --reply needs a fix / execution failed--> STREAMING   (at most 3 automatic retries)
 VERIFYING --late errors--> STREAMING        VERIFYING --clean--> settle
 settle --web marker--> WEB_REQUEST --result--> STREAMING
+STREAMING --reply calls tools--> run them (AWAITING_PERMISSION / WEB_REQUEST as needed) --results--> STREAMING
 settle --next plan step--> STREAMING        settle --otherwise--> IDLE
 any state --stop / error / denied--> IDLE
 ```

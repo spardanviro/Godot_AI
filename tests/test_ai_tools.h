@@ -53,7 +53,7 @@ TEST_CASE("[AIAssistant][Tools] every tool has a name, a description and an obje
 	const AIToolbox toolbox;
 	const Vector<AIToolSpec> specs = toolbox.get_specs(true);
 
-	REQUIRE(specs.size() == 5);
+	REQUIRE(specs.size() == 7); // Five that look at the project, two that look at the web.
 	for (const AIToolSpec &tool : specs) {
 		CHECK_FALSE(tool.name.is_empty());
 		CHECK(tool.description.length() > 20);
@@ -198,7 +198,7 @@ TEST_CASE("[AIAssistant][Tools] a request offers the tools only when some are se
 	const Dictionary body = _parse(provider->build_stream_request_body("system", Array(), "hello"));
 
 	CHECK_FALSE(_parse(plain).has("tools"));
-	REQUIRE(Array(body["tools"]).size() == 5);
+	REQUIRE(Array(body["tools"]).size() == 7);
 	const Dictionary first = Array(body["tools"])[0];
 	CHECK(String(first["type"]) == "function");
 	CHECK(String(Dictionary(first["function"])["name"]) == "get_scene_tree");

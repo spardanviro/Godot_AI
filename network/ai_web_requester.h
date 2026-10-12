@@ -20,6 +20,7 @@ class AIWebRequester : public Node {
 	Ref<AIWebSearch> web_search;
 	bool is_fetch = false;
 	String subject; // The URL or the search query.
+	String last_error; // Why the last request yielded nothing; empty if it did.
 
 	// The fetch runs on a worker so that neither name resolution nor a slow
 	// host can freeze the editor. The worker only touches `url`, `options` and
@@ -51,6 +52,9 @@ public:
 	// What the last request was: a page fetch or a search, and of what.
 	bool was_fetch() const { return is_fetch; }
 	String get_subject() const { return subject; }
+	// In plain English, for the model: why "finished" carried no content, or
+	// why start() returned false.
+	String get_last_error() const { return last_error; }
 
 	AIWebRequester();
 	~AIWebRequester();

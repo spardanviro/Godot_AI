@@ -100,19 +100,29 @@
       }
     ],
     "mock_replies": [
-      [
-        "I will add a Node2D named Eventually to your scene."
-      ],
-      [
-        "```gdscript",
-        "var root = get_scene()",
-        "var node = Node2D.new()",
-        "node.name = \"Eventually\"",
-        "root.add_child(node)",
-        "node.owner = root",
-        "print(\"Added Eventually\")",
-        "```"
-      ]
+      {
+        "status": 400,
+        "body": "{\"error\":{\"message\":\"Unrecognized request argument supplied: tools\"}}"
+      },
+      {
+        "requires_tools": false,
+        "text": [
+          "I will add a Node2D named Eventually to your scene."
+        ]
+      },
+      {
+        "requires_tools": false,
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Node2D.new()",
+          "node.name = \"Eventually\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "print(\"Added Eventually\")",
+          "```"
+        ]
+      }
     ],
     "mock_only": true
   },
@@ -270,18 +280,25 @@
       }
     ],
     "mock_replies": [
-      [
-        "```gdscript",
-        "var root = get_scene()",
-        "var node = Node2D.new()",
-        "node.name = \"Noted\"",
-        "root.add_child(node)",
-        "node.owner = root",
-        "print(\"Added Noted\")",
-        "```",
-        "",
-        "[WRITE_MEMORY: TileMapLayer replaces TileMap in this project]"
-      ]
+      {
+        "status": 400,
+        "body": "{\"error\":{\"message\":\"Unrecognized request argument supplied: tools\"}}"
+      },
+      {
+        "requires_tools": false,
+        "text": [
+          "```gdscript",
+          "var root = get_scene()",
+          "var node = Node2D.new()",
+          "node.name = \"Noted\"",
+          "root.add_child(node)",
+          "node.owner = root",
+          "print(\"Added Noted\")",
+          "```",
+          "",
+          "[WRITE_MEMORY: TileMapLayer replaces TileMap in this project]"
+        ]
+      }
     ],
     "mock_only": true
   },
