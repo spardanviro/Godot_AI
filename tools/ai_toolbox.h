@@ -11,8 +11,9 @@ class Node;
 //   - Tools that look: the scene tree, a node's properties, the project's
 //     files, recent errors. So that the model checks instead of guessing.
 //   - Tools that edit: add, change, connect and delete nodes, attach
-//     scripts, write files. Each scene change is one undoable editor action,
-//     and each falls under one of the user's permission categories.
+//     scripts, write files, change a project setting, register an input
+//     action. Each scene change is one undoable editor action, and each
+//     tool falls under one of the user's permission categories.
 //   - Host tools (running the game, a screenshot, an arbitrary script,
 //     generated assets, a note to remember) and the web tools (search, fetch)
 //     are only described here; the agent loop carries them out.
@@ -76,6 +77,8 @@ private:
 	String _attach_script(const Dictionary &p_arguments, bool &r_ok) const;
 	String _write_file(const Dictionary &p_arguments, bool &r_ok) const;
 	String _save_scene(const Dictionary &p_arguments, bool &r_ok) const;
+	String _set_project_setting(const Dictionary &p_arguments, bool &r_ok) const;
+	String _add_input_action(const Dictionary &p_arguments, bool &r_ok) const;
 	String _get_scene_tree(const Dictionary &p_arguments, bool &r_ok) const;
 	String _get_node_properties(const Dictionary &p_arguments, bool &r_ok) const;
 	String _read_file(const Dictionary &p_arguments, bool &r_ok) const;

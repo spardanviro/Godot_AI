@@ -41,6 +41,7 @@ static const AILocalization::StringID PERMISSION_CAPTIONS[AIPermissionManager::P
 	AILocalization::STR_PERM_PROJECT_SETTINGS,
 	AILocalization::STR_PERM_WRITE_FILES,
 	AILocalization::STR_PERM_DELETE_FILES,
+	AILocalization::STR_PERM_REMEMBER,
 };
 
 // Adds a "caption | field" row and returns the caption, whose text is set by

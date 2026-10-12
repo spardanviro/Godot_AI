@@ -77,6 +77,16 @@ void AIAgentController::_handle_response(const String &p_response, const String 
 		_handle_text_only(text_segments);
 		return;
 	}
+	// A model that has the tools runs code by calling one. A code block in
+	// its reply is something it shows the user — a script to read, a command
+	// for their terminal — and is shown, fences and all, not run.
+	if (_edits_with_tools()) {
+		AI_LOG("The model has tools: the code in its reply is shown, not executed.");
+		PackedStringArray whole_reply;
+		whole_reply.push_back(p_response);
+		_handle_text_only(whole_reply);
+		return;
+	}
 
 	// A plan is a list of steps. Code the model put into it anyway is not
 	// what the user asked for in this mode, and is not run.
@@ -175,11 +185,9 @@ void AIAgentController::_handle_plan(const PackedStringArray &p_text_segments) {
 void AIAgentController::_handle_code(const String &p_code) {
 	// "Ask" permissions always ask. With auto-execute off everything asks,
 	// a runtime fix included: what it reacts to is text printed by the
-	// running project, which is not the user speaking. And a model that has
-	// the tools but wrote code to be run anyway is asking for the fallback:
-	// arbitrary code, which the user sees first (see _start_script_tool).
+	// running project, which is not the user speaking.
 	const bool autorun = AISettings::get("autorun", true);
-	const AICodeRunner::Review review = code_runner.review(p_code, !autorun || _edits_with_tools());
+	const AICodeRunner::Review review = code_runner.review(p_code, !autorun);
 
 	switch (review.action) {
 		case AICodeRunner::ACTION_FIX_SYNTAX: {
@@ -211,7 +219,7 @@ void AIAgentController::_handle_code(const String &p_code) {
 			}
 			run.code = review.code;
 			_set_state(STATE_AWAITING_PERMISSION);
-			emit_signal(SNAME("permission_requested"), _script_question(review.message), review.code);
+			emit_signal(SNAME("permission_requested"), review.message, review.code);
 		} break;
 		case AICodeRunner::ACTION_RUN: {
 			_execute(review.code);
@@ -312,9 +320,10 @@ void AIAgentController::_dispatch_side_effects() {
 	run.markers.assets.clear();
 
 	// Notes go into a file that is loaded into every future system prompt, so
-	// they follow the file-write permission, are reduced to one inert line and
-	// are always shown to the user.
-	const bool may_write = code_runner.may_write_files();
+	// they have a permission of their own, are reduced to one inert line and
+	// are always shown to the user. (A marker cannot wait for an answer: here
+	// "ask" lets the note through, with the notice. The tool does ask.)
+	const bool may_write = code_runner.get_permission_manager()->get_permission(AIPermissionManager::PERM_REMEMBER) != AIPermissionManager::LEVEL_DENY;
 	for (int i = 0; i < run.markers.memory_notes.size() && may_write; i++) {
 		const String note = AIResponseAnalysis::sanitize_memory_note(run.markers.memory_notes[i]);
 		if (AIProjectMemory::append_note(note)) {

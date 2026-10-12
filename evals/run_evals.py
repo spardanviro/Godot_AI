@@ -95,6 +95,12 @@ class Task:
         return list(self.data.get("mock_replies", []))
 
     @property
+    def scripts_tools(self) -> bool:
+        """Whether the canned replies are those of a model that has tools."""
+        keys = ("tool_calls", "requires_tools", "requires_tool_result")
+        return any(isinstance(reply, dict) and any(key in reply for key in keys) for reply in self.mock_replies)
+
+    @property
     def mock_only(self) -> bool:
         return bool(self.data.get("mock_only", False))
 
@@ -130,6 +136,7 @@ class RunConfig:
     knowledge_dir: str
     timeout_sec: float
     use_editor_config: bool
+    key_from: str
     no_tools: bool
     keep_projects: bool
     work_dir: Path
@@ -321,7 +328,9 @@ def _task_environment(config: RunConfig, task: Task, task_dir: Path, mock_server
     env["GODOT_AI_EVAL_TIMEOUT"] = str(config.timeout_sec)
     if config.knowledge_dir:
         env["GODOT_AI_KNOWLEDGE_DIR"] = config.knowledge_dir
-    if config.no_tools:
+    # A model that has the tools has its code blocks shown, not run. Canned
+    # replies that are code blocks are those of a model without tools.
+    if config.no_tools or (mock_server is not None and not task.scripts_tools):
         env["GODOT_AI_EVAL_TOOLS"] = "0"
 
     if mock_server is not None:
@@ -335,6 +344,8 @@ def _task_environment(config: RunConfig, task: Task, task_dir: Path, mock_server
         env["GODOT_AI_EVAL_PROVIDER"] = config.provider
         env["GODOT_AI_EVAL_MODEL"] = config.model
         env["GODOT_AI_EVAL_ENDPOINT"] = config.endpoint
+        if config.key_from:
+            env["GODOT_AI_EVAL_API_KEY"] = "@" + config.key_from
 
     if not config.use_editor_config:
         env["GODOT_AI_EVAL_ISOLATED"] = "1"
@@ -509,6 +520,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--model", default="", help="Model id. Default: the provider's default.")
     parser.add_argument("--endpoint", default="", help="API endpoint override.")
     parser.add_argument("--knowledge-dir", default="", help="Folder of knowledge files to try instead of the built-in ones.")
+    parser.add_argument("--key-from", default="", metavar="PROVIDER",
+                        help="Use the API key stored for another provider (with --use-editor-config): for a relay that takes one key and speaks several formats.")
     parser.add_argument("--no-tools", action="store_true",
                         help="Do not offer the model the look-up tools: the baseline to compare a run with tools against.")
     parser.add_argument("--filter", default="", help="Only run tasks whose id contains this text.")
@@ -548,7 +561,7 @@ def main() -> int:
     work_dir = Path(tempfile.mkdtemp(prefix="godot_ai_evals_"))
     config = RunConfig(godot=args.godot.resolve(), mock=args.mock, provider=args.provider, model=args.model,
                        endpoint=args.endpoint, knowledge_dir=str(Path(args.knowledge_dir).resolve()) if args.knowledge_dir else "",
-                       timeout_sec=args.timeout, use_editor_config=args.use_editor_config, no_tools=args.no_tools,
+                       timeout_sec=args.timeout, use_editor_config=args.use_editor_config, key_from=args.key_from, no_tools=args.no_tools,
                        keep_projects=args.keep_projects, work_dir=work_dir)
 
     mock_server = MockModelServer(tasks) if args.mock else None

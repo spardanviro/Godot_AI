@@ -47,13 +47,13 @@ TEST_CASE("[AIAssistant][Settings] an unknown provider falls back to the first o
 
 // --- Permission defaults ---
 
-TEST_CASE("[AIAssistant][Settings] by default deleting files is denied, scripts ask, the rest is allowed") {
+TEST_CASE("[AIAssistant][Settings] by default deleting files is denied, scripts and notes ask, the rest is allowed") {
 	for (int i = 0; i < AIPermissionManager::PERM_MAX; i++) {
 		const AIPermissionManager::Category category = (AIPermissionManager::Category)i;
 		AIPermissionManager::Level expected = AIPermissionManager::LEVEL_ALLOW;
 		if (category == AIPermissionManager::PERM_FILE_DELETE) {
 			expected = AIPermissionManager::LEVEL_DENY;
-		} else if (category == AIPermissionManager::PERM_MODIFY_SCRIPTS) {
+		} else if (category == AIPermissionManager::PERM_MODIFY_SCRIPTS || category == AIPermissionManager::PERM_REMEMBER) {
 			expected = AIPermissionManager::LEVEL_ASK;
 		}
 

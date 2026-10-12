@@ -231,6 +231,38 @@ void AIErrorMonitor::receive_debugger_error(const String &p_message, const Strin
 	}
 }
 
+void AIErrorMonitor::receive_game_output(const String &p_line) {
+	static const int MAX_LINES = 200;
+	static const int MAX_LINE_CHARS = 500;
+	MutexLock singleton_lock(singleton_mutex);
+	AIErrorMonitor *self = singleton;
+	if (!self) {
+		return;
+	}
+	MutexLock lock(self->mutex);
+	self->game_output.push_back(p_line.left(MAX_LINE_CHARS));
+	self->game_output_total++;
+	while (self->game_output.size() > MAX_LINES) {
+		self->game_output.remove_at(0);
+	}
+}
+
+uint64_t AIErrorMonitor::get_game_output_total() const {
+	MutexLock lock(mutex);
+	return game_output_total;
+}
+
+String AIErrorMonitor::get_game_output_since(uint64_t p_total, int p_max_lines) const {
+	MutexLock lock(mutex);
+	const int printed = (int)MIN(game_output_total - MIN(p_total, game_output_total), (uint64_t)game_output.size());
+	const int count = MIN(printed, p_max_lines);
+	String out;
+	for (int i = game_output.size() - count; i < game_output.size(); i++) {
+		out += game_output[i] + "\n";
+	}
+	return (printed > count ? "(" + itos(printed - count) + " earlier lines not shown)\n" : String()) + out;
+}
+
 String AIErrorMonitor::get_recent_debugger_errors(int p_count) const {
 	Vector<DebuggerErrorEntry> errors;
 	{

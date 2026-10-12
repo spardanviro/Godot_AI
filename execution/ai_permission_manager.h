@@ -17,6 +17,9 @@ public:
 		PERM_CHANGE_PROJECT_SETTINGS,
 		PERM_FILE_WRITE,
 		PERM_FILE_DELETE,
+		// A note in godot_ai.md is read by the model at the start of every
+		// future conversation: it is an instruction that outlives this one.
+		PERM_REMEMBER,
 		PERM_MAX
 	};
 

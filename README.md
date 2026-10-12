@@ -1,5 +1,7 @@
 # Godot AI Assistant
 
+**English** | [简体中文](README.zh-CN.md)
+
 AI assistant support inside the Godot editor as a native `ai_assistant` module, compatible with **Godot 4.7+** (godot-master).
 
 This project adds a docked AI panel to the editor, supports multiple LLM providers, and can execute AI-generated editor actions through `EditorScript` workflows. It is built for scene editing, script generation, project setup, file-aware prompting, asset generation, and debugging assistance directly inside Godot.
@@ -116,15 +118,24 @@ With a provider that speaks tool calls — all five do — the model works on th
 |------|-------|-|
 | Look | `get_scene_tree`, `get_node_properties`, `read_file`, `list_files`, `get_errors` | Change nothing and need no permission. With the web tools, the only ones offered in ASK and PLAN modes. |
 | Web | `web_search`, `fetch_url` | Look something up outside the project: public http(s) addresses only, at most 3 requests per message. What comes back is handed to the model marked as untrusted content. |
-| Edit | `create_node`, `instantiate_scene`, `set_node_properties`, `rename_node`, `move_node`, `delete_node`, `connect_signal`, `attach_script`, `write_file`, `save_scene` | Each falls under one permission category (*Settings > Permissions*): allowed, asked about, or refused, per tool call. |
-| Host | `run_scene`, `take_screenshot`, `run_editor_script`, `generate_image`, `generate_speech`, `remember` | Run the game for a few seconds and report its errors; show the viewport to the model; run arbitrary editor code; have an asset generated; write one line into `godot_ai.md`. The last three write files, so they follow the *Write Files* permission. |
+| Edit | `create_node`, `instantiate_scene`, `set_node_properties`, `rename_node`, `move_node`, `delete_node`, `connect_signal`, `attach_script`, `write_file`, `save_scene`, `set_project_setting`, `add_input_action` | Each falls under one permission category (*Settings > Permissions*): allowed, asked about, or refused, per tool call. |
+| Host | `run_scene`, `take_screenshot`, `run_editor_script`, `generate_image`, `generate_speech`, `remember` | Run the game for a few seconds and report its errors, what it printed and (on request) a frame of it; show the editor viewport to the model; run arbitrary editor code; have an asset generated; write one line into `godot_ai.md`. Generating an asset follows the *Write Files* permission; a note has a permission of its own. |
 
 - **Undo.** Every scene change a tool makes is one action of the editor's undo history, named after what it did: Ctrl+Z takes it back like a change made by hand. Before the first change for a message a checkpoint is taken, and the transcript gets a link that reverts everything that follows, files included.
-- **Values.** Arguments are JSON; engine values are written as GDScript writes them (`"Vector2(100, 50)"`), as a list of components (`[100, 50]`) or as a colour code. A resource is a `res://` path or is created in place: `{"$resource": "RectangleShape2D", "size": "Vector2(32, 32)"}`.
+- **Values.** Arguments are JSON; engine values are written as GDScript writes them (`"Vector2(100, 50)"`), as a list of components (`[100, 50]`) or as a colour code. A resource is a `res://` path or is created in place: `{"$resource": "RectangleShape2D", "size": "Vector2(32, 32)"}`. A value cannot bring code with it: text that would build an object (`Object(GDScript, ...)`) is not parsed, a script or scene resource is not created in place, and `script` is not a property a tool sets. Scripts come from files, through `write_file` and `attach_script`, under the permission for scripts; so does a node created with a script on it.
 - **Files.** `read_file` and `write_file` stay inside `res://`, skip hidden folders, and do not touch `export_presets.cfg` (signing keys) or files the editor owns (`.tscn`, `.import`, `project.godot`). A script that does not parse is not written.
-- **`run_editor_script`** is the fallback for what no tool does (project settings, input actions, animations). It goes through the same review as a code block — syntax, safety policy, permissions — but that review reads the code as text, and code can build at run time what the review looks for. So the user decides: the whole of the code is shown, in a scrolling view of the permission prompt, and runs only once they have allowed it, every time, whatever the auto-execute setting says. The same holds for a code block written by a model that has the tools. Its outcome is the tool's result: what the code `print()`ed, or the error it raised.
+- **What is asked about is shown.** A prompt for `write_file` carries the file: the whole of a new one, and for one that exists the lines that go and come. A prompt for `remember` carries the note.
+- **The project.** `set_project_setting` changes a setting that exists, to a value of its type; autoloads and editor plugins — what decides which code runs — are left to the user. `add_input_action` registers an action with keys (by position on the keyboard, as the Input Map does) and mouse buttons. Both save `project.godot`, which the checkpoint covers.
+- **The running game.** `run_scene` reports the errors the game raised and what it printed, and with `screenshot: true` a frame of it, asked of the game over the debugger connection just before it is stopped. That is how the model checks anything visual; `take_screenshot` shows the editor's viewport.
+- **Notes ask.** A line written with `remember` is part of the instructions of every later conversation, and what prompts it may be text the model read in a file or on a web page. *Remember Notes* is therefore a permission of its own and asks by default.
+- **`run_editor_script`** is the fallback for what no tool does (animations, tile maps, bulk changes). It goes through the same review as a code block — syntax, safety policy, permissions — but that review reads the code as text, and code can build at run time what the review looks for. So the user decides: the whole of the code is shown, in a scrolling view of the permission prompt, and runs only once they have allowed it, every time, whatever the auto-execute setting says. Its outcome is the tool's result: what the code `print()`ed, or the error it raised.
+- **A code block is something to read.** A model that has the tools runs code by calling `run_editor_script`. A code block in its reply — a script it explains, a command for the user's terminal — is shown and never executed.
 - **A text answer is an answer.** A model that has the tools and replies to the user in text (a refusal, a question back) is not pushed to "output the code block" the way a model without tools is. Only a step it was sent to carry out — a plan step, a runtime fix — is asked for once more, and then with the tools.
 - **Errors are results.** A tool never fails the run: what went wrong is handed back as text for the model to act on. A message may take at most 8 rounds of tool calls.
+
+#### Without tools (legacy)
+
+All five providers speak tool calls, so this path exists for the endpoints that reject them. It is kept working and covered by the eval set, but it is not where new work goes: it needs a prompt three times the size, a parser for code fences, automatic repairs of the code models tend to write, and a safety check that reads code as text.
 
 A model or endpoint without tool calls still works the old way: it writes a `gdscript` code block, which is reviewed and executed under the permission and auto-execute settings, and asks for the web, assets and notes with text markers (`[WEB_SEARCH: ...]`, `[FETCH_URL: ...]`, `[GENERATE_IMAGE: ...]`, `[GENERATE_AUDIO: ...]`, `[WRITE_MEMORY: ...]`). The markers are neither taught to nor read from a model that has the tools.
 
@@ -139,8 +150,9 @@ Execution permissions are categorized and configurable per operation type:
 - Change project settings
 - Write files
 - Delete files
+- Remember notes
 
-Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny, and modifying scripts defaults to ask: a script is code that runs later, and what is inside a script file is not seen by the safety check. Writing a `.gd` file counts as modifying scripts, as attaching one does.
+Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny; modifying scripts and remembering notes default to ask: a script is code that runs later, and what is inside a script file is not seen by the safety check, and a note becomes part of the prompt of every later conversation. Writing a `.gd` file counts as modifying scripts, as attaching one does.
 
 Generated code cannot reach the assistant's own controls: its classes, the editor's interface tree (`get_tree().root`, `EditorInterface.get_base_control()`, `Engine.get_main_loop()`) and the switches on the controller are rejected by the safety check, and the two controller methods that exist for the headless eval runner (`set_auto_approve`, `configure_provider`) do nothing unless the editor was started by `evals/run_evals.py`.
 
@@ -269,6 +281,7 @@ Whether a request may start, whether code may run and what Stop means all follow
 | `tools/ai_toolbox.*`, `tools/ai_tool_specs.cpp`, `tools/ai_edit_tools.cpp` | The tools: what the model is told about them, the ones that look, the ones that edit (as undoable editor actions) |
 | `tools/ai_tool_values.*` | Tool arguments (JSON) to engine values and resources |
 | `common/ai_tool_types.h` | Tool specification, tool call, and the assembly of a call from stream fragments |
+| `common/ai_text_diff.*` | The lines that change between two versions of a file, for the permission prompt |
 | `agent/ai_session.*` | Conversation history, context compression, overflow recovery, attachment de-duplication |
 | `agent/ai_chat_store.*` | Saved chats (`user://ai_assistant_chats`) |
 | `network/ai_stream_client.*`, `network/ai_stream_protocol.*` | Streaming HTTP client; SSE decoding, UTF-8 boundaries, `<think>` tag splitting |
@@ -371,12 +384,16 @@ bin/godot.windows.editor.x86_64.console.exe --test --test-case="*AIAssistant*"
 
 Adding `extra_suffix=tests` to the build keeps the test build's objects and binary apart from your normal editor build, so switching between the two does not trigger full rebuilds.
 
+### Continuous integration
+
+`.github/workflows/ci.yml` checks out the engine with this module in it, builds the editor with tests on Windows and runs the unit tests, the layering check and the eval set against canned replies — none of which needs an API key. `GODOT_REF` in the workflow is the engine revision built against. Releases are for now built locally and uploaded by hand; the workflow's release job only runs when started manually.
+
 ## Evals
 
-Whether the assistant is any good is decided by what the model produces, and that changes with every edit to a prompt or to the retry logic. `evals/` holds 30 standard tasks (scene building, scripts, UI, 3D, gameplay, ASK / PLAN modes, safety) and a runner that scores them without a human in the loop. See [evals/README.md](evals/README.md).
+Whether the assistant is any good is decided by what the model produces, and that changes with every edit to a prompt or to the retry logic. `evals/` holds a set of standard tasks (scene building, scripts, UI, 3D, gameplay, ASK / PLAN modes, safety) and a runner that scores them without a human in the loop. See [evals/README.md](evals/README.md).
 
 ```bash
-# The harness and the agent loop themselves, against canned replies (no API key, ~1 minute):
+# The harness and the agent loop themselves, against canned replies (no API key, ~2 minutes):
 python evals/run_evals.py --godot bin/godot.windows.editor.x86_64.console.exe --mock
 
 # A real model; compare a prompt change against an earlier run:
@@ -385,6 +402,8 @@ python evals/run_evals.py --godot <editor> --provider deepseek --knowledge-dir k
 ```
 
 ## Build and Installation
+
+If you would rather not compile, [Releases](https://github.com/spardanviro/Godot_AI/releases) has the Windows editor with this module built in: unzip and run. Other platforms have to be built from source for now.
 
 ### 1. Place the module in the Godot source tree
 
@@ -432,6 +451,7 @@ Settings are stored in `EditorSettings` under the `ai_assistant/*` namespace. AP
 | `ai_assistant/temperature` | Sampling temperature, used when the setting above is on (default: 0.7) |
 | `ai_assistant/send_on_enter` | Send on Enter key (default: true) |
 | `ai_assistant/autorun` | Auto-execute generated code (default: true) |
+| `ai_assistant/use_tools` | Let the model work with tools (default: true) |
 | `ai_assistant/restore_last_chat` | Reload the most recent chat on editor startup (default: true) |
 | `ai_assistant/runtime_fix` | Fix script errors of the running game automatically (default: true) |
 | `ai_assistant/compression_keep_recent` | Recent messages never compressed (default: 6) |
@@ -491,7 +511,8 @@ ai_assistant/
 - Asset generation currently uses OpenAI-specific endpoints and needs an OpenAI API key in Settings, whichever provider is active. Generated assets can only be saved under `res://`.
 - The dock itself (layout, dialogs) is not covered by automated tests; the agent loop behind it is, through the eval runner's mock mode.
 - On platforms other than Windows the credential store is obfuscation, not OS-level protection.
-- No automated CI or cross-platform packaging workflows yet.
+- Prebuilt packages exist for Windows only; builds on Linux and macOS have not been verified.
+- Tool calling has been run through the full eval set with DeepSeek and with Claude (over both the OpenAI-compatible and the Anthropic wire formats); GPT models and Gemini have not been tested live.
 
 ## License
 

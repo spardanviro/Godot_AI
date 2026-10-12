@@ -2,11 +2,14 @@
 
 #include "ai_tool_values.h"
 
+#include "core/config/project_settings.h"
+#include "core/input/input_event.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
+#include "core/os/keyboard.h"
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_parser.h"
 #include "scene/main/node.h"
@@ -628,6 +631,126 @@ String AIToolbox::_write_file(const Dictionary &p_arguments, bool &r_ok) const {
 		out += "\nIt was written, but it does not compile yet:\n" + compile_errors + "Fix these and write the file again, unless they are about a file you are about to create.";
 	}
 	return out;
+}
+
+// =============================================================================
+// The project
+// =============================================================================
+
+String AIToolbox::_set_project_setting(const Dictionary &p_arguments, bool &r_ok) const {
+	// What decides which code runs in the editor or at start-up is the user's to change.
+	static const char *reserved[] = { "autoload/", "editor_plugins/", "_global_script", nullptr };
+
+	const String name = String(p_arguments.get("name", "")).strip_edges();
+	if (name.is_empty() || !p_arguments.has("value")) {
+		return fail(r_ok, "'name' and 'value' are required.");
+	}
+	if (name.begins_with("input/")) {
+		return fail(r_ok, "input actions are registered with add_input_action.");
+	}
+	for (int i = 0; reserved[i]; i++) {
+		if (name.begins_with(reserved[i])) {
+			return fail(r_ok, "'" + name + "' is not changed with this tool. Tell the user to change it in Project Settings.");
+		}
+	}
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	if (!settings->has_setting(name)) {
+		return fail(r_ok, "there is no project setting named '" + name + "'. Settings are named like display/window/size/viewport_width.");
+	}
+	const Variant old_value = settings->get_setting(name);
+	Variant value;
+	String error;
+	if (!AIToolValues::to_variant(p_arguments["value"], old_value.get_type(), value, error)) {
+		return fail(r_ok, "'value': " + error);
+	}
+	if (name == "application/run/main_scene" && !String(value).is_empty() && !ResourceLoader::exists(value)) {
+		return fail(r_ok, "'" + String(value) + "' is not a scene of the project. Save the scene first.");
+	}
+	settings->set_setting(name, value);
+	if (_uses_editor() && settings->save() != OK) {
+		return fail(r_ok, "the setting was changed, but project.godot could not be saved.");
+	}
+	return "Set " + name + " to " + _value_text(value) + " (it was " + _value_text(old_value) + ").";
+}
+
+String AIToolbox::_add_input_action(const Dictionary &p_arguments, bool &r_ok) const {
+	static const struct {
+		const char *name;
+		MouseButton button;
+	} mouse_buttons[] = { { "left", MouseButton::LEFT }, { "right", MouseButton::RIGHT }, { "middle", MouseButton::MIDDLE } };
+	static const double DEFAULT_DEADZONE = 0.2;
+
+	const String action = String(p_arguments.get("action", "")).strip_edges();
+	if (action.is_empty() || action.contains("/") || action.contains(":") || action.contains(" ")) {
+		return fail(r_ok, "'action' is required: a name such as \"jump\", without spaces.");
+	}
+	if (action.begins_with("ui_")) {
+		return fail(r_ok, "the ui_* actions are the engine's own and are not changed. Use them as they are, or register an action under another name.");
+	}
+
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	const String setting = "input/" + action;
+	const bool existed = settings->has_setting(setting);
+	Dictionary entry = existed ? Dictionary(settings->get_setting(setting)).duplicate() : Dictionary();
+	Array events = Array(entry.get("events", Array())).duplicate();
+	PackedStringArray added;
+
+	// An event the action already has is not added twice.
+	const auto add_event = [&](const Ref<InputEvent> &p_event, const String &p_label) {
+		for (int i = 0; i < events.size(); i++) {
+			const Ref<InputEvent> existing = events[i];
+			if (existing.is_valid() && existing->is_match(p_event, true)) {
+				return;
+			}
+		}
+		events.push_back(p_event);
+		added.push_back(p_label);
+	};
+
+	const PackedStringArray keys = strings_argument(p_arguments, "keys");
+	for (const String &key_name : keys) {
+		const Key key = find_keycode(key_name.strip_edges());
+		if (key == Key::NONE) {
+			return fail(r_ok, "'" + key_name + "' is not a key. Keys are named like \"Space\", \"A\", \"Left\", \"Shift\", \"Escape\", \"Enter\", \"F1\".");
+		}
+		// By position on the keyboard, as the editor's Input Map does: WASD stays WASD on any layout.
+		Ref<InputEventKey> event;
+		event.instantiate();
+		event->set_physical_keycode(key);
+		add_event(event, keycode_get_string(key));
+	}
+	const PackedStringArray buttons = strings_argument(p_arguments, "mouse_buttons");
+	for (const String &button_name : buttons) {
+		MouseButton button = MouseButton::NONE;
+		for (const auto &known : mouse_buttons) {
+			if (button_name.strip_edges().to_lower() == known.name) {
+				button = known.button;
+			}
+		}
+		if (button == MouseButton::NONE) {
+			return fail(r_ok, "'" + button_name + "' is not a mouse button: \"left\", \"right\" or \"middle\".");
+		}
+		Ref<InputEventMouseButton> event;
+		event.instantiate();
+		event->set_button_index(button);
+		add_event(event, button_name.strip_edges().to_lower() + " mouse button");
+	}
+	if (events.is_empty()) {
+		return fail(r_ok, "give at least one of 'keys' or 'mouse_buttons': an action without events is never triggered.");
+	}
+	if (existed && added.is_empty() && !p_arguments.has("deadzone")) {
+		return "The input action '" + action + "' already has these.";
+	}
+
+	const Variant deadzone = p_arguments.get("deadzone", entry.get("deadzone", DEFAULT_DEADZONE));
+	entry["deadzone"] = deadzone.is_num() ? CLAMP(double(deadzone), 0.0, 1.0) : DEFAULT_DEADZONE;
+	entry["events"] = events;
+	settings->set_setting(setting, entry);
+	if (_uses_editor() && settings->save() != OK) {
+		return fail(r_ok, "the action was registered, but project.godot could not be saved.");
+	}
+	return String(existed ? "Added to" : "Registered") + " the input action '" + action + "'" +
+			(added.is_empty() ? String() : ": " + String(", ").join(added)) + ". Scripts read it with Input.is_action_pressed(\"" + action + "\").";
 }
 
 String AIToolbox::_save_scene(const Dictionary &p_arguments, bool &r_ok) const {

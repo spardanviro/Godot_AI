@@ -74,13 +74,24 @@ bool from_components(const Array &p_numbers, Variant::Type p_type, Variant &r_va
 }
 
 // "Vector2(1, 2)", "true", "3.5", "[1, 2]" — an engine value written as text.
+// Values only: the parser also knows how to build objects and load resources
+// from text ("Object(GDScript, ...)"), which would let a property value carry
+// a script past the permission that covers scripts. Text that asks for one
+// is not parsed at all, so nothing is built and thrown away.
 bool parse_engine_text(const String &p_text, Variant &r_value) {
+	static const char *constructors[] = { "Object", "Resource", "SubResource", "ExtResource", nullptr };
+	const String squeezed = p_text.remove_chars(" \t\r\n");
+	for (int i = 0; constructors[i]; i++) {
+		if (squeezed.contains(String(constructors[i]) + "(")) {
+			return false;
+		}
+	}
 	VariantParser::StreamString stream;
 	stream.s = p_text;
 	String error;
 	int error_line = 0;
 	Variant parsed;
-	if (VariantParser::parse(&stream, parsed, error, error_line) != OK) {
+	if (VariantParser::parse(&stream, parsed, error, error_line) != OK || parsed.get_type() == Variant::OBJECT) {
 		return false;
 	}
 	r_value = parsed;
@@ -110,6 +121,12 @@ bool AIToolValues::is_instantiable(const String &p_class, const String &p_base, 
 	const bool own_class = p_class.length() > 2 && p_class.begins_with("AI") && is_ascii_upper_case(p_class[2]);
 	if (own_class || ClassDB::get_api_type(p_class) != ClassDB::API_CORE) {
 		r_error = "'" + p_class + "' is an editor class and cannot be created in a project.";
+		return false;
+	}
+	// Code comes from the project's files, where it is written with the tool
+	// and under the permission for that — never out of a property value.
+	if (ClassDB::is_parent_class(p_class, "Script") || ClassDB::is_parent_class(p_class, "PackedScene") || ClassDB::is_parent_class(p_class, "GDExtension")) {
+		r_error = "a " + p_class + " is not created in place. Write the file with write_file and refer to it by its res:// path.";
 		return false;
 	}
 	if (!ClassDB::can_instantiate(p_class)) {
@@ -143,6 +160,11 @@ bool AIToolValues::convert_properties(const Object *p_object, const Dictionary &
 		const String name = *key;
 		if (name == RESOURCE_KEY) {
 			continue;
+		}
+		// One way in for scripts: attach_script, which has the permission for it.
+		if (name == "script") {
+			r_error = "'script' is not set as a property. Attach a script file with attach_script.";
+			return false;
 		}
 		Variant::Type type = Variant::NIL;
 		if (!get_property_type(p_object, name, type)) {

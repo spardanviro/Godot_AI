@@ -115,7 +115,11 @@ AIToolSpec::Kind AIToolbox::get_kind(const String &p_name) const {
 int AIToolbox::get_permission_category(const AIToolCall &p_call) const {
 	const String &name = p_call.name;
 	if (name == "create_node" || name == "instantiate_scene") {
-		return AIPermissionManager::PERM_CREATE_NODES;
+		// A node that comes with a script is a script being attached.
+		Dictionary arguments;
+		parse_arguments(p_call.arguments, arguments);
+		const bool with_script = !String(arguments.get("script", "")).strip_edges().is_empty();
+		return with_script ? AIPermissionManager::PERM_MODIFY_SCRIPTS : AIPermissionManager::PERM_CREATE_NODES;
 	}
 	if (name == "set_node_properties" || name == "rename_node" || name == "move_node" || name == "connect_signal") {
 		return AIPermissionManager::PERM_MODIFY_PROPERTIES;
@@ -126,9 +130,15 @@ int AIToolbox::get_permission_category(const AIToolCall &p_call) const {
 	if (name == "attach_script") {
 		return AIPermissionManager::PERM_MODIFY_SCRIPTS;
 	}
-	// A generated asset and a remembered note are files written into the project.
-	if (name == "save_scene" || name == "generate_image" || name == "generate_speech" || name == "remember") {
+	// A generated asset is a file written into the project.
+	if (name == "save_scene" || name == "generate_image" || name == "generate_speech") {
 		return AIPermissionManager::PERM_FILE_WRITE;
+	}
+	if (name == "remember") {
+		return AIPermissionManager::PERM_REMEMBER;
+	}
+	if (name == "set_project_setting" || name == "add_input_action") {
+		return AIPermissionManager::PERM_CHANGE_PROJECT_SETTINGS;
 	}
 	if (name == "write_file") {
 		Dictionary arguments;
@@ -195,6 +205,10 @@ String AIToolbox::call(const String &p_name, const String &p_arguments, bool &r_
 		result = _write_file(arguments, r_ok);
 	} else if (p_name == "save_scene") {
 		result = _save_scene(arguments, r_ok);
+	} else if (p_name == "set_project_setting") {
+		result = _set_project_setting(arguments, r_ok);
+	} else if (p_name == "add_input_action") {
+		result = _add_input_action(arguments, r_ok);
 	} else if (has_tool(p_name)) {
 		return fail(r_ok, "'" + p_name + "' is carried out by the agent, not by the toolbox.");
 	} else {

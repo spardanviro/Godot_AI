@@ -10,6 +10,7 @@
 #include "../prompt/ai_knowledge.h"
 #include "../common/ai_log.h"
 #include "ai_project_memory.h"
+#include "../providers/ai_credential_store.h"
 #include "../providers/ai_provider_setup.h"
 #include "../network/ai_web_requester.h"
 
@@ -239,10 +240,11 @@ void AIAgentController::stop() {
 		case STATE_IDLE:
 			break;
 		case STATE_STREAMING:
-			if (run.tool_waiting_for_game) {
+			if (run.tool_waiting_for_game || run.tool_waiting_for_shot) {
 				// A tool is letting the game run; nothing else is in flight.
 				tool_wait_timer->stop();
 				run.tool_waiting_for_game = false;
+				run.tool_waiting_for_shot = false;
 				if (EditorInterface::get_singleton()->is_playing_scene()) {
 					EditorInterface::get_singleton()->stop_playing_scene();
 				}
@@ -717,7 +719,11 @@ void AIAgentController::configure_provider(const String &p_provider_id, const St
 	ERR_FAIL_COND_MSG(!is_eval_run(), "configure_provider() is only available to the eval runner.");
 	ERR_FAIL_COND_MSG(is_busy(), "Cannot change the provider while a run is in flight.");
 	history_summarizer->cancel();
-	provider = AIProviderSetup::from_values(p_provider_id, p_model, p_endpoint, p_api_key);
+	// "@openai": the key stored for that provider, for a relay that takes
+	// one key and speaks several providers' formats. The key itself never
+	// passes through the script that asks for it.
+	const String api_key = p_api_key.begins_with("@") ? AICredentialStore::get_api_key(p_api_key.substr(1)) : p_api_key;
+	provider = AIProviderSetup::from_values(p_provider_id, p_model, p_endpoint, api_key);
 	provider_overridden = true;
 	AI_LOG("Provider (override): " + AIProviderSetup::describe(provider));
 }

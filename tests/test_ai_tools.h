@@ -3,6 +3,7 @@
 #include "../agent/ai_session.h"
 #include "../common/ai_tool_types.h"
 #include "../providers/ai_provider.h"
+#include "../common/ai_text_diff.h"
 #include "../tools/ai_toolbox.h"
 
 #include "core/io/json.h"
@@ -186,6 +187,29 @@ TEST_CASE("[AIAssistant][Tools] interleaved fragments are put together by index"
 	CHECK(calls[0].arguments == "{\"path\": \"res://a.gd\"}");
 	CHECK(calls[1].name == "get_errors");
 	CHECK(calls[1].arguments == "{}");
+}
+
+// --- What a file write changes ---
+
+TEST_CASE("[AIAssistant][Tools] a change to a file is shown as the lines that go and come, with their surroundings") {
+	const String before = "extends Node\n\nvar a = 1\nvar b = 2\nvar c = 3\nvar d = 4\nvar e = 5\nvar speed = 100\nvar f = 6\n";
+	const String after = "extends Node\n\nvar a = 1\nvar b = 2\nvar c = 3\nvar d = 4\nvar e = 5\nvar speed = 200\nvar f = 6\nvar g = 7\n";
+
+	const String changes = AITextDiff::describe(before, after, 2);
+
+	CHECK(changes ==
+			"  ...\n"
+			"  var d = 4\n"
+			"  var e = 5\n"
+			"- var speed = 100\n"
+			"+ var speed = 200\n"
+			"  var f = 6\n"
+			"+ var g = 7\n"
+			"  \n");
+	CHECK(AITextDiff::describe(before, before).is_empty());
+	// Line endings are not a change.
+	CHECK(AITextDiff::describe(before, before.replace("\n", "\r\n")).is_empty());
+	CHECK(AITextDiff::describe("", "a\nb") == "- \n+ a\n+ b\n");
 }
 
 // --- Provider ---

@@ -173,12 +173,36 @@ void add_edit_tools(Vector<AIToolSpec> &r_specs) {
 			object_schema(save)));
 }
 
+void add_project_tools(Vector<AIToolSpec> &r_specs) {
+	Dictionary setting;
+	setting["name"] = property("string", "The setting, as Project Settings names it, e.g. \"display/window/size/viewport_width\" or \"application/run/main_scene\".");
+	Dictionary value;
+	value["description"] = "The new value: a number, true / false, text, or an engine value written as text (\"Vector2(0, 980)\", \"#1a1a2e\").";
+	setting["value"] = value;
+	r_specs.push_back(spec("set_project_setting", AIToolSpec::KIND_EDIT,
+			"Changes one existing project setting and saves project.godot. Only when the user asks for it, or when what you built cannot work without it. "
+			"Input actions have their own tool; autoloads and plugins are for the user to change.",
+			object_schema(setting, { "name", "value" })));
+
+	Dictionary action;
+	action["action"] = property("string", "The action's name, as scripts will read it, e.g. \"jump\" or \"move_left\".");
+	action["keys"] = string_list("Keys that trigger it.", "A key by name: \"Space\", \"A\", \"Left\", \"Shift\", \"Escape\", \"Enter\", \"F1\".");
+	action["mouse_buttons"] = string_list("Mouse buttons that trigger it.", "\"left\", \"right\" or \"middle\".");
+	action["deadzone"] = property("number", "Default 0.2.");
+	r_specs.push_back(spec("add_input_action", AIToolSpec::KIND_EDIT,
+			"Registers an input action in the project's Input Map (or adds keys to one that exists) and saves project.godot. "
+			"A script that reads a custom action fails at run time until the action is registered: do it before run_scene. The built-in ui_* actions need no registering.",
+			object_schema(action, { "action" })));
+}
+
 void add_host_tools(Vector<AIToolSpec> &r_specs) {
 	Dictionary run;
-	run["scene"] = property("string", "res:// path of the scene to run. Default: the edited scene.");
+	run["scene"] = property("string", "res:// path of the scene to run. Default: the edited scene, which has to be saved first.");
 	run["seconds"] = property("integer", "How long to let it run before reporting, 1 to 10. Default 3.");
+	run["screenshot"] = property("boolean", "Also show you a frame of the running game, taken just before it is stopped. For anything whose result is visual: layout, UI, where things are. Default false.");
 	r_specs.push_back(spec("run_scene", AIToolSpec::KIND_HOST,
-			"Runs a scene of the game for a few seconds, stops it, and returns the errors it raised. Use it to check that what you built starts and runs. It cannot play the game or see it.",
+			"Runs a scene of the game for a few seconds, stops it, and returns the errors it raised and what it printed. Use it to check that what you built starts and runs. "
+			"It cannot play the game: nothing is pressed while it runs.",
 			object_schema(run)));
 
 	r_specs.push_back(spec("take_screenshot", AIToolSpec::KIND_HOST,
@@ -191,7 +215,7 @@ void add_host_tools(Vector<AIToolSpec> &r_specs) {
 			"after add_child() set owner to the scene root; end with print() of what was done.");
 	script["description"] = property("string", "One sentence on what the code does, shown to the user who has to allow it.");
 	r_specs.push_back(spec("run_editor_script", AIToolSpec::KIND_HOST,
-			"Runs GDScript in the editor. For what no other tool can do: project settings, input actions, animations, tile maps, bulk changes. "
+			"Runs GDScript in the editor. For what no other tool can do: animations, tile maps, bulk changes. "
 			"The user is shown the code and has to approve it every time, so put everything that needs it into one call, and prefer the specific tools.",
 			object_schema(script, { "code", "description" })));
 
@@ -226,6 +250,7 @@ Vector<AIToolSpec> AIToolbox::get_specs(bool p_read_only) const {
 	add_web_tools(specs);
 	if (!p_read_only) {
 		add_edit_tools(specs);
+		add_project_tools(specs);
 		add_host_tools(specs);
 	}
 	return specs;

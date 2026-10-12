@@ -1,0 +1,137 @@
+name: CI
+
+# Builds the Godot editor with this module in it, then runs what needs no API
+# key: the unit tests, the layering check and the eval set against canned
+# replies. Started by hand with a release tag, it also builds the editor
+# without tests and publishes it under that tag.
+#
+# The module is compiled into the engine, so the engine is checked out too.
+# GODOT_REF is the engine revision the module is built against: a branch, a tag
+# or — better, since master moves — a commit hash.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      godot_ref:
+        description: Engine revision to build against (branch, tag or commit)
+        required: false
+      release_tag:
+        description: Publish a Windows build as a release under this tag (e.g. v0.2.0); empty for none
+        required: false
+
+env:
+  GODOT_REF: ${{ github.event.inputs.godot_ref || 'master' }}
+  # The flags the module is developed with: no Direct3D 12 or AccessKit, whose
+  # SDKs would have to be downloaded first.
+  SCONS_FLAGS: platform=windows target=editor accesskit=no d3d12=no warnings=no
+  SCONS_CACHE_LIMIT: 7
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build, unit tests, mock evals (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out the engine
+        uses: actions/checkout@v4
+        with:
+          repository: godotengine/godot
+          ref: ${{ env.GODOT_REF }}
+
+      - name: Check out the module
+        uses: actions/checkout@v4
+        with:
+          path: modules/ai_assistant
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: python -m pip install scons
+
+      - name: Layering check
+        run: python modules/ai_assistant/evals/check_layers.py
+
+      - name: Restore the build cache
+        uses: actions/cache@v4
+        with:
+          path: .scons_cache
+          key: scons-tests-${{ env.GODOT_REF }}-${{ github.sha }}
+          restore-keys: |
+            scons-tests-${{ env.GODOT_REF }}-
+            scons-tests-
+
+      - name: Build the editor with tests
+        run: scons ${{ env.SCONS_FLAGS }} tests=yes cache_path=.scons_cache cache_limit=${{ env.SCONS_CACHE_LIMIT }}
+
+      - name: Unit tests
+        run: bin\godot.windows.editor.x86_64.console.exe --test --test-case="*AIAssistant*"
+
+      - name: Evals against canned replies
+        run: python modules/ai_assistant/evals/run_evals.py --godot bin\godot.windows.editor.x86_64.console.exe --mock --jobs 2
+
+  release:
+    name: Release build (Windows)
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the engine
+        uses: actions/checkout@v4
+        with:
+          repository: godotengine/godot
+          ref: ${{ env.GODOT_REF }}
+
+      - name: Check out the module
+        uses: actions/checkout@v4
+        with:
+          path: modules/ai_assistant
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: python -m pip install scons
+
+      - name: Restore the build cache
+        uses: actions/cache@v4
+        with:
+          path: .scons_cache
+          key: scons-release-${{ env.GODOT_REF }}-${{ github.sha }}
+          restore-keys: |
+            scons-release-${{ env.GODOT_REF }}-
+            scons-release-
+
+      - name: Build the editor
+        run: scons ${{ env.SCONS_FLAGS }} cache_path=.scons_cache cache_limit=${{ env.SCONS_CACHE_LIMIT }}
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "godot-ai-${{ github.event.inputs.release_tag }}-windows-x86_64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item bin\godot.windows.editor.x86_64.exe, bin\godot.windows.editor.x86_64.console.exe $name
+          Copy-Item modules\ai_assistant\LICENSE "$name\LICENSE-godot-ai.txt"
+          Copy-Item LICENSE.txt, COPYRIGHT.txt $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: godot-ai-*.zip
+          tag_name: ${{ github.event.inputs.release_tag }}
+          generate_release_notes: true
+          body: |
+            The Godot editor (engine revision `${{ env.GODOT_REF }}`) with the `ai_assistant` module built in. Unzip and run `godot.windows.editor.x86_64.exe`.

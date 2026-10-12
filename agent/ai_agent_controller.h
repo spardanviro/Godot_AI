@@ -13,6 +13,7 @@
 #include "../network/ai_stream_client.h"
 #include "../tools/ai_toolbox.h"
 
+#include "core/io/image.h"
 #include "core/templates/hash_set.h"
 #include "scene/main/node.h"
 
@@ -33,7 +34,7 @@ class Timer;
 // that set them.
 //
 //   IDLE ──submit / plan step / runtime fix──▶ STREAMING
-//   STREAMING ──reply has code──▶ (AWAITING_PERMISSION ──ok──▶) execute ──▶ VERIFYING
+//   STREAMING ──reply has code (model without tools)──▶ (AWAITING_PERMISSION ──ok──▶) execute ──▶ VERIFYING
 //   STREAMING ──reply needs a fix / execution failed──▶ STREAMING   (bounded retries)
 //   VERIFYING ──late errors──▶ STREAMING     VERIFYING ──clean──▶ settle
 //   settle ──web marker──▶ WEB_REQUEST ──result──▶ STREAMING
@@ -120,6 +121,8 @@ public:
 	// Re-reads provider, model, compression and permission settings.
 	void reload_settings();
 	// Overrides the provider settings for this controller (headless runs).
+	// p_api_key: a key, "" for the one stored for the provider, or "@other"
+	// for the one stored for another provider.
 	void configure_provider(const String &p_provider_id, const String &p_model, const String &p_endpoint, const String &p_api_key);
 	// Answers every permission prompt with "allow". Denied categories and
 	// blocked code are still refused. For unattended runs.
@@ -170,6 +173,10 @@ private:
 		bool tool_checkpoint_taken = false; // One checkpoint per run, before its first change.
 		bool tool_waiting_for_game = false; // run_scene: the game is running, the timer is on.
 		bool tool_waiting_for_web = false; // web_search / fetch_url: the request is out.
+		bool tool_wants_game_shot = false; // run_scene: a frame of the game was asked for.
+		bool tool_waiting_for_shot = false; // run_scene: the game was asked for that frame.
+		int64_t tool_shot_id = 0; // The id the game answers that request under.
+		uint64_t tool_game_output_before = 0; // run_scene: what the game had printed before this run.
 		int tool_game_errors_before = 0;
 		String tool_image_b64; // A screenshot a tool took, to show with the next request.
 		bool tools_off = false; // No tools for the rest of this run: the model has to answer.
@@ -279,6 +286,9 @@ private:
 	String _take_tool_screenshot(bool &r_ok);
 	bool _start_run_scene(const AIToolCall &p_call);
 	void _on_tool_wait_timeout();
+	void _on_game_debug_data(const String &p_message, const Array &p_data);
+	void _finish_run_scene(const String &p_screenshot_note);
+	bool _keep_tool_image(const Ref<Image> &p_image);
 	bool _start_web_tool(const AIToolCall &p_call);
 	void _finish_web_tool(const String &p_content);
 	String _generate_asset(const AIToolCall &p_call, bool &r_ok);

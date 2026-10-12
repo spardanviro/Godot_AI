@@ -16,6 +16,7 @@ String AIPermissionManager::_category_name(Category p_cat) {
 		case PERM_CHANGE_PROJECT_SETTINGS: return "Change Project Settings";
 		case PERM_FILE_WRITE: return "Write Files";
 		case PERM_FILE_DELETE: return "Delete Files";
+		case PERM_REMEMBER: return "Remember Notes";
 		default: return "Unknown";
 	}
 }
@@ -26,8 +27,10 @@ AIPermissionManager::Level AIPermissionManager::get_default_level(Category p_cat
 		return LEVEL_DENY;
 	}
 	// A script is code that runs later, unseen by the safety check: writing
-	// or attaching one is shown to the user first.
-	return p_category == PERM_MODIFY_SCRIPTS ? LEVEL_ASK : LEVEL_ALLOW;
+	// or attaching one is shown to the user first. So is a note: it is read
+	// as part of the instructions of every conversation that follows, and
+	// what prompts it may be text the model read somewhere, not the user.
+	return p_category == PERM_MODIFY_SCRIPTS || p_category == PERM_REMEMBER ? LEVEL_ASK : LEVEL_ALLOW;
 }
 
 String AIPermissionManager::get_setting_key(Category p_category) {
@@ -39,6 +42,7 @@ String AIPermissionManager::get_setting_key(Category p_category) {
 		case PERM_CHANGE_PROJECT_SETTINGS: return "ai_assistant/permissions/project_settings";
 		case PERM_FILE_WRITE: return "ai_assistant/permissions/file_write";
 		case PERM_FILE_DELETE: return "ai_assistant/permissions/file_delete";
+		case PERM_REMEMBER: return "ai_assistant/permissions/remember";
 		default: return "";
 	}
 }

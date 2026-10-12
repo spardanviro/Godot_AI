@@ -16,15 +16,54 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
+#include "core/object/callable_mp.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
+#include "../common/ai_text_diff.h"
 #include "editor/editor_interface.h"
+#include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_editor_debugger.h"
 #include "scene/main/timer.h"
 #include "scene/main/viewport.h"
 
 static const int RUN_SCENE_DEFAULT_SEC = 3;
 static const int RUN_SCENE_MAX_SEC = 10;
 static const int RUN_SCENE_ERROR_COUNT = 20;
+static const int RUN_SCENE_OUTPUT_LINES = 40;
+// How long the running game gets to hand over a frame before the tool reports without one.
+static const double GAME_SCREENSHOT_TIMEOUT_SEC = 3.0;
+// Ids of our requests for a frame; far from the small ones the Game view counts up from.
+static const int64_t GAME_SCREENSHOT_ID_BASE = int64_t(1) << 40;
+
+// What the user is shown of a call they are asked about, beyond its one-line
+// summary: the summary shortens long arguments, and what is allowed has to be
+// what could be read. r_code: text for the prompt's code view.
+static String _call_details(const AIToolCall &p_call, String &r_code) {
+	Dictionary arguments;
+	AIToolbox::parse_arguments(p_call.arguments, arguments);
+	if (p_call.name == "write_file") {
+		const String path = String(arguments.get("path", "")).strip_edges();
+		const String content = String(arguments.get("content", "")).replace("\r\n", "\n");
+		String reason;
+		if (FileAccess::exists(path) && AIToolbox::is_readable_project_file(path, reason)) {
+			const String changes = AITextDiff::describe(FileAccess::get_file_as_string(path), content);
+			if (changes.is_empty()) {
+				return AI_L("The file already has exactly this content.", "文件内容与现有内容完全相同。");
+			}
+			r_code = changes;
+			return AI_L("It replaces a file that exists. Below, lines that go are marked -, lines that come are marked +.",
+					"它会覆盖已有文件。下面以 - 标出被删除的行，以 + 标出新增的行。");
+		}
+		r_code = content;
+		return AI_L("It creates this file:", "它会新建这个文件：");
+	}
+	if (p_call.name == "remember") {
+		return AI_L("The note, which the assistant will be given at the start of every future conversation in this project:\n\n",
+					   "这条笔记会在本项目今后每次对话开始时交给助手：\n\n") +
+				AIResponseAnalysis::sanitize_memory_note(arguments.get("note", ""));
+	}
+	return String();
+}
 static const char *TOOL_SCREENSHOT_PATH = "user://ai_screenshots/tool_screenshot.png";
 
 // Whether this request offers tools: the provider speaks them, the user has
@@ -194,8 +233,12 @@ bool AIAgentController::_start_tool(const AIToolCall &p_call) {
 	if ((level == AIPermissionManager::LEVEL_ASK || !autorun) && !auto_approve) {
 		run.tool_awaiting_permission = true;
 		_set_state(STATE_AWAITING_PERMISSION);
+		String code;
+		const String details = _call_details(p_call, code);
 		emit_signal(SNAME("permission_requested"),
-				AI_L("The assistant wants to:\n\n", "助手想要执行：\n\n") + AIToolbox::describe_call(p_call) + (what.is_empty() ? String() : "\n\n" + what), String());
+				AI_L("The assistant wants to:\n\n", "助手想要执行：\n\n") + AIToolbox::describe_call(p_call) +
+						(details.is_empty() ? String() : "\n\n" + details) + (what.is_empty() ? String() : "\n\n" + what),
+				code);
 		return false;
 	}
 	return _execute_tool(p_call);
@@ -265,15 +308,26 @@ String AIAgentController::_take_tool_screenshot(bool &r_ok) {
 	if (image.is_null() || image->is_empty()) {
 		return "Error: the editor viewport could not be captured.";
 	}
+	if (!_keep_tool_image(image)) {
+		return "Error: the screenshot could not be prepared.";
+	}
+	r_ok = true;
+	return "A screenshot of the editor viewport (" + itos(image->get_width()) + "x" + itos(image->get_height()) + ") follows as the next message.";
+}
+
+// Keeps a picture a tool took, to go out with the next request.
+bool AIAgentController::_keep_tool_image(const Ref<Image> &p_image) {
+	if (p_image.is_null() || p_image->is_empty()) {
+		return false;
+	}
 	const String path = TOOL_SCREENSHOT_PATH;
 	DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path.get_base_dir()));
 	String encoded;
-	if (image->save_png(path) != OK || AIPromptBuilder::prepare_screenshot(path, true, encoded).is_empty() || encoded.is_empty()) {
-		return "Error: the screenshot could not be prepared.";
+	if (p_image->save_png(path) != OK || AIPromptBuilder::prepare_screenshot(path, true, encoded).is_empty() || encoded.is_empty()) {
+		return false;
 	}
 	run.tool_image_b64 = encoded;
-	r_ok = true;
-	return "A screenshot of the editor viewport (" + itos(image->get_width()) + "x" + itos(image->get_height()) + ") follows as the next message.";
+	return true;
 }
 
 bool AIAgentController::_start_run_scene(const AIToolCall &p_call) {
@@ -297,6 +351,8 @@ bool AIAgentController::_start_run_scene(const AIToolCall &p_call) {
 	}
 	const Variant seconds = arguments.get("seconds", RUN_SCENE_DEFAULT_SEC);
 	run.tool_game_errors_before = code_runner.get_error_monitor()->get_debugger_error_count();
+	run.tool_game_output_before = code_runner.get_error_monitor()->get_game_output_total();
+	run.tool_wants_game_shot = bool(arguments.get("screenshot", false));
 	EditorInterface::get_singleton()->play_custom_scene(scene);
 	run.tool_waiting_for_game = true;
 	tool_wait_timer->start(CLAMP(seconds.is_num() ? int(seconds) : RUN_SCENE_DEFAULT_SEC, 1, RUN_SCENE_MAX_SEC));
@@ -304,10 +360,61 @@ bool AIAgentController::_start_run_scene(const AIToolCall &p_call) {
 }
 
 void AIAgentController::_on_tool_wait_timeout() {
+	if (run.tool_waiting_for_shot) {
+		_finish_run_scene("The game did not hand over a screenshot in time.");
+		return;
+	}
 	if (!run.tool_waiting_for_game) {
 		return;
 	}
 	run.tool_waiting_for_game = false;
+	if (!run.tool_wants_game_shot) {
+		_finish_run_scene(String());
+		return;
+	}
+	if (!provider->supports_image_input()) {
+		_finish_run_scene("No screenshot was taken: this model cannot look at images.");
+		return;
+	}
+	// The game is another process: it is asked for a frame over the debugger
+	// connection and answers there with the path of a picture it saved (the
+	// exchange the editor's own Game view uses, under an id of ours).
+	ScriptEditorDebugger *debugger = EditorDebuggerNode::get_singleton() ? EditorDebuggerNode::get_singleton()->get_default_debugger() : nullptr;
+	if (!debugger || !debugger->is_session_active() || !EditorInterface::get_singleton()->is_playing_scene()) {
+		_finish_run_scene("No screenshot could be taken: the game was no longer running.");
+		return;
+	}
+	const Callable on_data = callable_mp(this, &AIAgentController::_on_game_debug_data);
+	if (!debugger->is_connected("debug_data", on_data)) {
+		debugger->connect("debug_data", on_data);
+	}
+	run.tool_waiting_for_shot = true;
+	run.tool_shot_id = GAME_SCREENSHOT_ID_BASE + (int64_t)run_serial;
+	Array request;
+	request.push_back(run.tool_shot_id);
+	debugger->send_message("scene:rq_screenshot", request);
+	tool_wait_timer->start(GAME_SCREENSHOT_TIMEOUT_SEC);
+}
+
+// The game's answer: [id, width, height, path of the picture].
+void AIAgentController::_on_game_debug_data(const String &p_message, const Array &p_data) {
+	if (p_message != "game_view:get_screenshot" || p_data.size() != 4 || !run.tool_waiting_for_shot || int64_t(p_data[0]) != run.tool_shot_id) {
+		return;
+	}
+	const String path = p_data[3];
+	const Ref<Image> image = path.is_empty() ? Ref<Image>() : Image::load_from_file(path);
+	if (!path.is_empty()) {
+		DirAccess::remove_absolute(path); // The game left it in the temporary folder for us.
+	}
+	tool_wait_timer->stop();
+	_finish_run_scene(_keep_tool_image(image)
+					? "A screenshot of the running game (" + itos(image->get_width()) + "x" + itos(image->get_height()) + ") follows as the next message."
+					: String("The screenshot of the game could not be read."));
+}
+
+// p_screenshot_note: what there is to say about the frame that was asked for; empty if none was.
+void AIAgentController::_finish_run_scene(const String &p_screenshot_note) {
+	run.tool_waiting_for_shot = false;
 	const bool still_running = EditorInterface::get_singleton()->is_playing_scene();
 	if (still_running) {
 		EditorInterface::get_singleton()->stop_playing_scene();
@@ -319,6 +426,12 @@ void AIAgentController::_on_tool_wait_timeout() {
 		result += "\nErrors and warnings it raised:\n" + monitor->get_recent_debugger_errors(MIN(new_errors, RUN_SCENE_ERROR_COUNT));
 	} else {
 		result += "\nIt raised no errors.";
+	}
+	const String printed = monitor->get_game_output_since(run.tool_game_output_before, RUN_SCENE_OUTPUT_LINES);
+	result += printed.is_empty() ? String("\nIt printed nothing.") : "\nIt printed:\n" + printed.strip_edges();
+	if (!p_screenshot_note.is_empty()) {
+		result += "\n" + p_screenshot_note;
+		AI_LOG("run_scene: " + p_screenshot_note);
 	}
 	const uint64_t serial = run_serial;
 	_finish_tool(result, still_running && new_errors <= 0);
@@ -441,10 +554,9 @@ String AIAgentController::_remember(const AIToolCall &p_call, bool &r_ok) {
 // text, and code can build at run time what they look for. So what decides
 // is the user: the code is shown, and runs only once they have allowed it.
 // The outcome is handed back as the tool's result instead of driving a retry.
-// What the user is asked about code that needs their word. The review's own
-// question is kept when it says something (what the code will touch); its
-// generic one blames the auto-execute setting, which is not why a model
-// that has the tools is asked.
+// What the user is asked about a fallback script. The review's own question
+// is kept when it says something (what the code will touch); its generic one
+// blames the auto-execute setting, which is not why this is asked.
 String AIAgentController::_script_question(const String &p_review_message) const {
 	const bool autorun = AISettings::get("autorun", true);
 	if (autorun && p_review_message == TR(STR_PERM_EXECUTE_CONFIRM)) {

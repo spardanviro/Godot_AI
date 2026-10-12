@@ -8,6 +8,8 @@
 #include "../tools/ai_tool_values.h"
 #include "../tools/ai_toolbox.h"
 
+#include "core/config/project_settings.h"
+#include "core/input/input_event.h"
 #include "core/io/json.h"
 #include "scene/2d/node_2d.h"
 #include "scene/2d/physics/collision_shape_2d.h"
@@ -90,6 +92,38 @@ TEST_CASE("[AIAssistant][ToolEdits] engine values can be written as text, as com
 	// A whole number meant for a property of any type is an integer.
 	CHECK(AIToolValues::to_variant(5.0, Variant::NIL, value, error));
 	CHECK(value.get_type() == Variant::INT);
+}
+
+TEST_CASE("[AIAssistant][SceneTree][ToolEdits] a property value cannot bring code with it") {
+	Scene scene;
+	Variant value;
+	String error;
+	bool as_object_text = true;
+	bool as_resource = true;
+	bool as_path = true;
+	bool nested = true;
+
+	// The value parser can build objects from text; a script made that way would never have been asked about.
+	CHECK_FALSE(AIToolValues::to_variant("Object(GDScript,\"source_code\":\"extends Node\")", Variant::OBJECT, value, error));
+	// Where anything is taken, such text stays what it is: text.
+	CHECK(AIToolValues::to_variant("Object( GDScript )", Variant::NIL, value, error));
+	CHECK(value.get_type() == Variant::STRING);
+	CHECK_FALSE(AIToolValues::to_variant("[Resource(\"res://a.gd\")]", Variant::ARRAY, value, error));
+	scene.run("set_node_properties", "{\"path\": \"Enemy\", \"properties\": {\"script\": \"Object(GDScript,\\\"source_code\\\":\\\"extends Node2D\\\")\"}}", &as_object_text);
+	scene.run("set_node_properties", "{\"path\": \"Enemy\", \"properties\": {\"script\": {\"$resource\": \"GDScript\", \"source_code\": \"extends Node2D\"}}}", &as_resource);
+	scene.run("set_node_properties", "{\"path\": \"Enemy\", \"properties\": {\"script\": \"res://icon.svg\"}}", &as_path);
+	scene.run("create_node", "{\"class\": \"Node2D\", \"name\": \"Carrier\", \"properties\": {\"material\": {\"$resource\": \"CanvasItemMaterial\", \"script\": {\"$resource\": \"GDScript\"}}}}", &nested);
+
+	CHECK_FALSE(as_object_text);
+	CHECK_FALSE(as_resource);
+	CHECK_FALSE(as_path);
+	CHECK_FALSE(nested);
+	CHECK(scene.root->get_node(NodePath("Enemy"))->get_script().is_null());
+	CHECK_FALSE(scene.root->has_node(NodePath("Carrier")));
+	String reason;
+	CHECK_FALSE(AIToolValues::is_instantiable("GDScript", "Resource", reason));
+	CHECK_FALSE(AIToolValues::is_instantiable("PackedScene", "Resource", reason));
+	CHECK(AIToolValues::is_instantiable("RectangleShape2D", "Resource", reason));
 }
 
 TEST_CASE("[AIAssistant][ToolEdits] a value of the wrong kind is an error that says what was expected") {
@@ -284,6 +318,81 @@ TEST_CASE("[AIAssistant][SceneTree][ToolEdits] a node is reordered under its par
 	CHECK(scene.root->get_node_or_null(NodePath("Enemy/Shape")));
 }
 
+// --- The project ---
+
+TEST_CASE("[AIAssistant][SceneTree][ToolEdits] an input action is registered with its keys and buttons, once") {
+	Scene scene;
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	const String setting = "input/ai_test_jump";
+	bool ok = false;
+	bool again_ok = false;
+	bool bad_key = true;
+	bool built_in = true;
+	bool empty = true;
+
+	const String registered = scene.run("add_input_action", "{\"action\": \"ai_test_jump\", \"keys\": [\"Space\", \"w\"], \"mouse_buttons\": [\"left\"]}", &ok);
+	const String again = scene.run("add_input_action", "{\"action\": \"ai_test_jump\", \"keys\": [\"Space\", \"Up\"]}", &again_ok);
+	scene.run("add_input_action", "{\"action\": \"ai_test_jump\", \"keys\": [\"NotAKey\"]}", &bad_key);
+	scene.run("add_input_action", "{\"action\": \"ui_accept\", \"keys\": [\"Space\"]}", &built_in);
+	scene.run("add_input_action", "{\"action\": \"ai_test_empty\"}", &empty);
+
+	CHECK(ok);
+	CHECK(registered.contains("Registered the input action 'ai_test_jump'"));
+	REQUIRE(settings->has_setting(setting));
+	const Dictionary entry = settings->get_setting(setting);
+	const Array events = entry["events"];
+	// Space, W, the left button — and Up from the second call; Space is not there twice.
+	REQUIRE(events.size() == 4);
+	const Ref<InputEventKey> space = events[0];
+	REQUIRE(space.is_valid());
+	CHECK(space->get_physical_keycode() == Key::SPACE);
+	const Ref<InputEventMouseButton> click = events[2];
+	REQUIRE(click.is_valid());
+	CHECK(click->get_button_index() == MouseButton::LEFT);
+	CHECK(double(entry["deadzone"]) == doctest::Approx(0.2));
+	CHECK(again_ok);
+	CHECK(again.contains("Added to the input action"));
+	CHECK(again.contains("Up"));
+	CHECK_FALSE(again.contains("Space,"));
+	CHECK_FALSE(bad_key);
+	CHECK_FALSE(built_in);
+	CHECK_FALSE(empty);
+	CHECK_FALSE(settings->has_setting("input/ai_test_empty"));
+
+	settings->set_setting(setting, Variant());
+}
+
+TEST_CASE("[AIAssistant][SceneTree][ToolEdits] a project setting that exists is changed to a value of its type; others are refused") {
+	Scene scene;
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	const String name = "display/window/size/viewport_width";
+	const Variant before = settings->get_setting(name);
+	bool ok = false;
+	bool unknown = true;
+	bool wrong_type = true;
+	bool autoload = true;
+	bool input = true;
+	bool no_scene = true;
+
+	const String changed = scene.run("set_project_setting", "{\"name\": \"display/window/size/viewport_width\", \"value\": 1280}", &ok);
+	const int width = settings->get_setting(name);
+	scene.run("set_project_setting", "{\"name\": \"display/window/size/viewport_wide\", \"value\": 1}", &unknown);
+	scene.run("set_project_setting", "{\"name\": \"display/window/size/viewport_width\", \"value\": \"wide\"}", &wrong_type);
+	scene.run("set_project_setting", "{\"name\": \"autoload/Boot\", \"value\": \"*res://boot.gd\"}", &autoload);
+	scene.run("set_project_setting", "{\"name\": \"input/jump\", \"value\": {}}", &input);
+	scene.run("set_project_setting", "{\"name\": \"application/run/main_scene\", \"value\": \"res://nowhere.tscn\"}", &no_scene);
+	settings->set_setting(name, before);
+
+	CHECK(ok);
+	CHECK(width == 1280);
+	CHECK(changed.contains("Set display/window/size/viewport_width to 1280"));
+	CHECK_FALSE(unknown);
+	CHECK_FALSE(wrong_type);
+	CHECK_FALSE(autoload);
+	CHECK_FALSE(input);
+	CHECK_FALSE(no_scene);
+}
+
 // --- Files and permissions ---
 
 TEST_CASE("[AIAssistant][ToolEdits] files the editor owns and secret stores are not written; the user's path is") {
@@ -313,6 +422,8 @@ TEST_CASE("[AIAssistant][ToolEdits] each editing tool falls under one permission
 	CHECK(toolbox.get_permission_category(_call("1", "set_node_properties")) == AIPermissionManager::PERM_MODIFY_PROPERTIES);
 	CHECK(toolbox.get_permission_category(_call("1", "delete_node")) == AIPermissionManager::PERM_DELETE_NODES);
 	CHECK(toolbox.get_permission_category(_call("1", "attach_script")) == AIPermissionManager::PERM_MODIFY_SCRIPTS);
+	// A node created with a script on it is a script being attached.
+	CHECK(toolbox.get_permission_category(_call("1", "create_node", "{\"class\": \"Node\", \"script\": \"res://s/a.gd\"}")) == AIPermissionManager::PERM_MODIFY_SCRIPTS);
 	// Writing a script is not writing a data file.
 	CHECK(toolbox.get_permission_category(_call("1", "write_file", "{\"path\": \"res://s/a.gd\"}")) == AIPermissionManager::PERM_MODIFY_SCRIPTS);
 	CHECK(toolbox.get_permission_category(_call("1", "write_file", "{\"path\": \"res://d/a.json\"}")) == AIPermissionManager::PERM_FILE_WRITE);
@@ -332,11 +443,16 @@ TEST_CASE("[AIAssistant][ToolEdits] each editing tool falls under one permission
 	bool ok = true;
 	CHECK(toolbox.call("fetch_url", "{\"url\": \"https://example.com\"}", ok).contains("carried out by the agent"));
 	CHECK_FALSE(ok);
-	// What used to be text markers: files written into the project, so under that permission.
-	for (const char *name : { "generate_image", "generate_speech", "remember" }) {
+	// What used to be text markers. A generated asset is a file written into the project.
+	for (const char *name : { "generate_image", "generate_speech" }) {
 		CHECK_MESSAGE(toolbox.get_kind(name) == AIToolSpec::KIND_HOST, name);
 		CHECK_MESSAGE(toolbox.get_permission_category(_call("1", name)) == AIPermissionManager::PERM_FILE_WRITE, name);
 	}
+	// A note outlives the conversation: it has a permission of its own, which asks.
+	CHECK(toolbox.get_permission_category(_call("1", "remember")) == AIPermissionManager::PERM_REMEMBER);
+	CHECK(AIPermissionManager::get_default_level(AIPermissionManager::PERM_REMEMBER) == AIPermissionManager::LEVEL_ASK);
+	CHECK(toolbox.get_permission_category(_call("1", "set_project_setting")) == AIPermissionManager::PERM_CHANGE_PROJECT_SETTINGS);
+	CHECK(toolbox.get_permission_category(_call("1", "add_input_action")) == AIPermissionManager::PERM_CHANGE_PROJECT_SETTINGS);
 	CHECK(toolbox.get_kind("write_file") == AIToolSpec::KIND_EDIT);
 }
 

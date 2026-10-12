@@ -5,6 +5,7 @@
 #include "../execution/ai_error_monitor.h"
 
 #include "core/debugger/debugger_marshalls.h"
+#include "core/debugger/remote_debugger.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "editor/debugger/editor_debugger_node.h"
@@ -84,10 +85,21 @@ void AIAssistantPlugin::_on_debugger_started() {
 // When an "error" arrives, we deserialize it and forward to AIErrorMonitor so the
 // Watch auto-fix feature (_trigger_runtime_fix) can detect and act on it.
 void AIAssistantPlugin::_on_debug_data(const String &p_msg, const Array &p_data) {
-	if (p_msg != "error") {
+	if (!AIErrorMonitor::get_singleton()) {
 		return;
 	}
-	if (!AIErrorMonitor::get_singleton()) {
+	// What the game print()s: [lines, their types]. Errors arrive on their own.
+	if (p_msg == "output" && p_data.size() == 2 && p_data[0].get_type() == Variant::PACKED_STRING_ARRAY) {
+		const PackedStringArray lines = p_data[0];
+		const PackedInt32Array types = p_data[1];
+		for (int i = 0; i < lines.size(); i++) {
+			if (i >= types.size() || types[i] != RemoteDebugger::MESSAGE_TYPE_ERROR) {
+				AIErrorMonitor::receive_game_output(lines[i]);
+			}
+		}
+		return;
+	}
+	if (p_msg != "error") {
 		return;
 	}
 

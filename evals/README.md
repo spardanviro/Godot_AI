@@ -149,6 +149,12 @@ python run_evals.py --godot <editor> --provider deepseek --no-tools --out withou
 python run_evals.py --godot <editor> --provider deepseek --baseline without.json
 ```
 
+A relay that takes one key and speaks several providers' formats can be tested in each of them with the key stored for one: `--key-from openai` uses the key the editor has for OpenAI, whatever `--provider` is.
+
+```bash
+python run_evals.py --godot <editor> --provider anthropic --endpoint http://127.0.0.1:8317/v1/messages --key-from openai --use-editor-config
+```
+
 `check_layers.py` checks that the module's folders only include downwards and that the editor's settings are read in one place (see "Layers" in the main README). It needs nothing but the sources:
 
 ```bash

@@ -31,7 +31,7 @@
       },
       {
         "type": "tool_calls_equal",
-        "value": 1
+        "value": 2
       },
       {
         "type": "retries_equal",
@@ -39,7 +39,7 @@
       },
       {
         "type": "requests_max",
-        "value": 2
+        "value": 3
       }
     ],
     "mock_replies": [
@@ -59,17 +59,22 @@
       },
       {
         "requires_tool_result": "position = Vector2(120, 80)",
-        "text": [
-          "```gdscript",
-          "var root = get_scene()",
-          "var spawn = Marker2D.new()",
-          "spawn.name = \"Spawn\"",
-          "spawn.position = Vector2(120, 80)",
-          "root.add_child(spawn)",
-          "spawn.owner = root",
-          "print(\"Added Spawn at the player's position\")",
-          "```"
+        "tool_calls": [
+          {
+            "name": "create_node",
+            "arguments": {
+              "class": "Marker2D",
+              "name": "Spawn",
+              "properties": {
+                "position": "Vector2(120, 80)"
+              }
+            }
+          }
         ]
+      },
+      {
+        "requires_tool_result": "Created Spawn",
+        "text": "Added Spawn at the player's position."
       }
     ],
     "mock_only": true
@@ -94,7 +99,7 @@
       },
       {
         "type": "tool_calls_equal",
-        "value": 2
+        "value": 3
       }
     ],
     "mock_replies": [
@@ -120,16 +125,19 @@
       },
       {
         "requires_tool_result": "2: \t\"speed\": 321",
-        "text": [
-          "```gdscript",
-          "var root = get_scene()",
-          "var node = Node.new()",
-          "node.name = \"Speed321\"",
-          "root.add_child(node)",
-          "node.owner = root",
-          "print(\"Added Speed321\")",
-          "```"
+        "tool_calls": [
+          {
+            "name": "create_node",
+            "arguments": {
+              "class": "Node",
+              "name": "Speed321"
+            }
+          }
         ]
+      },
+      {
+        "requires_tool_result": "Created Speed321",
+        "text": "Added Speed321."
       }
     ],
     "mock_only": true
@@ -204,7 +212,7 @@
       },
       {
         "type": "tool_calls_equal",
-        "value": 3
+        "value": 4
       },
       {
         "type": "retries_equal",
@@ -234,16 +242,19 @@
       },
       {
         "requires_tool_result": "there is no tool named 'delete_everything'",
-        "text": [
-          "```gdscript",
-          "var root = get_scene()",
-          "var node = Node2D.new()",
-          "node.name = \"Careful\"",
-          "root.add_child(node)",
-          "node.owner = root",
-          "print(\"Added Careful\")",
-          "```"
+        "tool_calls": [
+          {
+            "name": "create_node",
+            "arguments": {
+              "class": "Node2D",
+              "name": "Careful"
+            }
+          }
         ]
+      },
+      {
+        "requires_tool_result": "Created Careful",
+        "text": "Added Careful."
       }
     ],
     "mock_only": true
@@ -936,23 +947,40 @@
     "mock_only": true
   },
   {
-    "id": "tools.code_block_still_works",
+    "id": "tools.a_code_block_is_shown_not_run",
     "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
-    "prompt": "Add a Node2D named Classic.",
+    "prompt": "Show me how I would add a Node2D named Classic from a script.",
     "checks": [
       {
         "type": "run_completed"
       },
       {
-        "type": "node_exists",
+        "type": "node_missing",
         "path": "Classic"
+      },
+      {
+        "type": "no_execution"
       },
       {
         "type": "tool_calls_equal",
         "value": 1
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      },
+      {
+        "type": "requests_max",
+        "value": 2
+      },
+      {
+        "type": "response_contains_any",
+        "values": [
+          "node.name = \"Classic\""
+        ]
       }
     ],
     "mock_replies": [
@@ -967,6 +995,8 @@
       {
         "requires_tool_result": "Main (Node2D)",
         "text": [
+          "From a script it would be:",
+          "",
           "```gdscript",
           "var root = get_scene()",
           "var node = Node2D.new()",
@@ -1313,6 +1343,80 @@
       {
         "requires_tool_result": "Moved B to Player/B",
         "text": "Renamed A to Player and moved B under it."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.input_actions_and_settings",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Register a jump action on Space and make the window 1280 wide.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://project.godot",
+        "text": "jump={"
+      },
+      {
+        "type": "file_contains",
+        "file": "res://project.godot",
+        "text": "window/size/viewport_width=1280"
+      },
+      {
+        "type": "file_not_contains",
+        "file": "res://project.godot",
+        "text": "[autoload]"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 3
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      }
+    ],
+    "mock_replies": [
+      {
+        "forbids": "ProjectSettings.save()",
+        "tool_calls": [
+          {
+            "name": "add_input_action",
+            "arguments": {
+              "action": "jump",
+              "keys": [
+                "Space"
+              ]
+            }
+          },
+          {
+            "name": "set_project_setting",
+            "arguments": {
+              "name": "display/window/size/viewport_width",
+              "value": 1280
+            }
+          },
+          {
+            "name": "set_project_setting",
+            "arguments": {
+              "name": "autoload/Boot",
+              "value": "*res://boot.gd"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Registered the input action 'jump': Space",
+        "text": "Registered jump on Space and set the window width to 1280."
       }
     ],
     "mock_only": true

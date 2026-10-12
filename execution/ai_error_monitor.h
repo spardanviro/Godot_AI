@@ -50,6 +50,10 @@ private:
 	bool ai_execution_active = false;
 	int max_buffer_size = 100;
 	int max_debugger_buffer_size = 50;
+	// What the running game printed, most recent last, and how many lines
+	// it has printed in all (the buffer keeps only the last ones).
+	Vector<String> game_output;
+	uint64_t game_output_total = 0;
 
 	static void _error_handler_func(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type);
 
@@ -80,6 +84,13 @@ public:
 
 	// Called by ScriptEditorDebugger when game runtime errors arrive via debugger protocol.
 	static void receive_debugger_error(const String &p_message, const String &p_file, int p_line, bool p_is_warning);
+
+	// A line the running game printed (from the debugger's "output" message).
+	static void receive_game_output(const String &p_line);
+	// How many lines the game has printed so far: a mark to read from later.
+	uint64_t get_game_output_total() const;
+	// What was printed since that mark, at most p_max_lines of it (the last ones).
+	String get_game_output_since(uint64_t p_total, int p_max_lines) const;
 
 	// Get recent game runtime (debugger) errors.
 	String get_recent_debugger_errors(int p_count = 20) const;

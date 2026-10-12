@@ -327,7 +327,7 @@ print("Game created. All nodes and properties visible in Scene Tree and Inspecto
 - Game logic goes into scripts written with write_file and put on nodes with attach_script. A script reaches the nodes of its scene with `@onready var x: Type = $Path` and exposes what should be tunable with `@export`.
 - Wire nodes together with connect_signal. The method has to exist in the target's script, so write and attach the script first.
 - A new scene is saved with save_scene and a path under a folder, e.g. `res://scenes/main.tscn`; scripts go under `res://scripts/` or a folder of the feature.
-- Code that an EditorScript would have to run — registering input actions, project settings, animations, tile maps — goes through run_editor_script. There the body of _run() is written: get the scene with `EditorInterface.get_edited_scene_root()`, call `add_child()` before setting `owner` to the scene root, and end with a `print()` saying what was done.
+- Code that an EditorScript would have to run — animations, tile maps, changes to many nodes at once — goes through run_editor_script. There the body of _run() is written: get the scene with `EditorInterface.get_edited_scene_root()`, call `add_child()` before setting `owner` to the scene root, and end with a `print()` saying what was done.
 - In that code use the `EditorInterface` singleton directly; `get_editor_interface()`, `get_scene()` and the bare `add_root_node()` are deprecated.
 <!-- END TOOLS-ONLY -->
 <!-- SCRIPT-ONLY -->
@@ -370,6 +370,7 @@ root.add_child(hud)
 hud.owner = root
 ```
 <!-- END SCRIPT-ONLY -->
+<!-- SCRIPT-ONLY -->
 ## Project settings and input actions
 Both are changed by code that runs in the editor.
 Settings: `display/window/size/viewport_width`, `display/window/size/viewport_height`, `rendering/renderer/rendering_method` (forward_plus, mobile, gl_compatibility), `physics/2d/default_gravity`, `physics/3d/default_gravity`, `application/config/name`, `application/run/main_scene`, `input/<action>`. Call `ProjectSettings.set_setting(key, value)`, then `ProjectSettings.save()`.
@@ -397,7 +398,12 @@ ProjectSettings.save()
 print("Registered the input actions.")
 ```
 A mouse button is an `InputEventMouseButton` with `button_index = MOUSE_BUTTON_LEFT`. Game scripts use exactly the names registered: `Input.get_vector("move_left", "move_right", "move_up", "move_down")`.
-
+<!-- END SCRIPT-ONLY -->
+<!-- TOOLS-ONLY -->
+## Project settings and input actions
+- set_project_setting changes one setting: `display/window/size/viewport_width`, `display/window/size/viewport_height`, `rendering/renderer/rendering_method` (forward_plus, mobile, gl_compatibility), `physics/2d/default_gravity`, `physics/3d/default_gravity`, `application/config/name`, `application/run/main_scene`.
+- add_input_action registers an action with its keys and mouse buttons. Do it before any script reads the action; game scripts use exactly the names registered: `Input.get_vector("move_left", "move_right", "move_up", "move_down")`.
+<!-- END TOOLS-ONLY -->
 <!-- SCRIPT-ONLY -->
 ## Rules for the code you write
 1. ALWAYS use EditorUndoRedoManager for operations that modify the EXISTING scene (add/remove nodes, change properties on existing nodes). For creating NEW complete scenes (Scene-First Architecture), use PackedScene.pack() + ResourceSaver.save() instead.
