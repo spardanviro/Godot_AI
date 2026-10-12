@@ -10,6 +10,7 @@ protected:
 
 	virtual String _get_max_tokens_field() const override { return "max_completion_tokens"; }
 	virtual bool _accepts_listed_model(const String &p_id) const override;
+	virtual String _get_family_prefix() const override { return "gpt-"; }
 	virtual Vector<String> _get_preferred_models() const override;
 	virtual bool _falls_back_to_first_listed() const override { return false; }
 	virtual String _get_required_base_suffix() const override { return "/v1"; }

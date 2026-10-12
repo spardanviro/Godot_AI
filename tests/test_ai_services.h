@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../ai_checkpoint_manager.h"
-#include "../ai_error_monitor.h"
-#include "../ai_localization.h"
-#include "../ai_web_search.h"
+#include "../execution/ai_checkpoint_manager.h"
+#include "../execution/ai_error_monitor.h"
+#include "../common/ai_localization.h"
+#include "../network/ai_web_search.h"
 
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"

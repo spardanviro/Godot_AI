@@ -1,7 +1,7 @@
 #include "anthropic_provider.h"
 #include "core/object/class_db.h"
 #include "core/io/json.h"
-#include "../ai_system_prompt.h"
+#include "../prompt/ai_system_prompt.h"
 
 void AnthropicProvider::_bind_methods() {
 }

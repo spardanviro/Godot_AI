@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../ai_provider.h"
+#include "ai_provider.h"
 
 class GeminiProvider : public AIProvider {
 	GDCLASS(GeminiProvider, AIProvider);

@@ -1,6 +1,6 @@
-#include "../ai_provider_catalog.h"
+#include "ai_provider_catalog.h"
 
-#include "../ai_provider.h"
+#include "ai_provider.h"
 
 namespace {
 

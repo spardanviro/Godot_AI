@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../ai_permission_manager.h"
-#include "../ai_script_executor.h"
+#include "../execution/ai_permission_manager.h"
+#include "../execution/ai_script_executor.h"
 
 #include "tests/test_macros.h"
 

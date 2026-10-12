@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../ai_provider.h"
+#include "ai_provider.h"
 
 // Shared implementation of the OpenAI chat-completions wire format. OpenAI,
 // DeepSeek and GLM all speak it; each concrete provider only supplies what
@@ -15,7 +15,11 @@ protected:
 	virtual String _get_max_tokens_field() const { return "max_tokens"; }
 	// Whether a model id returned by the /models endpoint should be offered.
 	virtual bool _accepts_listed_model(const String &p_id) const { return true; }
-	// Models to pick first when auto-selecting, best first.
+	// What the names of the provider's main models start with ("gpt-"): the
+	// listed one with the highest version after it is recommended. Empty: no
+	// such family.
+	virtual String _get_family_prefix() const { return String(); }
+	// Models to pick when no main model of the family is listed, best first.
 	virtual Vector<String> _get_preferred_models() const { return Vector<String>(); }
 	// When no preferred model is listed: take the first listed one (true) or
 	// fall back to the default model (false).

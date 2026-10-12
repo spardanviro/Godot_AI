@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../ai_audio_generator.h"
-#include "../ai_image_generator.h"
-#include "../ai_network_thread.h"
-#include "../ai_proxy.h"
+#include "../assets/ai_audio_generator.h"
+#include "../assets/ai_image_generator.h"
+#include "../network/ai_network_thread.h"
+#include "../network/ai_proxy.h"
 
 #include "core/io/json.h"
 #include "core/os/thread.h"

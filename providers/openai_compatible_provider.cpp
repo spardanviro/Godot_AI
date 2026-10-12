@@ -1,5 +1,7 @@
 #include "openai_compatible_provider.h"
 
+#include "ai_model_names.h"
+
 #include "core/io/json.h"
 
 static String _string_or_empty(const Dictionary &p_dict, const String &p_key) {
@@ -196,6 +198,13 @@ PackedStringArray OpenAICompatibleProvider::parse_models_list(const String &p_re
 }
 
 String OpenAICompatibleProvider::select_best_model(const PackedStringArray &p_models) const {
+	const String family = _get_family_prefix();
+	if (!family.is_empty() && !_is_third_party_endpoint()) {
+		const String newest = AIModelNames::newest_plain(p_models, family);
+		if (!newest.is_empty()) {
+			return newest;
+		}
+	}
 	const Vector<String> preferred = _get_preferred_models();
 	for (int p = 0; p < preferred.size(); p++) {
 		if (p_models.has(preferred[p])) {

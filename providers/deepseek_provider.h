@@ -8,7 +8,7 @@ class DeepSeekProvider : public OpenAICompatibleProvider {
 protected:
 	static void _bind_methods() {}
 
-	virtual bool _accepts_listed_model(const String &p_id) const override { return p_id == "deepseek-chat" || p_id == "deepseek-reasoner"; }
+	virtual bool _accepts_listed_model(const String &p_id) const override { return p_id.begins_with("deepseek-"); }
 	virtual Vector<String> _get_preferred_models() const override { return { "deepseek-chat" }; }
 
 public:

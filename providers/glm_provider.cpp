@@ -1,8 +1,12 @@
 #include "glm_provider.h"
 
+#include "ai_model_names.h"
+
 bool GLMProvider::_accepts_listed_model(const String &p_id) const {
-	// GLM-5 series chat models only.
-	if (!p_id.begins_with("glm-5")) {
+	// Chat models of the GLM-5 generation and later. The list also carries
+	// image, video and embedding models under other names.
+	static const int OLDEST_GENERATION = 5000;
+	if (AIModelNames::version_after(p_id, "glm-") < OLDEST_GENERATION) {
 		return false;
 	}
 	// Skip image, audio, video and vision variants.
@@ -10,6 +14,5 @@ bool GLMProvider::_accepts_listed_model(const String &p_id) const {
 			p_id.contains("video") || p_id.contains("voice") || p_id.contains("ocr")) {
 		return false;
 	}
-	// Skip dated snapshots.
-	return p_id.find("-20") <= 3;
+	return !AIModelNames::is_dated_snapshot(p_id);
 }

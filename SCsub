@@ -19,10 +19,11 @@ knowledge_files = sorted(
     path for path in glob.glob(os.path.join(knowledge_root, "**", "*.md"), recursive=True) if os.path.isfile(path)
 )
 env_ai.CommandNoCache(
-    "ai_knowledge_data.gen.h",
+    "prompt/ai_knowledge_data.gen.h",
     knowledge_files,
     env.Run(ai_knowledge_builders.knowledge_builder),
 )
 
 env_ai.add_source_files(env.modules_sources, "*.cpp")
-env_ai.add_source_files(env.modules_sources, "providers/*.cpp")
+for folder in ("ui", "agent", "execution", "prompt", "network", "providers", "assets"):
+    env_ai.add_source_files(env.modules_sources, folder + "/*.cpp")

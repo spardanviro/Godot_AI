@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../ai_stream_protocol.h"
+#include "../network/ai_stream_protocol.h"
 
 #include "tests/test_macros.h"
 

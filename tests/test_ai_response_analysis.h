@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../ai_response_analysis.h"
-#include "../ai_response_parser.h"
+#include "../agent/ai_response_analysis.h"
+#include "../agent/ai_response_parser.h"
 
 #include "core/io/ip_address.h"
 #include "tests/test_macros.h"

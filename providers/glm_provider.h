@@ -10,6 +10,7 @@ protected:
 	static void _bind_methods() {}
 
 	virtual bool _accepts_listed_model(const String &p_id) const override;
+	virtual String _get_family_prefix() const override { return "glm-"; }
 	// glm-5.1 is undocumented but live.
 	virtual Vector<String> _get_preferred_models() const override { return { "glm-5.1", "glm-5", "glm-5-turbo" }; }
 

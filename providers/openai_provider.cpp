@@ -1,11 +1,30 @@
 #include "openai_provider.h"
 
+#include "ai_model_names.h"
+
+// What is left out is what is known not to be a current chat model; a name
+// of a kind not seen before is offered.
 bool OpenAIProvider::_accepts_listed_model(const String &p_id) const {
-	// Flagship and codex series only.
-	return p_id.begins_with("gpt-5");
+	static const int OLDEST_GENERATION = 5000; // GPT-5.
+	if (AIModelNames::is_dated_snapshot(p_id) || p_id.begins_with("ft:")) {
+		return false;
+	}
+	if (AIModelNames::contains_any(p_id, { "embedding", "whisper", "tts", "dall-e", "image", "audio", "realtime", "transcribe",
+								"moderation", "search", "sora", "davinci", "babbage", "instruct", "computer-use" })) {
+		return false;
+	}
+	for (const char *family : { "gpt-", "chatgpt-" }) {
+		const int version = AIModelNames::version_after(p_id, family);
+		if (version >= 0) {
+			return version >= OLDEST_GENERATION;
+		}
+	}
+	// The o1 / o3 / o4 reasoning series preceded GPT-5.
+	return AIModelNames::version_after(p_id, "o") < 0;
 }
 
 Vector<String> OpenAIProvider::_get_preferred_models() const {
+	// Only reached when no "gpt-<version>" model is listed.
 	return { "gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4-nano" };
 }
 

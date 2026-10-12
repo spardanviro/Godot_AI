@@ -1,12 +1,12 @@
 #pragma once
 
-#include "../ai_agent_controller.h"
-#include "../ai_chat_view.h"
-#include "../ai_model_selector.h"
-#include "../ai_permission_manager.h"
-#include "../ai_provider.h"
-#include "../ai_provider_catalog.h"
-#include "../ai_stream_client.h"
+#include "../agent/ai_agent_controller.h"
+#include "../ui/ai_chat_view.h"
+#include "../ui/ai_model_selector.h"
+#include "../execution/ai_permission_manager.h"
+#include "../providers/ai_provider.h"
+#include "../providers/ai_provider_catalog.h"
+#include "../network/ai_stream_client.h"
 
 #include "core/templates/hash_set.h"
 #include "tests/test_macros.h"

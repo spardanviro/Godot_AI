@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../ai_chat_view.h"
-#include "../ai_plan.h"
-#include "../ai_project_memory.h"
+#include "../ui/ai_chat_view.h"
+#include "../agent/ai_plan.h"
+#include "../agent/ai_project_memory.h"
 
 #include "tests/test_macros.h"
 

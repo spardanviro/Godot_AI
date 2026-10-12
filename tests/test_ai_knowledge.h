@@ -1,10 +1,10 @@
 #pragma once
 
-#include "../ai_api_doc_loader.h"
-#include "../ai_domain_prompts.h"
-#include "../ai_gotchas_index.h"
-#include "../ai_knowledge.h"
-#include "../ai_system_prompt.h"
+#include "../prompt/ai_api_doc_loader.h"
+#include "../prompt/ai_domain_prompts.h"
+#include "../prompt/ai_gotchas_index.h"
+#include "../prompt/ai_knowledge.h"
+#include "../prompt/ai_system_prompt.h"
 
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"

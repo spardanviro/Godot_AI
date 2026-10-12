@@ -1,4 +1,6 @@
 #include "gemini_provider.h"
+
+#include "ai_model_names.h"
 #include "core/object/class_db.h"
 #include "core/io/json.h"
 
@@ -45,7 +47,7 @@ int GeminiProvider::get_recommended_max_tokens() const {
 String GeminiProvider::get_request_url() const {
 	String endpoint = api_endpoint.is_empty() ? get_default_endpoint() : api_endpoint;
 	String m = model.is_empty() ? get_default_model() : model;
-	return endpoint + m + ":generateContent?key=" + api_key;
+	return endpoint + m + ":generateContent";
 }
 
 String GeminiProvider::build_request_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message) const {
@@ -150,17 +152,19 @@ String GeminiProvider::parse_response(const String &p_response_body) const {
 Vector<String> GeminiProvider::get_headers() const {
 	Vector<String> headers;
 	headers.push_back("Content-Type: application/json");
-	// Gemini uses API key in URL query param, not headers.
+	// The key goes in a header, not in the address: an address ends up in
+	// proxy and server logs.
+	headers.push_back("x-goog-api-key: " + api_key);
 	return headers;
 }
 
 String GeminiProvider::get_models_list_url() const {
-	return "https://generativelanguage.googleapis.com/v1beta/models?key=" + api_key;
+	return "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000";
 }
 
 Vector<String> GeminiProvider::get_models_list_headers() const {
-	// Gemini uses API key in URL, no auth headers needed.
 	Vector<String> headers;
+	headers.push_back("x-goog-api-key: " + api_key);
 	return headers;
 }
 
@@ -192,13 +196,15 @@ PackedStringArray GeminiProvider::parse_models_list(const String &p_response_bod
 			name = name.substr(7);
 		}
 
-		// Only keep gemini-2.5+ and gemini-3.x series. Skip older gen and non-gemini models.
-		if (!name.begins_with("gemini-2.5") && !name.begins_with("gemini-3")) {
+		// Gemini 2.5 and every later version. Skip older generations and
+		// other families (gemma, imagen, veo).
+		static const int OLDEST_VERSION = 2005;
+		if (AIModelNames::version_after(name, "gemini-") < OLDEST_VERSION) {
 			continue;
 		}
 
-		// Skip non-chat utility models.
-		if (name.contains("embedding") || name.contains("aqa") || name.contains("vision")) {
+		// Skip models that are not for chat.
+		if (AIModelNames::contains_any(name, { "embedding", "aqa", "vision", "image", "tts", "audio", "live", "robotics", "computer-use" })) {
 			continue;
 		}
 
@@ -223,31 +229,24 @@ PackedStringArray GeminiProvider::parse_models_list(const String &p_response_bod
 }
 
 String GeminiProvider::select_best_model(const PackedStringArray &p_models) const {
-	// Prefer highest-version stable pro model. gemini-3 > gemini-2.5.
-	// Stable > preview/exp. Pro > flash.
+	// The pro model of the highest version. At the same version a released
+	// model goes before a preview, and the plain name before its variants.
 	String best;
-	float best_ver = 0.0f;
+	int best_rank = -1;
 
 	for (int i = 0; i < p_models.size(); i++) {
 		const String &m = p_models[i];
-		// Skip preview/experimental.
-		if (m.contains("preview") || m.contains("exp")) {
+		if (!m.contains("pro") || m.contains("exp")) {
 			continue;
 		}
-		// Only pro tier for best selection.
-		if (!m.contains("pro")) {
+		const int version = AIModelNames::version_after(m, "gemini-");
+		if (version < 0) {
 			continue;
 		}
-		if (m.begins_with("gemini-")) {
-			String after = m.substr(7); // "3.0-pro" or "2.5-pro"
-			int dash = after.find("-");
-			if (dash > 0) {
-				float ver = after.substr(0, dash).to_float();
-				if (ver > best_ver) {
-					best_ver = ver;
-					best = m;
-				}
-			}
+		const int rank = version * 2 + (m.contains("preview") ? 0 : 1);
+		if (rank > best_rank || (rank == best_rank && m.length() < best.length())) {
+			best_rank = rank;
+			best = m;
 		}
 	}
 
@@ -381,7 +380,7 @@ String GeminiProvider::get_stream_url() const {
 	String endpoint = api_endpoint.is_empty() ? get_default_endpoint() : api_endpoint;
 	String m = model.is_empty() ? get_default_model() : model;
 	// Use streamGenerateContent instead of generateContent, with alt=sse for SSE format.
-	return endpoint + m + ":streamGenerateContent?alt=sse&key=" + api_key;
+	return endpoint + m + ":streamGenerateContent?alt=sse";
 }
 
 GeminiProvider::GeminiProvider() {

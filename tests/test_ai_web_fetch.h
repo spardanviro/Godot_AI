@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../ai_web_fetch.h"
+#include "../network/ai_web_fetch.h"
 
 #include "core/io/stream_peer_tcp.h"
 #include "core/io/tcp_server.h"

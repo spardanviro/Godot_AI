@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../ai_session.h"
+#include "../agent/ai_session.h"
 
 #include "tests/test_macros.h"
 

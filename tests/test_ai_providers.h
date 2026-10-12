@@ -1,8 +1,9 @@
 #pragma once
 
-#include "../ai_credential_store.h"
-#include "../ai_provider.h"
-#include "../ai_system_prompt.h"
+#include "../providers/ai_credential_store.h"
+#include "../providers/ai_provider.h"
+#include "../providers/ai_model_names.h"
+#include "../prompt/ai_system_prompt.h"
 #include "../providers/deepseek_provider.h"
 #include "../providers/glm_provider.h"
 #include "../providers/openai_provider.h"
@@ -272,8 +273,69 @@ TEST_CASE("[AIAssistant][Providers] another service's model list is offered whol
 	CHECK(relay_models.size() == 3);
 	CHECK(relay_models.has("deepseek-ai/DeepSeek-V3"));
 	CHECK(relay->select_best_model(relay_models).is_empty());
-	// The provider's own host, written out, is still the provider.
-	CHECK(official->parse_models_list(body).is_empty());
+	// The provider's own host, written out, is still the provider: its
+	// retired generation is left out.
+	CHECK_FALSE(official->parse_models_list(body).has("gpt-4o"));
+}
+
+TEST_CASE("[AIAssistant][Providers] model names are read by version, not matched against today's names") {
+	CHECK(AIModelNames::version_after("gpt-5.4-mini", "gpt-") == 5004);
+	CHECK(AIModelNames::version_after("glm-5", "glm-") == 5000);
+	CHECK(AIModelNames::version_after("gemini-2.5-pro", "gemini-") == 2005);
+	CHECK(AIModelNames::version_after("gpt-5.10", "gpt-") > AIModelNames::version_after("gpt-5.9", "gpt-"));
+	CHECK(AIModelNames::version_after("gpt-image-1", "gpt-") == -1);
+	CHECK(AIModelNames::version_after("claude-opus-4", "gpt-") == -1);
+	CHECK(AIModelNames::version_after("glm-20260101", "glm-") == -1); // A date is not a version.
+
+	CHECK(AIModelNames::is_dated_snapshot("gpt-5-2025-08-07"));
+	CHECK(AIModelNames::is_dated_snapshot("glm-5-20260101"));
+	CHECK_FALSE(AIModelNames::is_dated_snapshot("gpt-5.4-mini"));
+
+	CHECK(AIModelNames::newest_plain({ "gpt-5.4", "gpt-6-mini", "gpt-5.5", "gpt-5.5-pro" }, "gpt-") == "gpt-5.5");
+	CHECK(AIModelNames::newest_plain({ "gpt-5.4-mini" }, "gpt-").is_empty());
+}
+
+TEST_CASE("[AIAssistant][Providers] a generation that does not exist yet is listed and recommended") {
+	Ref<AIProvider> openai = AIProvider::create("openai");
+	Ref<AIProvider> glm = AIProvider::create("glm");
+	Ref<AIProvider> gemini = AIProvider::create("gemini");
+	Ref<AIProvider> deepseek = AIProvider::create("deepseek");
+
+	const PackedStringArray openai_models = openai->parse_models_list(
+			"{\"data\":[{\"id\":\"gpt-5.4\"},{\"id\":\"gpt-6\"},{\"id\":\"gpt-6-mini\"},{\"id\":\"gpt-6-2027-01-15\"},{\"id\":\"gpt-4o\"},{\"id\":\"o3\"},"
+			"{\"id\":\"gpt-image-2\"},{\"id\":\"gpt-6-realtime\"},{\"id\":\"text-embedding-4\"},{\"id\":\"chatgpt-4o-latest\"},{\"id\":\"nova-1\"}]}");
+	const PackedStringArray glm_models = glm->parse_models_list(
+			"{\"data\":[{\"id\":\"glm-5.1\"},{\"id\":\"glm-6\"},{\"id\":\"glm-6-turbo\"},{\"id\":\"glm-4.6\"},{\"id\":\"cogview-5\"}]}");
+	const PackedStringArray gemini_models = gemini->parse_models_list(
+			"{\"models\":[{\"name\":\"models/gemini-2.5-pro\",\"supportedGenerationMethods\":[\"generateContent\"]},"
+			"{\"name\":\"models/gemini-4-pro-preview\",\"supportedGenerationMethods\":[\"generateContent\"]},"
+			"{\"name\":\"models/gemini-4-flash\",\"supportedGenerationMethods\":[\"generateContent\"]},"
+			"{\"name\":\"models/gemini-4-pro-image\",\"supportedGenerationMethods\":[\"generateContent\"]},"
+			"{\"name\":\"models/gemini-2.0-flash\",\"supportedGenerationMethods\":[\"generateContent\"]},"
+			"{\"name\":\"models/gemma-4\",\"supportedGenerationMethods\":[\"generateContent\"]}]}");
+	const PackedStringArray deepseek_models = deepseek->parse_models_list("{\"data\":[{\"id\":\"deepseek-chat\"},{\"id\":\"deepseek-v4\"}]}");
+
+	// A family nobody has heard of is offered rather than hidden.
+	CHECK(openai_models == PackedStringArray({ "gpt-5.4", "gpt-6", "gpt-6-mini", "nova-1" }));
+	CHECK(openai->select_best_model(openai_models) == "gpt-6");
+	CHECK(glm_models == PackedStringArray({ "glm-5.1", "glm-6", "glm-6-turbo" }));
+	CHECK(glm->select_best_model(glm_models) == "glm-6");
+	CHECK(gemini_models == PackedStringArray({ "gemini-2.5-pro", "gemini-4-flash", "gemini-4-pro-preview" }));
+	CHECK(gemini->select_best_model(gemini_models) == "gemini-4-pro-preview");
+	CHECK(deepseek_models.size() == 2);
+}
+
+TEST_CASE("[AIAssistant][Providers] the Gemini key travels in a header, never in an address") {
+	Ref<AIProvider> gemini = AIProvider::create("gemini");
+	gemini->set_api_key("secret-key");
+	gemini->set_model("gemini-2.5-pro");
+
+	CHECK_FALSE(gemini->get_request_url().contains("secret-key"));
+	CHECK_FALSE(gemini->get_stream_url().contains("secret-key"));
+	CHECK_FALSE(gemini->get_models_list_url().contains("secret-key"));
+	CHECK(gemini->get_headers().has("x-goog-api-key: secret-key"));
+	CHECK(gemini->get_models_list_headers().has("x-goog-api-key: secret-key"));
+	CHECK(gemini->get_stream_url().ends_with("gemini-2.5-pro:streamGenerateContent?alt=sse"));
 }
 
 TEST_CASE("[AIAssistant][Providers] with no preferred model listed the fallback differs by provider") {
