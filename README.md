@@ -26,6 +26,7 @@ The panel is mounted in the right dock area of the editor.
 - Chat-style interaction UI with persistent conversation history
 - `New`, `History`, `Settings`, file attachment, mention, send, and stop controls
 - Streamed responses with a `Stop` button for partial cancellation
+- Replies rendered as Markdown, also while they stream in: headings, bold / italic / strikethrough, inline code, fenced code blocks, nested and numbered lists, task lists, quotes, rules, tables, and web links that open in the browser
 - Auto-resizing multiline input field
 - High-frequency preset actions:
   - `Fix Errors`
@@ -65,7 +66,7 @@ The panel is mounted in the right dock area of the editor.
 
 The OpenAI provider path can also be pointed at compatible custom endpoints through the endpoint setting.
 
-The settings dialog can auto-fetch model lists from provider APIs and select from the fetched models. It keeps a separate API key per provider and swaps them automatically when you change providers.
+The model is a text field: any model name can be typed, which is what an OpenAI-compatible relay or aggregator (SiliconFlow, OpenRouter, a local server) needs; set its address as the API endpoint. The button beside the field lists the known models, and `Test / Refresh` replaces that list with the one the endpoint reports — cut down to current chat models for the provider's own API, whole for any other service. It keeps a separate API key per provider and swaps them automatically when you change providers.
 
 OpenAI, DeepSeek and GLM speak the same chat-completions wire format and share one implementation (`OpenAICompatibleProvider`); each of them only declares what differs (endpoint, model tables, the name of the output-limit field).
 
@@ -233,10 +234,11 @@ Whether a request may start, whether code may run and what Stop means all follow
 | `ai_assistant_plugin.*` | Editor plugin entry point |
 | `ai_assistant_panel.*` | The dock: layout, user actions, dialogs |
 | `ai_chat_view.*` | Chat transcript, streaming display, clickable links |
+| `ai_markdown.*` | Markdown to RichTextLabel BBCode, whole or as a stream; escapes everything the model wrote |
 | `ai_mention_autocomplete.*` | `@` completion popup for scene nodes and project files |
 | `ai_mention_text_edit.*`, `ai_mention_highlighter.*` | Mention-capable input field with inline chips |
 | `ai_settings_dialog.*`, `ai_settings_dialog_model.cpp`, `ai_settings_dialog_layout.cpp` | Settings window (tabs: model, general, permissions, advanced): reading and writing the `ai_assistant/*` settings; provider, key and model handling; widgets and captions |
-| `ai_model_selector.*`, `ai_model_list_fetcher.*` | Model dropdown with a free-text entry; live model list from the provider's API |
+| `ai_model_selector.*`, `ai_model_list_fetcher.*` | Model name field with a pick list; live model list from the provider's API |
 | `ai_provider_catalog.h`, `providers/ai_provider_catalog.cpp` | Display names and known models per provider |
 | `ai_agent_controller.*`, `ai_agent_controller_replies.cpp` | Agent loop as an explicit state machine; signals instead of UI calls |
 | `ai_session.*` | Conversation history, context compression, overflow recovery, attachment de-duplication |
@@ -313,7 +315,7 @@ Keys found in the settings file by an older version are moved into the store the
 
 ## Tests
 
-Unit tests cover the logic that does not need a running editor: the response parser, side-effect markers, URL and path policy, the safety policy and risk tiers, gotcha / domain / API-doc selection, the knowledge file formats and overrides, history compression and overflow recovery, SSE decoding, the providers' request and response handling, and the credential store.
+Unit tests cover the logic that does not need a running editor: the response parser, side-effect markers, URL and path policy, the safety policy and risk tiers, gotcha / domain / API-doc selection, the knowledge file formats and overrides, Markdown rendering, history compression and overflow recovery, SSE decoding, the providers' request and response handling, and the credential store.
 
 ```bash
 scons platform=windows target=editor tests=yes

@@ -258,6 +258,24 @@ TEST_CASE("[AIAssistant][Providers] model lists are filtered to chat models and 
 	CHECK(openai->select_best_model(openai_models) == "gpt-5.4-mini");
 }
 
+TEST_CASE("[AIAssistant][Providers] another service's model list is offered whole, with no recommendation") {
+	Ref<OpenAIProvider> relay;
+	relay.instantiate();
+	relay->set_api_endpoint("https://api.siliconflow.cn/v1");
+	Ref<OpenAIProvider> official;
+	official.instantiate();
+	official->set_api_endpoint("https://api.openai.com/v1/chat/completions");
+	const String body = "{\"data\":[{\"id\":\"deepseek-ai/DeepSeek-V3\"},{\"id\":\"Qwen/Qwen3-Coder\"},{\"id\":\"gpt-4o\"}]}";
+
+	const PackedStringArray relay_models = relay->parse_models_list(body);
+
+	CHECK(relay_models.size() == 3);
+	CHECK(relay_models.has("deepseek-ai/DeepSeek-V3"));
+	CHECK(relay->select_best_model(relay_models).is_empty());
+	// The provider's own host, written out, is still the provider.
+	CHECK(official->parse_models_list(body).is_empty());
+}
+
 TEST_CASE("[AIAssistant][Providers] with no preferred model listed the fallback differs by provider") {
 	Ref<GLMProvider> glm;
 	glm.instantiate();

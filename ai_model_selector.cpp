@@ -5,98 +5,90 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "scene/gui/line_edit.h"
-#include "scene/gui/option_button.h"
-
-static const char *CUSTOM_ITEM = "Custom...";
+#include "scene/gui/menu_button.h"
+#include "scene/gui/popup_menu.h"
 
 void AIModelSelector::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("model_picked"));
 }
 
-// The custom entry is always the last one.
-int AIModelSelector::_custom_index() const {
-	return option->get_item_count() - 1;
+void AIModelSelector::_notification(int p_what) {
+	if (p_what == NOTIFICATION_THEME_CHANGED) {
+		list_button->set_button_icon(get_theme_icon(SNAME("arrow"), SNAME("OptionButton")));
+	}
 }
 
 bool AIModelSelector::is_custom() const {
-	return option->get_selected() == _custom_index();
+	return !models.has(get_model());
 }
 
 String AIModelSelector::get_model() const {
-	if (is_custom()) {
-		return custom_edit->get_text().strip_edges();
-	}
-	return option->get_item_text(option->get_selected()).strip_edges();
+	return name_edit->get_text().strip_edges();
 }
 
 void AIModelSelector::_fill(const PackedStringArray &p_models) {
-	option->clear();
-	for (int i = 0; i < p_models.size(); i++) {
-		option->add_item(p_models[i]);
+	models = p_models;
+	PopupMenu *popup = list_button->get_popup();
+	popup->clear();
+	for (int i = 0; i < models.size(); i++) {
+		popup->add_item(models[i], i);
 	}
-	option->add_item(CUSTOM_ITEM);
-	option->select(0);
-}
-
-bool AIModelSelector::_select_listed(const String &p_name) {
-	for (int i = 0; i < _custom_index(); i++) {
-		if (option->get_item_text(i) == p_name) {
-			option->select(i);
-			custom_edit->hide();
-			return true;
-		}
-	}
-	return false;
+	list_button->set_disabled(models.is_empty());
 }
 
 void AIModelSelector::set_models(const PackedStringArray &p_models) {
 	_fill(p_models);
-	custom_edit->set_text(String());
-	custom_edit->set_visible(is_custom()); // Only when the list is empty.
+	name_edit->set_text(models.is_empty() ? String() : models[0]);
 }
 
 void AIModelSelector::update_models(const PackedStringArray &p_models, const String &p_preferred) {
-	const bool was_custom = is_custom();
 	const String previous = get_model();
+	const bool was_typed = !previous.is_empty() && !models.has(previous);
 
 	_fill(p_models);
-	if (was_custom) {
-		// The user chose to name a model, typed yet or not.
-		option->select(_custom_index());
-		custom_edit->show();
-		select_model(previous); // A listed name moves to its entry.
-	} else if (!_select_listed(previous) && !_select_listed(p_preferred)) {
-		custom_edit->set_visible(is_custom());
+	if (was_typed || models.has(previous)) {
+		return;
+	}
+	if (models.has(p_preferred)) {
+		name_edit->set_text(p_preferred);
+	} else if (previous.is_empty() && !models.is_empty()) {
+		name_edit->set_text(models[0]);
 	}
 }
 
 void AIModelSelector::select_model(const String &p_name) {
-	if (p_name.is_empty() || _select_listed(p_name)) {
-		return;
+	if (!p_name.is_empty()) {
+		name_edit->set_text(p_name);
 	}
-	option->select(_custom_index());
-	custom_edit->set_text(p_name);
-	custom_edit->show();
 }
 
-void AIModelSelector::_on_item_selected(int /*p_index*/) {
-	custom_edit->set_visible(is_custom());
-	if (is_custom()) {
-		custom_edit->grab_focus();
+void AIModelSelector::set_placeholder(const String &p_text) {
+	name_edit->set_placeholder(p_text);
+}
+
+void AIModelSelector::set_list_tooltip(const String &p_text) {
+	list_button->set_tooltip_text(p_text);
+}
+
+void AIModelSelector::_on_list_item_pressed(int p_index) {
+	if (p_index < 0 || p_index >= models.size()) {
+		return;
 	}
+	name_edit->set_text(models[p_index]);
 	emit_signal(SNAME("model_picked"));
 }
 
 AIModelSelector::AIModelSelector() {
-	option = memnew(OptionButton);
-	option->add_item(CUSTOM_ITEM);
-	option->connect("item_selected", callable_mp(this, &AIModelSelector::_on_item_selected));
-	add_child(option);
+	name_edit = memnew(LineEdit);
+	name_edit->set_h_size_flags(SIZE_EXPAND_FILL);
+	name_edit->set_placeholder("Model name");
+	add_child(name_edit);
 
-	custom_edit = memnew(LineEdit);
-	custom_edit->set_placeholder("Enter model name, e.g. gpt-4o-mini");
-	custom_edit->hide();
-	add_child(custom_edit);
+	list_button = memnew(MenuButton);
+	list_button->set_flat(false);
+	list_button->set_disabled(true);
+	list_button->get_popup()->connect("id_pressed", callable_mp(this, &AIModelSelector::_on_list_item_pressed));
+	add_child(list_button);
 }
 
 #endif // TOOLS_ENABLED

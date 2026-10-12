@@ -24,6 +24,10 @@ protected:
 	virtual String _get_required_base_suffix() const { return String(); }
 
 	String _get_effective_model() const { return model.is_empty() ? get_default_model() : model; }
+	// Whether the endpoint is another service's (a relay, an aggregator, a
+	// local server) and not the provider's own host. Such a service has its
+	// own models, which the provider's tables say nothing about.
+	bool _is_third_party_endpoint() const;
 	// The endpoint without a trailing "/chat/completions" or "/models".
 	String _get_base_url() const;
 	String _build_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message, bool p_stream) const;

@@ -10,6 +10,7 @@
 #include "ai_model_selector.h"
 #include "ai_provider_catalog.h"
 #include "ai_provider_setup.h"
+#include "ai_theme.h"
 
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
@@ -145,7 +146,7 @@ void AISettingsDialog::_apply_recommended_max_tokens() {
 void AISettingsDialog::_set_fetch_status(const String &p_text, const Color &p_color) {
 	fetch_status_label->set_text(p_text);
 	fetch_status_label->set_tooltip_text(p_text);
-	fetch_status_label->add_theme_color_override("font_color", p_color);
+	fetch_status_label->add_theme_color_override("font_color", ai_themed(p_color));
 }
 
 void AISettingsDialog::_fetch_models() {
@@ -168,7 +169,13 @@ void AISettingsDialog::_fetch_models() {
 
 void AISettingsDialog::_on_models_fetched(const PackedStringArray &p_models, const String &p_best) {
 	model_selector->update_models(p_models, p_best);
-	_set_fetch_status(AI_L("Connected. Latest: ", "连接正常。最新：") + p_best + " (" + itos(p_models.size()) + AI_L(" models)", " 个模型)"), COLOR_STATUS_OK);
+	const String count = itos(p_models.size()) + AI_L(" models", " 个模型");
+	if (p_models.has(p_best)) {
+		_set_fetch_status(AI_L("Connected. Latest: ", "连接正常。最新：") + p_best + " (" + count + ")", COLOR_STATUS_OK);
+	} else {
+		// Another service's models: nothing to recommend, pick or type one.
+		_set_fetch_status(AI_L("Connected: ", "连接正常：") + count + AI_L(". Pick one from the list or type its name.", "。可从列表选择，或直接填写模型名。"), COLOR_STATUS_OK);
+	}
 
 	// The list may have moved the selection to another model, so follow its
 	// recommendation — unless the user saved a max-tokens value for this very

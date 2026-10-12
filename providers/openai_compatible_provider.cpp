@@ -7,6 +7,17 @@ static String _string_or_empty(const Dictionary &p_dict, const String &p_key) {
 	return value.get_type() == Variant::STRING ? String(value) : String();
 }
 
+// "https://api.example.com/v1/models" -> "api.example.com".
+static String _host_of(const String &p_url) {
+	const int scheme_end = p_url.find("://");
+	const String rest = scheme_end < 0 ? p_url : p_url.substr(scheme_end + 3);
+	return rest.get_slicec('/', 0).to_lower();
+}
+
+bool OpenAICompatibleProvider::_is_third_party_endpoint() const {
+	return !api_endpoint.strip_edges().is_empty() && _host_of(api_endpoint.strip_edges()) != _host_of(get_default_endpoint());
+}
+
 String OpenAICompatibleProvider::_get_base_url() const {
 	const bool is_custom = !api_endpoint.is_empty();
 	String base = is_custom ? api_endpoint : get_default_endpoint();
@@ -167,13 +178,16 @@ PackedStringArray OpenAICompatibleProvider::parse_models_list(const String &p_re
 	if (data.get("data", Variant()).get_type() != Variant::ARRAY) {
 		return models;
 	}
+	// The provider's own list is cut down to its current chat models; another
+	// service's list is offered whole.
+	const bool offer_all = _is_third_party_endpoint();
 	const Array model_list = data["data"];
 	for (int i = 0; i < model_list.size(); i++) {
 		if (model_list[i].get_type() != Variant::DICTIONARY) {
 			continue;
 		}
 		const String id = _string_or_empty(model_list[i], "id");
-		if (!id.is_empty() && _accepts_listed_model(id)) {
+		if (!id.is_empty() && (offer_all || _accepts_listed_model(id))) {
 			models.push_back(id);
 		}
 	}
@@ -187,6 +201,9 @@ String OpenAICompatibleProvider::select_best_model(const PackedStringArray &p_mo
 		if (p_models.has(preferred[p])) {
 			return preferred[p];
 		}
+	}
+	if (_is_third_party_endpoint()) {
+		return String(); // Nothing is known about these models: no recommendation.
 	}
 	if (_falls_back_to_first_listed() && !p_models.is_empty()) {
 		return p_models[0];

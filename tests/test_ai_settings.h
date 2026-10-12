@@ -84,14 +84,14 @@ TEST_CASE("[AIAssistant][SceneTree][Settings] a new list selects its first model
 	memdelete(selector);
 }
 
-TEST_CASE("[AIAssistant][SceneTree][Settings] a model that is not listed becomes the custom entry") {
+TEST_CASE("[AIAssistant][SceneTree][Settings] a model that is not listed is kept as typed") {
 	AIModelSelector *selector = memnew(AIModelSelector);
 	selector->set_models({ "alpha", "beta" });
 
-	selector->select_model("my-finetune");
+	selector->select_model("deepseek-ai/DeepSeek-V3");
 
 	CHECK(selector->is_custom());
-	CHECK(selector->get_model() == "my-finetune");
+	CHECK(selector->get_model() == "deepseek-ai/DeepSeek-V3");
 	memdelete(selector);
 }
 
@@ -129,20 +129,40 @@ TEST_CASE("[AIAssistant][SceneTree][Settings] a fetched list does not discard a 
 	memdelete(selector);
 }
 
-TEST_CASE("[AIAssistant][SceneTree][Settings] a fetched list does not take the custom entry away before a name is typed") {
+TEST_CASE("[AIAssistant][SceneTree][Settings] a fetched list with no recommendation leaves the model alone") {
 	AIModelSelector *selector = memnew(AIModelSelector);
-	selector->set_models({ "alpha" });
-	selector->select_model("x");
-	selector->select_model("alpha");
-	selector->set_models(PackedStringArray()); // Only the custom entry: selected, nothing typed.
+	selector->set_models({ "gpt-5.4" });
 
-	selector->update_models({ "gamma", "delta" }, "gamma");
+	selector->update_models({ "Qwen/Qwen3-Coder", "deepseek-ai/DeepSeek-V3" }, String());
 
+	CHECK(selector->get_model() == "gpt-5.4");
 	CHECK(selector->is_custom());
 	memdelete(selector);
 }
 
-TEST_CASE("[AIAssistant][SceneTree][Settings] an empty list leaves only the custom entry") {
+TEST_CASE("[AIAssistant][SceneTree][Settings] a fetched list fills a field that was left empty") {
+	AIModelSelector *selector = memnew(AIModelSelector);
+	selector->set_models(PackedStringArray());
+
+	selector->update_models({ "gamma", "delta" }, "delta");
+
+	CHECK(selector->get_model() == "delta");
+	CHECK(selector->get_models().size() == 2);
+	memdelete(selector);
+}
+
+TEST_CASE("[AIAssistant][SceneTree][Settings] a typed name that is listed is not custom") {
+	AIModelSelector *selector = memnew(AIModelSelector);
+	selector->set_models({ "alpha", "beta" });
+
+	selector->select_model("  beta ");
+
+	CHECK(selector->get_model() == "beta");
+	CHECK_FALSE(selector->is_custom());
+	memdelete(selector);
+}
+
+TEST_CASE("[AIAssistant][SceneTree][Settings] an empty list leaves the field empty for a name to be typed") {
 	AIModelSelector *selector = memnew(AIModelSelector);
 
 	selector->set_models(PackedStringArray());

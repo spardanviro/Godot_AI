@@ -290,6 +290,8 @@ void AISettingsDialog::_update_ui_texts() {
 	label_provider->set_text(TR(STR_SETTINGS_PROVIDER));
 	label_api_key->set_text(TR(STR_SETTINGS_API_KEY));
 	label_model->set_text(TR(STR_SETTINGS_MODEL));
+	model_selector->set_placeholder(AI_L("Any model name, e.g. deepseek-ai/DeepSeek-V3", "可填写任意模型名，例如 deepseek-ai/DeepSeek-V3"));
+	model_selector->set_list_tooltip(AI_L("Pick from the models known for this provider. Any other name can be typed in the field.", "从该服务商的已知模型中选择；其他模型名可直接在输入框填写。"));
 	label_endpoint->set_text(TR(STR_SETTINGS_ENDPOINT));
 	label_max_tokens->set_text(TR(STR_SETTINGS_MAX_TOKENS));
 	label_temperature->set_text(TR(STR_SETTINGS_TEMPERATURE));
