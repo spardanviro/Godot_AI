@@ -42,8 +42,17 @@ String OpenAICompatibleProvider::_get_base_url() const {
 }
 
 // A history message in the form the API takes. Ordinary messages already
-// are; the two kinds of a tool round are rewritten.
+// are; the two kinds of a tool round are rewritten, and reasoning sent back
+// goes in "reasoning_content".
 Dictionary OpenAICompatibleProvider::_to_wire_message(const Dictionary &p_message) {
+	if (p_message.has("thinking")) {
+		Dictionary message = p_message.duplicate();
+		message.erase("thinking");
+		message.erase("thinking_signature");
+		message = _to_wire_message(message);
+		message["reasoning_content"] = p_message["thinking"];
+		return message;
+	}
 	if (p_message.has("tool_calls")) {
 		Array calls;
 		const Array stored = p_message["tool_calls"];
@@ -76,12 +85,39 @@ Dictionary OpenAICompatibleProvider::_to_wire_message(const Dictionary &p_messag
 	return p_message;
 }
 
+void OpenAICompatibleProvider::_add_thinking(Dictionary &r_body) const {
+	const String choice = get_effective_thinking();
+	if (!choice.is_empty() && choice != THINKING_OFF) {
+		r_body["reasoning_effort"] = choice;
+	}
+}
+
+// DeepSeek and GLM: thinking is switched with "thinking", its depth set with
+// "reasoning_effort".
+void OpenAICompatibleProvider::_add_thinking_switch(Dictionary &r_body) const {
+	const String choice = get_effective_thinking();
+	if (choice.is_empty()) {
+		return;
+	}
+	Dictionary thinking_mode;
+	thinking_mode["type"] = choice == THINKING_OFF ? "disabled" : "enabled";
+	r_body["thinking"] = thinking_mode;
+	if (choice != THINKING_OFF) {
+		r_body["reasoning_effort"] = choice;
+	}
+}
+
 String OpenAICompatibleProvider::_build_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message, bool p_stream) const {
 	Dictionary body;
 	body["model"] = _get_effective_model();
 	body[_get_max_tokens_field()] = max_tokens;
-	if (send_temperature) {
+	if (send_temperature && supports_temperature()) {
 		body["temperature"] = temperature;
+	}
+	// Only the conversation itself: the plain request serves short side requests
+	// (the history summary), which keep the model's default.
+	if (p_stream) {
+		_add_thinking(body);
 	}
 	if (p_stream) {
 		body["stream"] = true;
@@ -255,6 +291,9 @@ PackedStringArray OpenAICompatibleProvider::parse_models_list(const String &p_re
 }
 
 String OpenAICompatibleProvider::select_best_model(const PackedStringArray &p_models) const {
+	if (!_is_third_party_endpoint() && !_listed_default(p_models).is_empty()) {
+		return _listed_default(p_models);
+	}
 	const String family = _get_family_prefix();
 	if (!family.is_empty() && !_is_third_party_endpoint()) {
 		const String newest = AIModelNames::newest_plain(p_models, family);
@@ -270,6 +309,9 @@ String OpenAICompatibleProvider::select_best_model(const PackedStringArray &p_mo
 	}
 	if (_is_third_party_endpoint()) {
 		return String(); // Nothing is known about these models: no recommendation.
+	}
+	if (!_newest_known_of(p_models).is_empty()) {
+		return _newest_known_of(p_models);
 	}
 	if (_falls_back_to_first_listed() && !p_models.is_empty()) {
 		return p_models[0];

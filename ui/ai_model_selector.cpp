@@ -75,13 +75,27 @@ void AIModelSelector::_on_list_item_pressed(int p_index) {
 		return;
 	}
 	name_edit->set_text(models[p_index]);
+	last_announced = get_model();
 	emit_signal(SNAME("model_picked"));
+}
+
+void AIModelSelector::_on_name_entered() {
+	if (get_model() != last_announced) {
+		last_announced = get_model();
+		emit_signal(SNAME("model_picked"));
+	}
+}
+
+void AIModelSelector::_on_name_submitted(const String & /*p_text*/) {
+	_on_name_entered();
 }
 
 AIModelSelector::AIModelSelector() {
 	name_edit = memnew(LineEdit);
 	name_edit->set_h_size_flags(SIZE_EXPAND_FILL);
 	name_edit->set_placeholder("Model name");
+	name_edit->connect("text_submitted", callable_mp(this, &AIModelSelector::_on_name_submitted));
+	name_edit->connect("focus_exited", callable_mp(this, &AIModelSelector::_on_name_entered));
 	add_child(name_edit);
 
 	list_button = memnew(MenuButton);

@@ -5,9 +5,6 @@
 
 #include "ai_credential_store.h"
 
-// The value "max tokens" has before the user (or we) ever changed it.
-static const int UNSET_MAX_TOKENS = 4096;
-
 Ref<AIProvider> AIProviderSetup::from_values(const String &p_provider_id, const String &p_model, const String &p_endpoint, const String &p_api_key) {
 	Ref<AIProvider> provider = AIProvider::create(p_provider_id);
 	provider->set_api_key(p_api_key.is_empty() ? AICredentialStore::get_api_key(provider->get_provider_name()) : p_api_key);
@@ -28,18 +25,23 @@ Ref<AIProvider> AIProviderSetup::from_editor_settings() {
 			AISettings::get("api_endpoint", ""),
 			String());
 
-	// An untouched max_tokens follows the model's recommendation, and the
-	// settings are updated so the dialog shows what is actually used.
-	int max_tokens = AISettings::get("max_tokens", UNSET_MAX_TOKENS);
-	const int recommended = provider->get_recommended_max_tokens();
-	if (max_tokens == UNSET_MAX_TOKENS && recommended != UNSET_MAX_TOKENS) {
-		max_tokens = recommended;
-		AISettings::set("max_tokens", max_tokens);
+	// The output cap follows the model unless the user fixed one.
+	// One beyond the model's limit would fail every request.
+	if (uses_custom_max_tokens()) {
+		const int output_limit = provider->get_model_spec().output;
+		const int saved = AISettings::get("max_tokens", provider->get_recommended_max_tokens());
+		provider->set_max_tokens(output_limit > 0 ? MIN(saved, output_limit) : saved);
 	}
-	provider->set_max_tokens(max_tokens);
 	provider->set_temperature(AISettings::get("temperature", DEFAULT_TEMPERATURE));
 	provider->set_send_temperature(uses_custom_temperature());
+	provider->set_thinking(AISettings::get("thinking", ""));
 	return provider;
+}
+
+bool AIProviderSetup::uses_custom_max_tokens() {
+	// Absent in settings from before the switch: their value was chosen
+	// against model tables that have since gone out of date.
+	return AISettings::get("custom_max_tokens", false);
 }
 
 bool AIProviderSetup::uses_custom_temperature() {
@@ -65,7 +67,8 @@ String AIProviderSetup::describe(const Ref<AIProvider> &p_provider) {
 		key_origin = variable.is_empty() ? String("configured") : "environment (" + variable + ")";
 	}
 	return get_model_key(p_provider) + ", key: " + key_origin + ", max tokens: " + itos(p_provider->get_max_tokens()) +
-			", context: " + itos(p_provider->get_model_context_length());
+			", context: " + itos(p_provider->get_model_context_length()) +
+			", thinking: " + (p_provider->get_effective_thinking().is_empty() ? String("model default") : p_provider->get_effective_thinking());
 }
 
 #endif // TOOLS_ENABLED

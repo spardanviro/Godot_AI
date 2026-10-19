@@ -72,6 +72,25 @@ The model is a text field: any model name can be typed, which is what an OpenAI-
 
 OpenAI, DeepSeek and GLM speak the same chat-completions wire format and share one implementation (`OpenAICompatibleProvider`); each of them only declares what differs (endpoint, model tables, the name of the output-limit field).
 
+### Model facts and thinking
+
+What a model allows comes from [models.dev](https://models.dev), which tracks it per provider and model: context window, output limit, whether it takes a temperature, and its thinking settings. A copy is built in (`data/model_specs.json`, refreshed with `python update_model_specs.py`); the editor also downloads newer data on its own when its copy is more than a week old, and keeps it in `<editor config>/ai_assistant/model_specs.json`. A model the data does not list falls back to the provider's own table.
+
+- **Max tokens** follows the selected model by default: its output limit, unless that would leave less than three quarters of the context window for the prompt and history. Tick *Custom* to fix a value.
+- **Temperature** is the model's own default unless *Custom* is ticked; for a model that takes none the option is disabled.
+- **Thinking** lists what the selected model offers, in its maker's words: `low` / `high` / `max` for DeepSeek V4, `low` to `max` (five levels) for current Claude models, `none` to `xhigh` for GPT, `minimal` to `high` for some Gemini models, *Off* where thinking can be switched off. *Model default* sends nothing. Each provider gets it in its own form (`reasoning_effort`, `thinking.type`, `output_config.effort`, `thinkingConfig.thinkingLevel`).
+
+Older models that take a thinking budget instead (Claude Haiku 4.5, Gemini 2.5) are offered budgets of 4096 / 16384 / 32768 tokens, within what the model allows.
+
+The default model comes from the same data: the newest model of each provider's flagship series (`claude-opus`, `gpt-sol`, `gemini` / `gemini-pro`, `glm`, `deepseek-thinking`), so it moves on when the data does. From a model list fetched from the provider, the default is picked when listed; otherwise the version in the names decides (a generation newer than the data shows up there first), then the release dates in the data.
+
+Thinking models need their earlier reasoning back in a tool loop:
+
+- DeepSeek and GLM require the reasoning of earlier replies (`reasoning_content`) to be sent back; the assistant does so for them.
+- Claude's thinking blocks are signed. The blocks of the current tool loop go back unchanged, and the API is asked to drop a block it no longer accepts instead of refusing the request (`block_binding.prefix_mismatch_behavior: "drop_block"`). The system prompt carries the editor's state and changes between requests, so some blocks are dropped; that is never worse than not sending them. A relay that rejects the parameter makes the assistant retry once without it.
+
+A thinking model that calls tools often writes no text, only reasoning and calls; such a reply is acted on as calls, not shown as "reasoning without an answer".
+
 ### On-demand API reference injection (`AIAPIDocLoader`)
 
 The system prompt stays lean. Instead of statically including all Godot API documentation, `AIAPIDocLoader` detects Godot class names mentioned in the user's message (word-boundary matched) and injects compact API references for only those classes. Covers 50+ commonly-used classes including `CharacterBody3D`, `NavigationAgent3D`, `AnimationPlayer`, `RigidBody3D`, and more.
@@ -446,7 +465,10 @@ Settings are stored in `EditorSettings` under the `ai_assistant/*` namespace. AP
 | `ai_assistant/provider` | Active provider (`anthropic`, `openai`, `gemini`, `deepseek`, `glm`) |
 | `ai_assistant/model` | Model name |
 | `ai_assistant/api_endpoint` | Custom endpoint override |
-| `ai_assistant/max_tokens` | Max response tokens (default: 4096) |
+| `ai_assistant/custom_max_tokens` | Use the max tokens below instead of the model's recommendation (default: off) |
+| `ai_assistant/max_tokens` | Max response tokens, used when the setting above is on |
+| `ai_assistant/thinking` | Thinking setting: empty for the model's default, `off`, one of the model's levels, or a budget in tokens |
+| `ai_assistant/auto_update_model_specs` | Download current model facts from models.dev when the copy is a week old (default: true) |
 | `ai_assistant/custom_temperature` | Send the temperature below instead of leaving it to the model (default: off) |
 | `ai_assistant/temperature` | Sampling temperature, used when the setting above is on (default: 0.7) |
 | `ai_assistant/send_on_enter` | Send on Enter key (default: true) |

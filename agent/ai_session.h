@@ -52,7 +52,8 @@ public:
 	void push_assistant(const String &p_content, const String &p_thinking = String());
 	// A tool round: the reply that asked for tools (its text may be empty),
 	// then one result per call.
-	void push_assistant_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls);
+	// p_thinking_signature: see AIStreamClient::Result; empty for most providers.
+	void push_assistant_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls, const String &p_thinking_signature = String());
 	void push_tool_result(const AIToolCall &p_call, const String &p_result);
 	// Takes back the last message if it is a user message (to resend it after a
 	// recoverable API error). Returns false if there is nothing to take back.
@@ -67,11 +68,17 @@ public:
 	// calls. Without it, and for a round that is no longer whole (compression
 	// cut it, a result is missing), they are written out as ordinary text
 	// that any provider accepts.
-	Array build_api_messages(bool p_native_tools = false) const;
+	//
+	// With p_with_reasoning every assistant message also carries "thinking":
+	// the reasoning stored with it, empty when none was kept; and
+	// "thinking_signature" when one was stored with it.
+	Array build_api_messages(bool p_native_tools = false, bool p_with_reasoning = false) const;
 
 	// --- Compression ---
 	// Rough token count: CJK characters count 1 each, everything else 1 per 4.
 	static int estimate_tokens(const String &p_text);
+	// Whether stored reasoning goes out with the history, and so takes room.
+	void set_reasoning_sent(bool p_sent) { reasoning_sent = p_sent; }
 	int estimate_history_tokens() const;
 	// One-line stand-in for a message that is being compressed away.
 	static String summarize_message(const Dictionary &p_message);
@@ -115,6 +122,9 @@ public:
 	static const int ATTACHMENT_INLINE_LIMIT = 1500; // Characters below which dedup is not worth it.
 
 private:
+	bool reasoning_sent = false;
+	int _estimate_message_tokens(const Dictionary &p_message) const;
+
 	Array working; // Sent to the model; may be compressed.
 	Array full; // Complete record for display and saving; never trimmed.
 	String summary; // Stands in for the messages removed from the working copy.

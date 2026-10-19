@@ -115,10 +115,10 @@ bool AIAgentController::_try_retry_without_tools(const String &p_error) {
 	return _send_request(failed_message, true);
 }
 
-void AIAgentController::_handle_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls) {
+void AIAgentController::_handle_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls, const String &p_thinking_signature) {
 	const bool over_limit = run.tool_rounds >= MAX_TOOL_ROUNDS_PER_RUN;
 	run.tool_rounds++;
-	session.push_assistant_tool_calls(p_content, p_thinking, p_calls);
+	session.push_assistant_tool_calls(p_content, p_thinking, p_calls, p_thinking_signature);
 	run.tool_queue = p_calls;
 	run.tool_index = 0;
 

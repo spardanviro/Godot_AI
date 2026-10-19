@@ -47,6 +47,20 @@ TEST_CASE("[AIAssistant][Session] build_api_messages sends only role and content
 	CHECK(String(Dictionary(session.get_full_history()[1])["thinking"]) == "private reasoning");
 }
 
+TEST_CASE("[AIAssistant][Session] reasoning counts toward the history only when it is sent") {
+	AISession session;
+	session.push_user("hello");
+	session.push_assistant("hi", String("r").repeat(400));
+	const int without = session.estimate_history_tokens();
+
+	session.set_reasoning_sent(true);
+
+	CHECK(session.estimate_history_tokens() == without + 100);
+	const Array messages = session.build_api_messages(false, true);
+	CHECK(String(Dictionary(messages[1])["thinking"]).length() == 400);
+	CHECK_FALSE(Dictionary(messages[0]).has("thinking")); // Only assistant messages carry it.
+}
+
 TEST_CASE("[AIAssistant][Session] pop_last_user takes back only a trailing user message") {
 	AISession session;
 	session.push_user("first");

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../common/ai_tool_types.h"
+#include "ai_model_specs.h"
 
 #include "core/object/ref_counted.h"
 #include "core/string/ustring.h"
@@ -23,8 +24,33 @@ protected:
 	bool send_temperature = true;
 	// Tools offered to the model with each request. Empty: none.
 	Vector<AIToolSpec> tools;
+	String thinking; // See set_thinking().
 
 	static void _bind_methods();
+
+	String _model_or_default() const { return model.is_empty() ? get_default_model() : model; }
+	// What the provider assumes about a model models.dev does not list.
+	virtual int _table_context_length() const { return 8192; }
+	virtual int _table_max_tokens() const { return 4096; }
+	// The newest current model of these models.dev series is the default,
+	// so the default moves on when the data does; p_fallback when none is listed.
+	String _newest_model_or(const Vector<String> &p_families, const String &p_fallback) const {
+		const String newest = AIModelSpecs::get_newest(get_provider_name(), p_families);
+		return newest.is_empty() ? p_fallback : newest;
+	}
+	// The provider's flagship series (models.dev names), for choosing the default.
+	virtual Vector<String> _get_flagship_families() const { return Vector<String>(); }
+	// Choosing from a listed set goes: the default, if it is listed; else
+	// what the names say (a generation newer than the model facts shows up
+	// there first); else the newest listed model the facts know, the
+	// flagship series first. Each is empty when it has nothing to offer.
+	String _listed_default(const PackedStringArray &p_models) const {
+		const String default_model = get_default_model();
+		return p_models.has(default_model) ? default_model : String();
+	}
+	String _newest_known_of(const PackedStringArray &p_models) const {
+		return AIModelSpecs::get_newest_listed(get_provider_name(), p_models, _get_flagship_families());
+	}
 
 public:
 	void set_api_key(const String &p_key);
@@ -70,9 +96,38 @@ public:
 	// Get required HTTP headers.
 	virtual Vector<String> get_headers() const;
 
-	// Model metadata — context window and recommended output tokens.
-	virtual int get_model_context_length() const;
-	virtual int get_recommended_max_tokens() const;
+	// --- What is known about the model (AIModelSpecs, else the provider's table) ---
+	AIModelSpec get_model_spec() const;
+	int get_model_context_length() const;
+	// The output cap to use: the model's own limit, unless that would leave
+	// less than three quarters of the context window for the prompt and history.
+	int get_recommended_max_tokens() const;
+	// Whether the model accepts a sampling temperature at all.
+	bool supports_temperature() const;
+
+	// --- Thinking ---
+	// What can be chosen for the model, in the provider's words: THINKING_OFF
+	// first when thinking can be switched off, then its levels — or, for a
+	// model that takes a thinking budget instead, budgets in tokens ("16384").
+	// Empty: nothing can be chosen; the model thinks (or not) as by default.
+	PackedStringArray get_thinking_options() const;
+	// "" (the model's default), THINKING_OFF or one of the options.
+	void set_thinking(const String &p_choice) { thinking = p_choice; }
+	String get_thinking() const { return thinking; }
+	// The choice if the model offers it, else "": what requests are built with.
+	String get_effective_thinking() const;
+	static constexpr const char *THINKING_OFF = "off";
+	// Whether a choice is a thinking budget, and how many tokens it is.
+	static bool is_thinking_budget(const String &p_choice) { return p_choice.is_valid_int() && p_choice.to_int() > 0; }
+
+	// Whether earlier replies have to be sent back with their reasoning.
+	// DeepSeek's and GLM's thinking modes need it in a tool loop; Claude's
+	// thinking goes back with its signature.
+	virtual bool wants_reasoning_back() const { return false; }
+	// After a refused request: if the last one sent earlier reasoning back in
+	// a form the provider may refuse (Claude's signed blocks), stop doing that
+	// and return true, so the request can be sent again without it.
+	virtual bool stop_replaying_reasoning() { return false; }
 
 	// --- Streaming support ---
 	// Build the HTTP request body with streaming enabled.

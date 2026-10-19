@@ -74,6 +74,25 @@ OpenAI 这一项也可以通过端点设置指向兼容的自定义接口。
 
 OpenAI、DeepSeek、GLM 使用同一种 chat-completions 协议，共用一份实现（`OpenAICompatibleProvider`），各自只声明不同之处（端点、模型表、输出上限字段的名字）。
 
+### 模型参数与思考强度
+
+模型能用多少、支持什么，取自 [models.dev](https://models.dev)，它按服务商和模型记录：上下文窗口、输出上限、是否接受温度、有哪些思考选项。插件内置一份（`data/model_specs.json`，用 `python update_model_specs.py` 更新）；编辑器发现自己那份超过一周时，也会自动下载新数据，存在 `<编辑器配置目录>/ai_assistant/model_specs.json`。数据里没有的模型，退回到服务商自带的表。
+
+- **最大 Token 数**默认跟随所选模型：取它的输出上限，但不超过上下文窗口的四分之一，给提示词和历史留够空间。勾选“自定义”可以固定一个值。
+- **温度**默认用模型自己的默认值，勾选“自定义”才发送；模型不接受温度时这一项不可用。
+- **思考强度**列出所选模型自己提供的选项，用厂商的原词：DeepSeek V4 是 `low` / `high` / `max`，当前的 Claude 是 `low` 到 `max` 五档，GPT 是 `none` 到 `xhigh`，部分 Gemini 是 `minimal` 到 `high`，能关闭思考的模型还有“关闭”。选“模型默认”则不发送这个参数。各家用各自的参数名发送（`reasoning_effort`、`thinking.type`、`output_config.effort`、`thinkingConfig.thinkingLevel`）。
+
+只能设思考预算的老模型（Claude Haiku 4.5、Gemini 2.5）给出 4096 / 16384 / 32768 tokens 几档预算，不超过模型允许的范围。
+
+默认模型也来自这份数据：取各家旗舰系列里最新的那个（Claude 的 `claude-opus`、OpenAI 的 `gpt-sol`、Gemini 的 `gemini` / `gemini-pro`、GLM 的 `glm`、DeepSeek 的 `deepseek-thinking`），数据更新后默认模型跟着变。从服务商拉到模型列表时，列表里有默认模型就用它；没有的话，先按名字里的版本号挑（比数据更新的一代会先出现在这里），再按数据里的发布日期挑。
+
+思考型模型在工具调用循环里需要拿回自己之前的推理：
+
+- DeepSeek 和 GLM 要求把之前回复的推理内容（`reasoning_content`）一并传回，插件会替它们传。
+- Claude 的思考块带签名，插件把当前这一轮工具循环里的思考块原样传回，并请 API 把失效的块丢掉而不是拒绝请求（`block_binding.prefix_mismatch_behavior: "drop_block"`）。系统提示词里带着编辑器的当前状态，每次请求都会变，所以有些块会失效；即便如此，也不会比不传更差。中转服务若不接受这个参数，插件会自动改为不传、重试一次。
+
+思考型模型调用工具时，正文常常是空的，只有推理和工具调用；这种回复按工具调用执行，不会再被当成“只有推理、没有回答”。
+
 ### 按需注入 API 速查（`AIAPIDocLoader`）
 
 系统提示词保持精简。`AIAPIDocLoader` 不会静态塞入全部 Godot API 文档，而是识别用户消息里提到的类名（按词边界匹配），只为这些类注入简明的 API 速查。覆盖 50 多个常用类，包括 `CharacterBody3D`、`NavigationAgent3D`、`AnimationPlayer`、`RigidBody3D` 等。
@@ -448,7 +467,10 @@ scons platform=windows target=editor
 | `ai_assistant/provider` | 当前服务商（`anthropic`、`openai`、`gemini`、`deepseek`、`glm`） |
 | `ai_assistant/model` | 模型名 |
 | `ai_assistant/api_endpoint` | 自定义端点 |
-| `ai_assistant/max_tokens` | 回复的最大 token 数（默认 4096） |
+| `ai_assistant/custom_max_tokens` | 使用下面的最大 token 数，而不是模型的推荐值（默认关） |
+| `ai_assistant/max_tokens` | 回复的最大 token 数，上一项开启时使用 |
+| `ai_assistant/thinking` | 思考强度：留空为模型默认，`off`，模型提供的某一档，或以 token 计的预算 |
+| `ai_assistant/auto_update_model_specs` | 本地模型参数超过一周时，从 models.dev 下载新的（默认开） |
 | `ai_assistant/custom_temperature` | 发送下面的温度值，而不是交给模型决定（默认关） |
 | `ai_assistant/temperature` | 采样温度，上一项开启时使用（默认 0.7） |
 | `ai_assistant/send_on_enter` | 按 Enter 发送（默认开） |

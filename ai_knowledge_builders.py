@@ -38,3 +38,18 @@ inline constexpr AIKnowledgeBuiltinFile _ai_knowledge_files[] = {{
         for rel_path, offset, size in entries:
             file.write(f'\t{{ "{rel_path}", {offset}, {size} }},\n')
         file.write("\t{ nullptr, 0, 0 },\n};\n")
+
+
+def model_specs_builder(target, source, env):
+    """Embeds data/model_specs.json, the model facts the editor starts from."""
+    data = methods.get_buffer(str(source[0])).replace(b"\r\n", b"\n")
+    compressed = methods.compress_buffer(data)
+
+    with methods.generated_wrapper(str(target[0])) as file:
+        file.write(f"""\
+inline constexpr int _ai_model_specs_uncompressed_size = {len(data)};
+inline constexpr int _ai_model_specs_compressed_size = {len(compressed)};
+inline constexpr unsigned char _ai_model_specs_compressed[] = {{
+	{methods.format_buffer(compressed, 1)}
+}};
+""")

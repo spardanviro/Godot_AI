@@ -400,6 +400,7 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend, bo
 
 	const String tool_image = run.tool_image_b64;
 	run.tool_image_b64 = String();
+	run.sent_tool_image_b64 = tool_image;
 	String full_message = p_continue ? (tool_image.is_empty() ? String() : String("[The screenshot you asked for.]")) : p_message;
 	bool screenshot_dropped = false;
 	if (!p_resend && !p_continue) {
@@ -424,7 +425,8 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend, bo
 
 	AIStreamClient::Request request;
 	provider->set_pending_image(p_continue ? tool_image : run.request_image_b64);
-	request.body = provider->build_stream_request_body(system_prompt, session.build_api_messages(provider->has_tools()), full_message);
+	session.set_reasoning_sent(provider->wants_reasoning_back());
+	request.body = provider->build_stream_request_body(system_prompt, session.build_api_messages(provider->has_tools(), provider->wants_reasoning_back()), full_message);
 	provider->set_pending_image(String());
 	request.url = provider->get_stream_url();
 	request.headers = provider->get_headers();
@@ -498,7 +500,11 @@ void AIAgentController::_on_stream_poll() {
 			String response = result.content;
 			String thinking = result.thinking;
 			run.untrusted_reason = String();
-			if (result.truncated) {
+			if (result.truncated && response.strip_edges().is_empty() && result.tool_calls.is_empty() && !thinking.strip_edges().is_empty()) {
+				// A thinking model can spend the whole limit before its first step.
+				run.untrusted_reason = AI_L("The model used the whole output limit for thinking and never got to act. Raise \"Max tokens\" in Settings (DeepSeek V4 allows up to 384K) or ask for the work in smaller steps.",
+						"模型把输出上限全用在了思考上，还没开始动手。可在设置里调高“最大 Token 数”（DeepSeek V4 最高 384K），或把任务拆成更小的步骤。");
+			} else if (result.truncated) {
 				run.untrusted_reason = AI_L("The reply was cut off at the output limit, so its code was not run. Raise \"Max tokens\" in Settings or ask for the work in smaller steps.",
 						"回复在输出长度上限处被截断，其中的代码没有执行。可在设置里调高“最大 Token 数”，或把任务拆成更小的步骤。");
 			} else if (result.blocked) {
@@ -507,7 +513,9 @@ void AIAgentController::_on_stream_poll() {
 			// Some proxies route all model output through the reasoning channel
 			// and leave content empty. It is shown, so the user is not left with
 			// nothing — but reasoning is a draft, and a draft is not executed.
-			if (response.strip_edges().is_empty() && !thinking.strip_edges().is_empty()) {
+			// A thinking model that calls tools often writes no text at all:
+			// that reply is its calls, not a draft.
+			if (response.strip_edges().is_empty() && result.tool_calls.is_empty() && !thinking.strip_edges().is_empty()) {
 				AI_WARN("Content field empty — showing the reasoning as the reply.");
 				response = thinking;
 				thinking = String();
@@ -518,7 +526,7 @@ void AIAgentController::_on_stream_poll() {
 			// The reply asks to look something up first. Only a whole reply
 			// is taken at its word; a cut-off one may have lost half a call.
 			if (!result.tool_calls.is_empty() && run.untrusted_reason.is_empty()) {
-				_handle_tool_calls(result.content, result.thinking, result.tool_calls);
+				_handle_tool_calls(result.content, result.thinking, result.tool_calls, result.thinking_signature);
 				break;
 			}
 			if (response.strip_edges().is_empty()) {
@@ -534,7 +542,7 @@ void AIAgentController::_on_stream_poll() {
 
 void AIAgentController::_handle_stream_error(const String &p_error) {
 	AI_ERR("Streaming error: " + p_error);
-	if (_try_overflow_retry(p_error) || _try_retry_without_temperature(p_error) || _try_retry_without_tools(p_error)) {
+	if (_try_overflow_retry(p_error) || _try_retry_without_temperature(p_error) || _try_retry_without_thinking_replay(p_error) || _try_retry_without_tools(p_error)) {
 		return;
 	}
 	// The request was never answered: take it back, or the next message would
@@ -592,6 +600,22 @@ bool AIAgentController::_try_retry_without_temperature(const String &p_error) {
 	return _send_request(failed_message, true);
 }
 
+// A relay, or a model, that does not take the earlier thinking back refuses
+// the request; the tool loop goes on without it.
+bool AIAgentController::_try_retry_without_thinking_replay(const String &p_error) {
+	const String lower = p_error.to_lower();
+	if (provider.is_null() || lower.find("http 400") < 0 ||
+			(lower.find("thinking") < 0 && lower.find("signature") < 0 && lower.find("block_binding") < 0 && lower.find("beta") < 0)) {
+		return false;
+	}
+	if (!provider->stop_replaying_reasoning()) {
+		return false; // The request carried none: the error is about something else.
+	}
+	AI_LOG("The request with the earlier thinking was refused; going on without it: " + AIProviderSetup::get_model_key(provider));
+	run.tool_image_b64 = run.sent_tool_image_b64;
+	return _send_request(String(), false, true);
+}
+
 // =============================================================================
 // Conversation
 // =============================================================================
@@ -599,6 +623,7 @@ bool AIAgentController::_try_retry_without_temperature(const String &p_error) {
 void AIAgentController::_compress_if_needed() {
 	const int context_length = provider.is_valid() ? provider->get_model_context_length() : FALLBACK_CONTEXT_LENGTH;
 	const int max_output = provider.is_valid() ? provider->get_max_tokens() : FALLBACK_MAX_OUTPUT_TOKENS;
+	session.set_reasoning_sent(provider.is_valid() && provider->wants_reasoning_back());
 	const AISession::CompressionResult result = session.compress_if_needed(context_length, max_output, last_system_prompt_tokens, compression_config);
 	if (!result.compressed) {
 		return;

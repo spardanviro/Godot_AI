@@ -174,20 +174,6 @@ TEST_CASE("[AIAssistant][SettingsModel] a removal that is saved empties the stor
 	CHECK(saved.get_key_state() == AIProviderSettings::KEY_NONE);
 }
 
-TEST_CASE("[AIAssistant][SettingsModel] a saved output cap is kept for its own provider only") {
-	Fixture fixture(_settings("openai", String(), 9000));
-	AIProviderSettings settings;
-	settings.load();
-
-	const int for_saved_provider = settings.get_max_tokens_for_listed_model("gpt-5.4");
-	settings.select_provider(AIProviderCatalog::find("deepseek"));
-	const int for_other_provider = settings.get_max_tokens_for_listed_model("deepseek-chat");
-
-	CHECK(for_saved_provider == 9000);
-	CHECK(for_other_provider == settings.get_recommended_max_tokens("deepseek-chat"));
-	CHECK(for_other_provider != 9000);
-}
-
 // --- The executor's parts ---
 
 TEST_CASE("[AIAssistant][SettingsModel] the wrapper's header is as long as it says") {

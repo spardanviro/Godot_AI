@@ -25,7 +25,7 @@ bool OpenAIProvider::_accepts_listed_model(const String &p_id) const {
 
 Vector<String> OpenAIProvider::_get_preferred_models() const {
 	// Only reached when no "gpt-<version>" model is listed.
-	return { "gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.4-nano" };
+	return { "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6-luna" };
 }
 
 Vector<String> OpenAIProvider::get_headers() const {
@@ -34,7 +34,7 @@ Vector<String> OpenAIProvider::get_headers() const {
 	return headers;
 }
 
-int OpenAIProvider::get_model_context_length() const {
+int OpenAIProvider::_table_context_length() const {
 	const String m = _get_effective_model();
 	if (m.find("o3") >= 0 || m.find("o4") >= 0) {
 		return 200000;
@@ -57,7 +57,7 @@ int OpenAIProvider::get_model_context_length() const {
 	return 128000;
 }
 
-int OpenAIProvider::get_recommended_max_tokens() const {
+int OpenAIProvider::_table_max_tokens() const {
 	const String m = _get_effective_model();
 	if (m.find("o3-pro") >= 0) {
 		return 32768;

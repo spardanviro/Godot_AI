@@ -179,6 +179,7 @@ private:
 		uint64_t tool_game_output_before = 0; // run_scene: what the game had printed before this run.
 		int tool_game_errors_before = 0;
 		String tool_image_b64; // A screenshot a tool took, to show with the next request.
+		String sent_tool_image_b64; // The one the last request carried, for a resend.
 		bool tools_off = false; // No tools for the rest of this run: the model has to answer.
 		String request_message; // What the last request was about; a continuation is about the same.
 		String request_image_b64; // Screenshot sent with the last request; kept for a resend.
@@ -276,7 +277,7 @@ private:
 	// The model is to change the project with tools, not with a code block.
 	bool _edits_with_tools() const;
 	Vector<AIToolSpec> _tool_specs() const;
-	void _handle_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls);
+	void _handle_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls, const String &p_thinking_signature = String());
 	void _run_tool_queue();
 	bool _start_tool(const AIToolCall &p_call);
 	bool _execute_tool(const AIToolCall &p_call);
@@ -301,6 +302,7 @@ private:
 	void _handle_stream_error(const String &p_error);
 	bool _try_overflow_retry(const String &p_error);
 	bool _try_retry_without_temperature(const String &p_error);
+	bool _try_retry_without_thinking_replay(const String &p_error);
 	bool _try_retry_without_tools(const String &p_error);
 
 	// --- Replies (ai_agent_controller_replies.cpp) ---

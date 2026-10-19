@@ -39,6 +39,11 @@ public:
 		bool blocked = false;
 		// Tools the reply asks to have run before it goes on.
 		Vector<AIToolCall> tool_calls;
+		// The signature of the reply's thinking (Anthropic), which has to go
+		// back with it in a tool loop. Empty unless the reply had exactly
+		// one thinking block and nothing redacted: only then do the text and
+		// the signature belong together.
+		String thinking_signature;
 	};
 
 	// Returns false (and does nothing) while a request is in flight.
@@ -65,6 +70,9 @@ private:
 	bool finished = false;
 	bool stop_requested = false;
 	AIToolCallAccumulator tool_calls; // Worker only, until the request ends.
+	PackedStringArray thinking_signatures; // Worker only, like tool_calls.
+	// Thinking the signature does not cover arrived (redacted, or in the text).
+	bool thinking_redacted = false;
 
 	static void _thread_func(void *p_userdata);
 	void _run();

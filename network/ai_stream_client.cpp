@@ -25,6 +25,8 @@ bool AIStreamClient::start(const Request &p_request) {
 		stop_requested = false;
 	}
 	tool_calls.clear();
+	thinking_signatures.clear();
+	thinking_redacted = false;
 	busy = true;
 	thread.start(_thread_func, this);
 	return true;
@@ -81,6 +83,7 @@ void AIStreamClient::_finish(Outcome p_outcome, const String &p_error) {
 	result.outcome = p_outcome;
 	result.error = p_error;
 	result.tool_calls = tool_calls.get_calls();
+	result.thinking_signature = thinking_signatures.size() == 1 && !thinking_redacted ? thinking_signatures[0] : String();
 	finished = true;
 }
 
@@ -250,6 +253,10 @@ void AIStreamClient::_run() {
 					}
 				}
 			}
+			if (delta.has("signature")) {
+				thinking_signatures.push_back(delta["signature"]);
+			}
+			thinking_redacted = thinking_redacted || bool(delta.get("redacted_thinking", false));
 			const String thinking_delta = delta.get("thinking", String());
 			const String content_delta = delta.get("content", String());
 			if (!thinking_delta.is_empty()) {
@@ -259,7 +266,12 @@ void AIStreamClient::_run() {
 				pieces.push_back(piece);
 			}
 			if (!content_delta.is_empty()) {
+				const int before = pieces.size();
 				splitter.push(content_delta, pieces);
+				for (int p = before; p < pieces.size(); p++) {
+					// Thinking split out of the text: the signature does not cover it.
+					thinking_redacted = thinking_redacted || pieces[p].is_thinking;
+				}
 			}
 		}
 		_push_pieces(pieces);

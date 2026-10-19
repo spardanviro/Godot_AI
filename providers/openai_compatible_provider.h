@@ -24,10 +24,14 @@ protected:
 	// When no preferred model is listed: take the first listed one (true) or
 	// fall back to the default model (false).
 	virtual bool _falls_back_to_first_listed() const { return true; }
+	// Puts the chosen thinking setting into a request: "reasoning_effort",
+	// as OpenAI takes it. _add_thinking_switch() is the DeepSeek and GLM form.
+	virtual void _add_thinking(Dictionary &r_body) const;
+	void _add_thinking_switch(Dictionary &r_body) const;
 	// Custom endpoints given as a bare host get this appended ("/v1" for OpenAI).
 	virtual String _get_required_base_suffix() const { return String(); }
 
-	String _get_effective_model() const { return model.is_empty() ? get_default_model() : model; }
+	String _get_effective_model() const { return _model_or_default(); }
 	// Whether the endpoint is another service's (a relay, an aggregator, a
 	// local server) and not the provider's own host. Such a service has its
 	// own models, which the provider's tables say nothing about.

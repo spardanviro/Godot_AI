@@ -16,10 +16,10 @@ String GeminiProvider::get_default_endpoint() const {
 }
 
 String GeminiProvider::get_default_model() const {
-	return "gemini-3.1-pro-preview";
+	return _newest_model_or(_get_flagship_families(), "gemini-4-argon");
 }
 
-int GeminiProvider::get_model_context_length() const {
+int GeminiProvider::_table_context_length() const {
 	String m = model.is_empty() ? get_default_model() : model;
 	// Gemini 3.x series — all 1M context.
 	if (m.find("3.1-pro") >= 0) return 1048576;
@@ -31,7 +31,7 @@ int GeminiProvider::get_model_context_length() const {
 	return 1048576; // Default 1M for Gemini models.
 }
 
-int GeminiProvider::get_recommended_max_tokens() const {
+int GeminiProvider::_table_max_tokens() const {
 	String m = model.is_empty() ? get_default_model() : model;
 	// Gemini 3.x series — all support 65K output.
 	if (m.find("3.1-pro") >= 0) return 65536;
@@ -191,8 +191,21 @@ String GeminiProvider::build_request_body(const String &p_system_prompt, const A
 	// Generation config.
 	Dictionary gen_config;
 	gen_config["maxOutputTokens"] = max_tokens;
-	if (send_temperature) {
+	if (send_temperature && supports_temperature()) {
 		gen_config["temperature"] = temperature;
+	}
+	// Gemini 3 takes a level; switching off is a zero budget (Gemini 2.5 Flash).
+	const String thinking_choice = get_effective_thinking();
+	if (!thinking_choice.is_empty()) {
+		Dictionary thinking_config;
+		if (thinking_choice == THINKING_OFF) {
+			thinking_config["thinkingBudget"] = 0;
+		} else if (is_thinking_budget(thinking_choice)) {
+			thinking_config["thinkingBudget"] = thinking_choice.to_int(); // Gemini 2.5.
+		} else {
+			thinking_config["thinkingLevel"] = thinking_choice;
+		}
+		gen_config["thinkingConfig"] = thinking_config;
 	}
 	body["generationConfig"] = gen_config;
 
@@ -318,8 +331,12 @@ PackedStringArray GeminiProvider::parse_models_list(const String &p_response_bod
 }
 
 String GeminiProvider::select_best_model(const PackedStringArray &p_models) const {
-	// The pro model of the highest version. At the same version a released
-	// model goes before a preview, and the plain name before its variants.
+	// The default, if listed; else the pro model of the highest version.
+	if (!_listed_default(p_models).is_empty()) {
+		return _listed_default(p_models);
+	}
+	// At the same version a released model goes before a preview, and the
+	// plain name before its variants.
 	String best;
 	int best_rank = -1;
 
@@ -339,6 +356,9 @@ String GeminiProvider::select_best_model(const PackedStringArray &p_models) cons
 		}
 	}
 
+	if (best.is_empty()) {
+		best = _newest_known_of(p_models);
+	}
 	return best.is_empty() ? get_default_model() : best;
 }
 

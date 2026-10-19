@@ -24,6 +24,15 @@ env_ai.CommandNoCache(
     env.Run(ai_knowledge_builders.knowledge_builder),
 )
 
+# Context windows, output limits and thinking settings of the models, from
+# models.dev (update_model_specs.py refreshes the file; the editor also
+# downloads newer data on its own).
+env_ai.CommandNoCache(
+    "providers/ai_model_specs_data.gen.h",
+    env.File("data/model_specs.json").srcnode().abspath,
+    env.Run(ai_knowledge_builders.model_specs_builder),
+)
+
 env_ai.add_source_files(env.modules_sources, "*.cpp")
 for folder in ("common", "ui", "agent", "execution", "prompt", "network", "providers", "assets", "tools"):
     env_ai.add_source_files(env.modules_sources, folder + "/*.cpp")

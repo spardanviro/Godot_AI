@@ -9,7 +9,8 @@ class MenuButton;
 
 // The model to use: a field that takes any model name, with a button beside
 // it that lists the models known for the provider and fills the field with
-// the one chosen. Emits model_picked when a model is chosen from the list.
+// the one chosen. Emits model_picked when a model is chosen from the list, or a typed name is
+// entered (Enter, or leaving the field).
 class AIModelSelector : public HBoxContainer {
 	GDCLASS(AIModelSelector, HBoxContainer);
 
@@ -19,6 +20,9 @@ class AIModelSelector : public HBoxContainer {
 
 	void _fill(const PackedStringArray &p_models);
 	void _on_list_item_pressed(int p_index);
+	void _on_name_entered();
+	void _on_name_submitted(const String &p_text);
+	String last_announced; // The name model_picked was last emitted for.
 
 protected:
 	static void _bind_methods();

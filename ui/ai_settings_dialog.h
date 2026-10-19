@@ -39,7 +39,9 @@ class AISettingsDialog : public ConfirmationDialog {
 	Label *fetch_status_label = nullptr;
 	Button *refresh_models_button = nullptr;
 	LineEdit *endpoint_edit = nullptr;
+	CheckBox *custom_max_tokens_check = nullptr;
 	SpinBox *max_tokens_spin = nullptr;
+	OptionButton *thinking_option = nullptr;
 	CheckBox *custom_temperature_check = nullptr;
 	SpinBox *temperature_spin = nullptr;
 
@@ -69,6 +71,7 @@ class AISettingsDialog : public ConfirmationDialog {
 	LineEdit *speech_model_edit = nullptr;
 	LineEdit *knowledge_dir_edit = nullptr;
 	Button *open_knowledge_dir_button = nullptr;
+	CheckBox *auto_update_specs_check = nullptr;
 
 	// Row and section captions; their text follows the interface language.
 	Label *label_provider = nullptr;
@@ -76,6 +79,7 @@ class AISettingsDialog : public ConfirmationDialog {
 	Label *label_model = nullptr;
 	Label *label_endpoint = nullptr;
 	Label *label_max_tokens = nullptr;
+	Label *label_thinking = nullptr;
 	Label *label_temperature = nullptr;
 	Label *label_language = nullptr;
 	Label *label_send_on_enter = nullptr;
@@ -96,14 +100,15 @@ class AISettingsDialog : public ConfirmationDialog {
 	Label *label_speech_model = nullptr;
 	Label *label_knowledge = nullptr;
 	Label *label_knowledge_dir = nullptr;
+	Label *label_model_specs = nullptr;
+	Label *label_auto_update_specs = nullptr;
 
 	AIModelListFetcher *model_list_fetcher = nullptr;
 
 	AIProviderSettings provider_settings;
-	// The user changed max tokens by hand since the dialog was loaded; the
-	// model list arriving later must not replace what they entered.
-	bool max_tokens_edited = false;
-	bool setting_max_tokens = false; // The dialog itself is changing the value.
+	// The thinking setting chosen, kept while models that do not offer it
+	// are tried, so it comes back with one that does.
+	String thinking_choice;
 	String language_at_open; // To undo a language switch on Cancel.
 
 	// --- Layout (ai_settings_dialog_layout.cpp) ---
@@ -124,6 +129,7 @@ class AISettingsDialog : public ConfirmationDialog {
 	void _set_all_permissions(int p_level);
 	void _reset_permissions();
 	void _on_custom_temperature_toggled(bool p_enabled);
+	void _on_custom_max_tokens_toggled(bool p_enabled);
 	void _on_proxy_changed();
 	void _on_proxy_mode_selected(int p_index);
 	void _on_proxy_address_changed(const String &p_text);
@@ -141,9 +147,11 @@ class AISettingsDialog : public ConfirmationDialog {
 	void _on_clear_key_pressed();
 	void _update_api_key_state();
 	void _set_max_tokens(int p_value);
-	void _on_max_tokens_changed(double p_value);
 	void _on_model_picked();
-	void _apply_recommended_max_tokens();
+	// What the selected model allows: its recommended output cap (unless a
+	// custom one is set), whether it takes a temperature, its thinking options.
+	void _show_model_facts();
+	void _on_thinking_selected(int p_index);
 	void _set_fetch_status(const String &p_text, const Color &p_color);
 	void _fetch_models();
 	void _on_models_fetched(const PackedStringArray &p_models, const String &p_best);
@@ -160,6 +168,8 @@ public:
 
 	// Reloads the settings and the model list; call before showing the dialog.
 	void refresh();
+	// Shows what is known about the selected model again (after an update).
+	void refresh_model_facts() { _show_model_facts(); }
 	// Shows the dialog, never larger than the screen it is on.
 	void open();
 

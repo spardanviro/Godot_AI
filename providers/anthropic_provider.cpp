@@ -14,10 +14,10 @@ String AnthropicProvider::get_default_endpoint() const {
 }
 
 String AnthropicProvider::get_default_model() const {
-	return "claude-opus-5-5";
+	return _newest_model_or(_get_flagship_families(), "claude-opus-5-5");
 }
 
-int AnthropicProvider::get_model_context_length() const {
+int AnthropicProvider::_table_context_length() const {
 	String m = model.is_empty() ? get_default_model() : model;
 	// 200K: Haiku 4.5 and everything before the 4.6 generation. Listed first so
 	// the 1M default below only applies to current models (4.6 and later, plus
@@ -31,7 +31,7 @@ int AnthropicProvider::get_model_context_length() const {
 	return m.begins_with("claude") ? 1000000 : 200000;
 }
 
-int AnthropicProvider::get_recommended_max_tokens() const {
+int AnthropicProvider::_table_max_tokens() const {
 	String m = model.is_empty() ? get_default_model() : model;
 	if (m.find("opus") >= 0) return 32768;
 	if (m.find("sonnet") >= 0) return 16384;
@@ -53,12 +53,53 @@ static Dictionary _arguments_object(const String &p_arguments) {
 // becomes an assistant turn of content blocks (text, then one tool_use per
 // call) followed by a single user turn holding every tool_result: the API
 // wants all results of a turn together.
-static Array _to_wire_messages(const Array &p_messages) {
+//
+// In a continuation of a tool loop (p_in_loop: no new user message), the
+// thinking of the loop's replies — those after the last user message — goes
+// back as signed thinking blocks when p_replay_thinking: the model then goes
+// on from its own reasoning. Earlier ones are left out, which the API allows
+// for a leading run of blocks. r_replayed says whether any went; r_missing
+// whether a reply of the loop went without one.
+static Array _to_wire_messages(const Array &p_messages, bool p_in_loop, bool p_replay_thinking, bool *r_replayed = nullptr, bool *r_missing = nullptr) {
+	int last_user = p_messages.size(); // Outside a loop no reply belongs to one.
+	if (p_in_loop) {
+		last_user = -1;
+		for (int i = 0; i < p_messages.size(); i++) {
+			if (String(Dictionary(p_messages[i]).get("role", "")) == "user") {
+				last_user = i;
+			}
+		}
+	}
+	if (r_replayed) {
+		*r_replayed = false;
+	}
+	if (r_missing) {
+		*r_missing = false;
+	}
 	Array messages;
 	for (int i = 0; i < p_messages.size(); i++) {
-		const Dictionary message = p_messages[i];
+		Dictionary message = p_messages[i];
+		const String signature = message.get("thinking_signature", "");
+		const String thinking = message.get("thinking", "");
+		if (message.has("thinking") || message.has("thinking_signature")) {
+			message = message.duplicate();
+			message.erase("thinking");
+			message.erase("thinking_signature");
+		}
 		if (message.has("tool_calls")) {
 			Array blocks;
+			if (i > last_user && p_replay_thinking && !signature.is_empty()) {
+				Dictionary thinking_block;
+				thinking_block["type"] = "thinking";
+				thinking_block["thinking"] = thinking;
+				thinking_block["signature"] = signature;
+				blocks.push_back(thinking_block);
+				if (r_replayed) {
+					*r_replayed = true;
+				}
+			} else if (i > last_user && r_missing) {
+				*r_missing = true;
+			}
 			const String text = message.get("content", "");
 			if (!text.strip_edges().is_empty()) {
 				Dictionary text_block;
@@ -104,18 +145,71 @@ static Array _to_wire_messages(const Array &p_messages) {
 	return messages;
 }
 
+// The chosen effort goes in output_config, a budget (older models) in
+// thinking; switching thinking off is only offered for the models that accept
+// it. With earlier thinking replayed, a block the API no longer accepts (the
+// system prompt carries the editor's state and changes between requests) is
+// dropped instead of failing the request.
+//
+// A budget turns thinking on, and then every reply of a tool loop must start
+// with its thinking block; when one of them has none (p_loop_lacks_thinking),
+// this request goes without thinking rather than be refused.
+void AnthropicProvider::_add_thinking(Dictionary &r_body, bool p_replays_thinking, bool p_loop_lacks_thinking) const {
+	// Below this the API refuses a budget; it must also stay under max_tokens.
+	static const int MIN_BUDGET_TOKENS = 1024;
+	const String choice = get_effective_thinking();
+	Dictionary thinking_mode;
+	if (choice == THINKING_OFF) {
+		thinking_mode["type"] = "disabled";
+	} else if (is_thinking_budget(choice)) {
+		if (p_loop_lacks_thinking) {
+			return;
+		}
+		const int budget = MIN(choice.to_int(), max_tokens - MIN_BUDGET_TOKENS);
+		if (budget >= MIN_BUDGET_TOKENS) {
+			thinking_mode["type"] = "enabled";
+			thinking_mode["budget_tokens"] = budget;
+		}
+	} else if (!choice.is_empty()) {
+		Dictionary output_config;
+		output_config["effort"] = choice;
+		r_body["output_config"] = output_config;
+	}
+	if (p_replays_thinking) {
+		if (!thinking_mode.has("type")) {
+			thinking_mode["type"] = "adaptive"; // What the replayed blocks came from.
+		}
+		Dictionary binding;
+		binding["prefix_mismatch_behavior"] = "drop_block";
+		thinking_mode["block_binding"] = binding;
+	}
+	if (thinking_mode.has("type")) {
+		r_body["thinking"] = thinking_mode;
+	}
+}
+
+bool AnthropicProvider::wants_reasoning_back() const {
+	return replay_thinking && get_model_spec().thinks() && get_effective_thinking() != THINKING_OFF;
+}
+
+bool AnthropicProvider::stop_replaying_reasoning() {
+	if (!last_body_replayed_thinking) {
+		return false;
+	}
+	replay_thinking = false;
+	last_body_replayed_thinking = false;
+	return true;
+}
+
 String AnthropicProvider::build_request_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message) const {
 	Dictionary body;
 	body["model"] = model.is_empty() ? get_default_model() : model;
 	body["max_tokens"] = max_tokens;
+	// No thinking setting: this path serves short side requests (the history
+	// summary), whose small output cap a thinking budget would exceed.
 	body["system"] = p_system_prompt;
 
-	Array messages;
-
-	// History messages.
-	for (int i = 0; i < p_messages.size(); i++) {
-		messages.push_back(p_messages[i]);
-	}
+	Array messages = _to_wire_messages(p_messages, false, false);
 
 	// User message.
 	Dictionary user_msg;
@@ -169,6 +263,9 @@ Vector<String> AnthropicProvider::get_headers() const {
 	headers.push_back("Content-Type: application/json");
 	headers.push_back("x-api-key: " + api_key);
 	headers.push_back("anthropic-version: 2023-06-01");
+	if (last_body_replayed_thinking) {
+		headers.push_back("anthropic-beta: thinking-binding-controls-2026-08-01"); // For block_binding.
+	}
 	return headers;
 }
 
@@ -219,6 +316,9 @@ PackedStringArray AnthropicProvider::parse_models_list(const String &p_response_
 }
 
 String AnthropicProvider::select_best_model(const PackedStringArray &p_models) const {
+	if (!_listed_default(p_models).is_empty()) {
+		return _listed_default(p_models);
+	}
 	// Pick the highest-version claude-opus (strongest tier).
 	String best;
 	float best_ver = 0.0f;
@@ -250,6 +350,9 @@ String AnthropicProvider::select_best_model(const PackedStringArray &p_models) c
 		}
 	}
 
+	if (best.is_empty()) {
+		best = _newest_known_of(p_models);
+	}
 	return best.is_empty() ? get_default_model() : best;
 }
 
@@ -295,7 +398,16 @@ String AnthropicProvider::build_stream_request_body(const String &p_system_promp
 		body["system"] = p_system_prompt;
 	}
 
-	Array messages = _to_wire_messages(p_messages);
+	// Thinking goes back only where it came from a known way of thinking:
+	// adaptive (a model with effort levels) or a chosen budget.
+	const bool budget_chosen = is_thinking_budget(get_effective_thinking());
+	const bool in_loop = p_user_message.is_empty();
+	const bool may_replay = replay_thinking && (budget_chosen || !get_model_spec().efforts.is_empty());
+	bool replays_thinking = false;
+	bool loop_lacks_thinking = false;
+	Array messages = _to_wire_messages(p_messages, in_loop, may_replay, &replays_thinking, &loop_lacks_thinking);
+	last_body_replayed_thinking = replays_thinking;
+	_add_thinking(body, replays_thinking, loop_lacks_thinking);
 
 	if (!tools.is_empty()) {
 		Array offered;
@@ -399,6 +511,8 @@ Dictionary AnthropicProvider::parse_stream_delta_ex(const String &p_data) const 
 		if (delta_type == "thinking_delta") {
 			// Anthropic extended thinking: thinking content.
 			result["thinking"] = delta.get("thinking", "");
+		} else if (delta_type == "signature_delta") {
+			result["signature"] = delta.get("signature", "");
 		} else if (delta_type == "text_delta") {
 			result["content"] = delta.get("text", "");
 		} else if (delta_type == "input_json_delta") {
@@ -412,7 +526,9 @@ Dictionary AnthropicProvider::parse_stream_delta_ex(const String &p_data) const 
 		}
 	} else if (type == "content_block_start") {
 		const Dictionary block = data.get("content_block", Dictionary());
-		if (String(block.get("type", "")) == "tool_use") {
+		if (String(block.get("type", "")) == "redacted_thinking") {
+			result["redacted_thinking"] = true;
+		} else if (String(block.get("type", "")) == "tool_use") {
 			Dictionary fragment;
 			fragment["index"] = data.get("index", 0);
 			fragment["id"] = block.get("id", "");

@@ -106,19 +106,14 @@ Ref<AIProvider> AIProviderSettings::make_provider(const String &p_api_key) const
 	return provider;
 }
 
-int AIProviderSettings::get_recommended_max_tokens(const String &p_model) const {
+Ref<AIProvider> AIProviderSettings::make_model_provider(const String &p_model) const {
 	Ref<AIProvider> provider = make_provider(String());
-	provider->set_model(p_model);
-	return provider->get_recommended_max_tokens();
+	provider->set_model(p_model.strip_edges());
+	return provider;
 }
 
-int AIProviderSettings::get_max_tokens_for_listed_model(const String &p_model) const {
-	const int saved = AISettings::get("max_tokens", -1);
-	const bool saved_for_this_provider = String(AISettings::get("provider", "")) == get_provider_id();
-	if (saved_for_this_provider && saved > 0 && saved != UNSET_MAX_TOKENS) {
-		return saved;
-	}
-	return get_recommended_max_tokens(p_model);
+int AIProviderSettings::get_recommended_max_tokens(const String &p_model) const {
+	return make_model_provider(p_model)->get_recommended_max_tokens();
 }
 
 void AIProviderSettings::save(const String &p_model, int p_max_tokens) {

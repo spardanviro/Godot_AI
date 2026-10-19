@@ -44,16 +44,19 @@ void AISession::push_user(const String &p_content, const String &p_display, bool
 void AISession::push_assistant(const String &p_content, const String &p_thinking) {
 	Dictionary msg = _make_message("assistant", p_content);
 	if (!p_thinking.is_empty()) {
-		msg["thinking"] = p_thinking; // Local only; never sent back to the API.
+		msg["thinking"] = p_thinking; // Sent back only to a provider that asks for it.
 	}
 	working.push_back(msg);
 	full.push_back(msg);
 }
 
-void AISession::push_assistant_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls) {
+void AISession::push_assistant_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls, const String &p_thinking_signature) {
 	Dictionary msg = _make_message("assistant", p_content);
 	if (!p_thinking.is_empty()) {
 		msg["thinking"] = p_thinking;
+	}
+	if (!p_thinking_signature.is_empty()) {
+		msg["thinking_signature"] = p_thinking_signature;
 	}
 	Array calls;
 	for (const AIToolCall &call : p_calls) {
@@ -132,11 +135,22 @@ static String _tool_results_as_text(const Array &p_results) {
 	return text;
 }
 
-Array AISession::build_api_messages(bool p_native_tools) const {
+Array AISession::build_api_messages(bool p_native_tools, bool p_with_reasoning) const {
 	Array messages;
+	// An assistant message, with the reasoning stored beside it when asked for.
+	const auto assistant = [p_with_reasoning](const String &p_content, const Dictionary &p_stored) {
+		Dictionary message = _make_message("assistant", p_content);
+		if (p_with_reasoning) {
+			message["thinking"] = p_stored.get("thinking", "");
+			if (p_stored.has("thinking_signature")) {
+				message["thinking_signature"] = p_stored["thinking_signature"];
+			}
+		}
+		return message;
+	};
 	if (!summary.is_empty()) {
 		messages.push_back(_make_message("user", "[CONTEXT SUMMARY - Previous conversation compressed]\n" + summary + summary_attachment));
-		messages.push_back(_make_message("assistant", "Understood. I have the context from our previous conversation."));
+		messages.push_back(assistant("Understood. I have the context from our previous conversation.", Dictionary()));
 	}
 	for (int i = 0; i < working.size(); i++) {
 		// Stored messages carry local-only keys; APIs reject unknown fields.
@@ -148,7 +162,7 @@ Array AISession::build_api_messages(bool p_native_tools) const {
 			const Array calls = stored["tool_calls"];
 			const Array results = _tool_results_after(working, i);
 			if (p_native_tools && _is_whole_round(calls, results)) {
-				Dictionary message = _make_message("assistant", content);
+				Dictionary message = assistant(content, stored);
 				message["tool_calls"] = calls;
 				messages.push_back(message);
 				for (int r = 0; r < results.size(); r++) {
@@ -164,7 +178,7 @@ Array AISession::build_api_messages(bool p_native_tools) const {
 					const Dictionary call = calls[c];
 					text += String(text.is_empty() ? "" : "\n") + "[Called tool " + String(call.get("name", "")) + " " + String(call.get("arguments", "{}")) + "]";
 				}
-				messages.push_back(_make_message("assistant", text));
+				messages.push_back(assistant(text, stored));
 				if (!results.is_empty()) {
 					messages.push_back(_make_message("user", _tool_results_as_text(results)));
 				}
@@ -179,7 +193,7 @@ Array AISession::build_api_messages(bool p_native_tools) const {
 			messages.push_back(_make_message("user", _tool_results_as_text(orphan)));
 			continue;
 		}
-		messages.push_back(_make_message(role, content));
+		messages.push_back(role == "assistant" ? assistant(content, stored) : _make_message(role, content));
 	}
 	return messages;
 }
@@ -203,10 +217,16 @@ int AISession::estimate_tokens(const String &p_text) {
 	return MAX(1, cjk_chars + other_chars / 4);
 }
 
+int AISession::_estimate_message_tokens(const Dictionary &p_message) const {
+	const int content = estimate_tokens(String(p_message.get("content", "")));
+	const String thinking = p_message.get("thinking", "");
+	return reasoning_sent && !thinking.is_empty() ? content + estimate_tokens(thinking) : content;
+}
+
 int AISession::estimate_history_tokens() const {
 	int total = estimate_tokens(summary) + (summary_attachment.is_empty() ? 0 : estimate_tokens(summary_attachment));
 	for (int i = 0; i < working.size(); i++) {
-		total += estimate_tokens(String(Dictionary(working[i]).get("content", "")));
+		total += _estimate_message_tokens(working[i]);
 	}
 	return total;
 }
@@ -427,7 +447,7 @@ AISession::DropResult AISession::drop_oldest_for_gap(int p_gap_tokens) {
 	DropResult result;
 	while (working.size() > 1 && result.freed_tokens < p_gap_tokens) {
 		const Dictionary msg = working[0];
-		result.freed_tokens += estimate_tokens(String(msg.get("content", "")));
+		result.freed_tokens += _estimate_message_tokens(msg);
 		if (!summary.is_empty()) {
 			summary += "\n";
 		}

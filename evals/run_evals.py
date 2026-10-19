@@ -72,7 +72,8 @@ logger = logging.getLogger("evals")
 # stream the way a reply cut off at the output limit ends.
 #
 # Tool calls: {"tool_calls": [{"name": "...", "arguments": {...}}]} streams
-# calls instead of (or after) the text. What the next request must look like
+# calls instead of (or after) the text. {"reasoning": "..."} streams that
+# first, as "reasoning_content", the way a thinking model (DeepSeek, GLM) does. What the next request must look like
 # is stated on the reply that answers it; if it does not hold, a sentence
 # without code is sent instead, so the task's checks fail:
 #   "requires_tools": true / false   the request offers tools / does not
@@ -243,6 +244,7 @@ class MockModelServer:
                     return
                 finish_reason = reply.get("finish", "stop") if isinstance(reply, dict) else "stop"
                 tool_calls: list[dict[str, Any]] = []
+                reasoning = ""
                 if isinstance(reply, dict):
                     has_image = b'"image_url"' in request_body
                     unmet = _unmet_requirement(reply, request_body)
@@ -252,6 +254,7 @@ class MockModelServer:
                         reply = MOCK_NO_IMAGE_REPLY
                     else:
                         tool_calls = list(reply.get("tool_calls", []))
+                        reasoning = str(reply.get("reasoning", ""))
                         reply = reply.get("text", "")
                 if tool_calls:
                     finish_reason = "tool_calls"
@@ -263,7 +266,7 @@ class MockModelServer:
                 # Deltas end mid-word and the bytes go out in chunks that end
                 # mid-character, as they do with a real API under load.
                 last = {"choices": [{"delta": {}, "finish_reason": finish_reason}]}
-                stream = _build_event_stream(reply) + _build_tool_call_events(tool_calls) + b"data: " + json.dumps(last).encode("utf-8") + b"\n\n" + b"data: [DONE]\n\n"
+                stream = _build_event_stream(reasoning, "reasoning_content") + _build_event_stream(reply) + _build_tool_call_events(tool_calls) + b"data: " + json.dumps(last).encode("utf-8") + b"\n\n" + b"data: [DONE]\n\n"
                 for start in range(0, len(stream), MOCK_CHUNK_BYTES):
                     self.wfile.write(stream[start : start + MOCK_CHUNK_BYTES])
                     self.wfile.flush()
@@ -274,11 +277,11 @@ class MockModelServer:
         return Handler
 
 
-def _build_event_stream(text: str) -> bytes:
-    """Splits a reply into SSE delta events of a few characters each."""
+def _build_event_stream(text: str, field: str = "content") -> bytes:
+    """Splits a reply (or its reasoning) into SSE delta events of a few characters each."""
     events = bytearray()
     for start in range(0, len(text), MOCK_DELTA_CHARS):
-        event = {"choices": [{"delta": {"content": text[start : start + MOCK_DELTA_CHARS]}}]}
+        event = {"choices": [{"delta": {field: text[start : start + MOCK_DELTA_CHARS]}}]}
         events += b"data: " + json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n"
     return bytes(events)
 

@@ -19,6 +19,10 @@ public:
 	// One log line describing the provider; never includes the key itself.
 	static String describe(const Ref<AIProvider> &p_provider);
 
+	// Whether requests use the output cap from the settings. Off unless the
+	// user fixed one: the model's recommendation is used.
+	static bool uses_custom_max_tokens();
+
 	static constexpr double DEFAULT_TEMPERATURE = 0.7;
 	// Whether requests carry the temperature from the settings. Off unless
 	// the user asked for it: current reasoning models reject the parameter

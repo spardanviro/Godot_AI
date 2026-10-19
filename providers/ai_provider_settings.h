@@ -54,13 +54,11 @@ public:
 	// --- What follows ---
 	// The selected provider with the entered endpoint, for asking it something.
 	Ref<AIProvider> make_provider(const String &p_api_key) const;
+	// The selected provider set to p_model (its default when empty), without
+	// a key: for what is known about the model.
+	Ref<AIProvider> make_model_provider(const String &p_model) const;
 	// The output cap the provider recommends for p_model.
 	int get_recommended_max_tokens(const String &p_model) const;
-	// The output cap to show once a model list has moved the selection to
-	// p_model: the saved value if it was saved for this very provider (one
-	// saved for another can exceed this provider's limit and fail every
-	// request), else the recommendation.
-	int get_max_tokens_for_listed_model(const String &p_model) const;
 
 	// Stores typed keys, removes the ones marked for it, and writes the
 	// provider, its endpoint, the model and the output cap. The caller saves

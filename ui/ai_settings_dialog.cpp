@@ -5,6 +5,7 @@
 
 #include "../common/ai_log.h"
 #include "../network/ai_model_list_fetcher.h"
+#include "../network/ai_model_specs_updater.h"
 #include "ai_model_selector.h"
 #include "../providers/ai_provider_catalog.h"
 #include "../providers/ai_provider_setup.h"
@@ -88,8 +89,11 @@ void AISettingsDialog::register_default_settings() {
 	// Empty: the generators' built-in defaults.
 	ensure("image_model", "");
 	ensure("speech_model", "");
+	ensure(AIModelSpecsUpdater::SETTING, true);
 	// "custom_temperature" is deliberately not registered: while it is absent,
 	// AIProviderSetup derives it from whether the temperature was ever changed.
+	// Nor are "custom_max_tokens" (absent: the model's recommendation) and
+	// "thinking" (absent: the model's default).
 }
 
 void AISettingsDialog::refresh() {
@@ -127,7 +131,8 @@ void AISettingsDialog::_load_settings() {
 
 	custom_temperature_check->set_pressed(AIProviderSetup::uses_custom_temperature());
 	temperature_spin->set_value(_setting("temperature", AIProviderSetup::DEFAULT_TEMPERATURE));
-	_on_custom_temperature_toggled(custom_temperature_check->is_pressed());
+	custom_max_tokens_check->set_pressed(AIProviderSetup::uses_custom_max_tokens());
+	thinking_choice = _setting("thinking", "");
 
 	language_at_open = _setting("language", LANGUAGE_IDS[0]);
 	language_option->select(language_at_open == LANGUAGE_IDS[1] ? 1 : 0);
@@ -161,15 +166,18 @@ void AISettingsDialog::_load_settings() {
 	image_model_edit->set_text(_setting("image_model", ""));
 	speech_model_edit->set_text(_setting("speech_model", ""));
 	knowledge_dir_edit->set_text(_setting("knowledge_dir", ""));
+	auto_update_specs_check->set_pressed(_setting(AIModelSpecsUpdater::SETTING, true));
 	if (EditorPaths::get_singleton()) {
 		knowledge_dir_edit->set_placeholder(EditorPaths::get_singleton()->get_config_dir().path_join("ai_assistant").path_join("knowledge"));
 	}
 
 	// Last, so that what the user saved wins over what _show_provider()
 	// suggested for the provider's default model.
-	_set_max_tokens(_setting("max_tokens", UNSET_MAX_TOKENS));
 	model_selector->select_model(_setting("model", ""));
-	max_tokens_edited = false;
+	if (custom_max_tokens_check->is_pressed()) {
+		_set_max_tokens(_setting("max_tokens", UNSET_MAX_TOKENS));
+	}
+	_on_custom_max_tokens_toggled(custom_max_tokens_check->is_pressed());
 }
 
 void AISettingsDialog::_on_confirmed() {
@@ -182,6 +190,8 @@ void AISettingsDialog::_on_confirmed() {
 	provider_settings.save(model_selector->get_model(), (int)max_tokens_spin->get_value());
 	_forget_unsaved_keys();
 
+	AISettings::set("custom_max_tokens", custom_max_tokens_check->is_pressed());
+	AISettings::set("thinking", thinking_choice);
 	AISettings::set("custom_temperature", custom_temperature_check->is_pressed());
 	AISettings::set("temperature", (float)temperature_spin->get_value());
 
@@ -208,6 +218,7 @@ void AISettingsDialog::_on_confirmed() {
 	AISettings::set("image_model", image_model_edit->get_text().strip_edges());
 	AISettings::set("speech_model", speech_model_edit->get_text().strip_edges());
 	AISettings::set("knowledge_dir", knowledge_dir_edit->get_text().strip_edges());
+	AISettings::set(AIModelSpecsUpdater::SETTING, auto_update_specs_check->is_pressed());
 	es->save();
 
 	// The panel re-reads everything it renders from the settings.
@@ -250,7 +261,13 @@ void AISettingsDialog::_on_language_changed(int p_index) {
 // =============================================================================
 
 void AISettingsDialog::_on_custom_temperature_toggled(bool p_enabled) {
-	temperature_spin->set_editable(p_enabled);
+	temperature_spin->set_editable(p_enabled && !custom_temperature_check->is_disabled());
+}
+
+// Off: the spin box shows the model's recommendation and cannot be changed.
+void AISettingsDialog::_on_custom_max_tokens_toggled(bool p_enabled) {
+	max_tokens_spin->set_editable(p_enabled);
+	_show_model_facts();
 }
 
 void AISettingsDialog::_set_all_permissions(int p_level) {

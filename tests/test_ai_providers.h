@@ -53,7 +53,7 @@ TEST_CASE("[AIAssistant][Providers] request body carries system prompt, history 
 	CHECK(String(Dictionary(messages[3])["role"]) == "user");
 	CHECK(String(Dictionary(messages[3])["content"]) == "new question");
 	CHECK(bool(body["stream"]));
-	CHECK(String(body["model"]) == "deepseek-chat");
+	CHECK(String(body["model"]) == "deepseek-v4-pro");
 }
 
 TEST_CASE("[AIAssistant][Providers] only the streaming body asks for a stream") {
@@ -85,6 +85,7 @@ TEST_CASE("[AIAssistant][Providers] each provider names the output limit the way
 TEST_CASE("[AIAssistant][Providers] temperature is omitted once a model has rejected it") {
 	Ref<OpenAIProvider> provider;
 	provider.instantiate();
+	provider->set_model("my-own-model"); // Nothing known about it: a temperature may go.
 	provider->set_temperature(0.3f);
 
 	const Dictionary with_temperature = _parse(provider->build_stream_request_body("S", Array(), "q"));

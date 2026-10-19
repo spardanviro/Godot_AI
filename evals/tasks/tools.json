@@ -1420,5 +1420,50 @@
       }
     ],
     "mock_only": true
+  },
+  {
+    "id": "tools.thinking_model_calls_without_text",
+    "mode": "agent",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Add a Marker2D named Spawn.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "node_exists",
+        "path": "Spawn"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 1
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      }
+    ],
+    "mock_replies": [
+      {
+        "requires_tools": true,
+        "reasoning": "The user wants a Marker2D named Spawn under the root. I will create it with create_node.",
+        "tool_calls": [
+          {
+            "name": "create_node",
+            "arguments": {
+              "class": "Marker2D",
+              "name": "Spawn"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Created Spawn",
+        "text": "Added Spawn."
+      }
+    ],
+    "mock_only": true
   }
 ]

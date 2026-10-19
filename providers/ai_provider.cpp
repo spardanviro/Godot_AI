@@ -73,14 +73,59 @@ String AIProvider::select_best_model(const PackedStringArray &p_models) const {
 	return p_models[0];
 }
 
-// --- Model metadata defaults ---
+// --- What is known about the model ---
+
+AIModelSpec AIProvider::get_model_spec() const {
+	return AIModelSpecs::find(get_provider_name(), _model_or_default());
+}
 
 int AIProvider::get_model_context_length() const {
-	return 8192; // Conservative default.
+	const AIModelSpec spec = get_model_spec();
+	return spec.context > 0 ? spec.context : _table_context_length();
 }
 
 int AIProvider::get_recommended_max_tokens() const {
-	return 4096;
+	// Below this the reply has no room once a model starts thinking.
+	static const int MIN_OUTPUT_TOKENS = 16384;
+	const AIModelSpec spec = get_model_spec();
+	if (spec.output <= 0) {
+		return _table_max_tokens();
+	}
+	if (spec.context <= 0) {
+		return spec.output;
+	}
+	return MIN(spec.output, MAX(spec.context / 4, MIN_OUTPUT_TOKENS));
+}
+
+bool AIProvider::supports_temperature() const {
+	const AIModelSpec spec = get_model_spec();
+	return !spec.found || spec.temperature;
+}
+
+PackedStringArray AIProvider::get_thinking_options() const {
+	const AIModelSpec spec = get_model_spec();
+	PackedStringArray options;
+	if (spec.can_turn_off_thinking) {
+		options.push_back(THINKING_OFF);
+	}
+	for (const String &effort : spec.efforts) {
+		if (!options.has(effort)) {
+			options.push_back(effort);
+		}
+	}
+	if (spec.efforts.is_empty() && spec.has_budget) {
+		static const int BUDGETS[] = { 4096, 16384, 32768 };
+		for (const int budget : BUDGETS) {
+			if (budget >= spec.budget_min && (spec.budget_max <= 0 || budget <= spec.budget_max)) {
+				options.push_back(itos(budget));
+			}
+		}
+	}
+	return options;
+}
+
+String AIProvider::get_effective_thinking() const {
+	return !thinking.is_empty() && get_thinking_options().has(thinking) ? thinking : String();
 }
 
 // --- Streaming defaults ---

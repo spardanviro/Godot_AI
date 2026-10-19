@@ -13,6 +13,7 @@
 #include "../common/ai_log.h"
 #include "ai_mention_autocomplete.h"
 #include "../agent/ai_runtime_watch.h"
+#include "../network/ai_model_specs_updater.h"
 #include "ai_settings_dialog.h"
 #include "ai_theme.h"
 
@@ -24,6 +25,7 @@
 #include "core/io/file_access.h"
 #include "core/object/callable_mp.h"
 #include "core/os/time.h"
+#include "servers/display/display_server.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/file_system/editor_file_system.h"
@@ -66,6 +68,16 @@ void AIAssistantPanel::_notification(int p_what) {
 	}
 	const int migrated_keys = AICredentialStore::migrate_from_editor_settings();
 	controller->reload_settings();
+	// Context windows, output limits and thinking settings change as models
+	// come out; a copy older than a week is replaced, unless the user turned
+	// that off (Advanced settings). Not in headless runs
+	// (tests, evals), which must not depend on the network.
+	if (DisplayServer::get_singleton() && DisplayServer::get_singleton()->get_name() != "headless") {
+		AIModelSpecsUpdater *specs_updater = memnew(AIModelSpecsUpdater);
+		add_child(specs_updater);
+		specs_updater->connect("updated", callable_mp(settings_dialog, &AISettingsDialog::refresh_model_facts));
+		specs_updater->update_if_stale();
+	}
 	_system_message(TR(STR_SYS_READY));
 	if (migrated_keys > 0) {
 		_system_message(AI_L("Your API keys were moved out of the editor settings file into an encrypted credential store.", "API 密钥已从编辑器设置文件迁移到加密的凭据存储中。"));

@@ -8,6 +8,12 @@ class GeminiProvider : public AIProvider {
 protected:
 	static void _bind_methods();
 
+	virtual Vector<String> _get_flagship_families() const override { return { "gemini", "gemini-pro" }; }
+
+	// For a model models.dev does not list.
+	virtual int _table_context_length() const override;
+	virtual int _table_max_tokens() const override;
+
 public:
 	virtual String get_provider_name() const override;
 	virtual bool supports_image_input() const override { return true; }
@@ -26,9 +32,6 @@ public:
 	virtual Vector<String> get_models_list_headers() const override;
 	virtual PackedStringArray parse_models_list(const String &p_response_body) const override;
 	virtual String select_best_model(const PackedStringArray &p_models) const override;
-
-	virtual int get_model_context_length() const override;
-	virtual int get_recommended_max_tokens() const override;
 
 	// Streaming.
 	virtual String build_stream_request_body(const String &p_system_prompt, const Array &p_messages, const String &p_user_message) const override;

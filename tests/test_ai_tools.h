@@ -261,6 +261,59 @@ TEST_CASE("[AIAssistant][Tools] a tool round goes out in the API's own form, and
 	CHECK_FALSE(tool.has("name"));
 }
 
+TEST_CASE("[AIAssistant][Tools] DeepSeek in thinking mode gets every earlier reasoning back") {
+	AISession session;
+	session.push_user("hi");
+	session.push_assistant("hello", "they greet me");
+	session.push_user("where is the player?");
+	Vector<AIToolCall> calls;
+	calls.push_back(_call("call_1", "get_node_properties", "{\"path\": \"Player\"}"));
+	session.push_assistant_tool_calls("", "look it up", calls);
+	session.push_tool_result(calls[0], "position = Vector2(1, 2)");
+	session.push_assistant("at (1, 2)");
+	Ref<AIProvider> provider = AIProvider::create("deepseek");
+	provider->set_model("deepseek-v4-pro");
+	provider->set_tools(AIToolbox().get_specs(true));
+	REQUIRE(provider->wants_reasoning_back());
+
+	const Array messages = Dictionary(_parse(provider->build_stream_request_body("system",
+															session.build_api_messages(true, provider->wants_reasoning_back()), "")))["messages"];
+
+	REQUIRE(messages.size() == 7); // system, user, assistant, user, assistant (calls), tool, assistant.
+	CHECK(String(Dictionary(messages[2])["reasoning_content"]) == "they greet me");
+	CHECK(String(Dictionary(messages[4])["reasoning_content"]) == "look it up");
+	CHECK(Dictionary(messages[4]).has("tool_calls"));
+	CHECK(String(Dictionary(messages[6])["reasoning_content"]).is_empty()); // None kept, still present.
+	for (int i = 0; i < messages.size(); i++) {
+		CHECK_FALSE(Dictionary(messages[i]).has("thinking"));
+		CHECK(Dictionary(messages[i]).has("reasoning_content") == (String(Dictionary(messages[i])["role"]) == "assistant"));
+	}
+}
+
+TEST_CASE("[AIAssistant][Tools] reasoning is not sent where it is not asked for") {
+	AISession session;
+	session.push_user("hi");
+	session.push_assistant("hello", "they greet me");
+	Ref<AIProvider> v3 = AIProvider::create("deepseek");
+	v3->set_model("deepseek-chat");
+
+	CHECK_FALSE(v3->wants_reasoning_back());
+	CHECK_FALSE(AIProvider::create("openai")->wants_reasoning_back());
+	const Array messages = Dictionary(_parse(v3->build_stream_request_body("system", session.build_api_messages(true, false), "next")))["messages"];
+	CHECK_FALSE(Dictionary(messages[2]).has("reasoning_content"));
+	CHECK_FALSE(Dictionary(messages[2]).has("thinking"));
+}
+
+TEST_CASE("[AIAssistant][Tools] DeepSeek V4 models get a 1M context and room to think") {
+	Ref<AIProvider> provider = AIProvider::create("deepseek");
+	provider->set_model("deepseek-v4-pro");
+	CHECK(provider->get_model_context_length() == 1000000);
+	CHECK(provider->get_recommended_max_tokens() >= 131072);
+	provider->set_model("deepseek-reasoner");
+	CHECK(provider->get_model_context_length() == 128000);
+	CHECK(provider->get_recommended_max_tokens() == 32768);
+}
+
 TEST_CASE("[AIAssistant][Tools] tool call fragments are read out of a stream delta") {
 	Ref<AIProvider> provider = AIProvider::create("openai");
 

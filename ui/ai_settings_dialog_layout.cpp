@@ -157,10 +157,21 @@ void AISettingsDialog::_build_model_tab(VBoxContainer *p_parent) {
 	endpoint_edit->connect("text_changed", callable_mp(this, &AISettingsDialog::_on_endpoint_changed));
 	label_endpoint = _add_row(p_parent, endpoint_edit);
 
+	HBoxContainer *max_tokens_row = memnew(HBoxContainer);
+	custom_max_tokens_check = _make_check_box(false);
+	custom_max_tokens_check->set_name("CustomMaxTokensCheck");
+	custom_max_tokens_check->connect("toggled", callable_mp(this, &AISettingsDialog::_on_custom_max_tokens_toggled));
+	max_tokens_row->add_child(custom_max_tokens_check);
 	max_tokens_spin = _make_spin_box(256, 65536, 256, 4096);
 	max_tokens_spin->set_name("MaxTokensSpin");
-	max_tokens_spin->connect("value_changed", callable_mp(this, &AISettingsDialog::_on_max_tokens_changed));
-	label_max_tokens = _add_row(p_parent, max_tokens_spin);
+	max_tokens_spin->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	max_tokens_row->add_child(max_tokens_spin);
+	label_max_tokens = _add_row(p_parent, max_tokens_row);
+
+	thinking_option = memnew(OptionButton);
+	thinking_option->set_name("ThinkingOption");
+	thinking_option->connect("item_selected", callable_mp(this, &AISettingsDialog::_on_thinking_selected));
+	label_thinking = _add_row(p_parent, thinking_option);
 
 	HBoxContainer *temperature_row = memnew(HBoxContainer);
 	custom_temperature_check = _make_check_box(false);
@@ -283,6 +294,11 @@ void AISettingsDialog::_build_advanced_tab(VBoxContainer *p_parent) {
 	open_knowledge_dir_button->connect("pressed", callable_mp(this, &AISettingsDialog::_on_open_knowledge_dir_pressed));
 	knowledge_row->add_child(open_knowledge_dir_button);
 	label_knowledge_dir = _add_row(p_parent, knowledge_row);
+
+	label_model_specs = _add_section_title(p_parent);
+	auto_update_specs_check = _make_check_box(true);
+	auto_update_specs_check->set_name("AutoUpdateSpecsCheck");
+	label_auto_update_specs = _add_row(p_parent, auto_update_specs_check);
 }
 
 void AISettingsDialog::_update_ui_texts() {
@@ -300,6 +316,9 @@ void AISettingsDialog::_update_ui_texts() {
 	model_selector->set_list_tooltip(AI_L("Pick from the models known for this provider. Any other name can be typed in the field.", "从该服务商的已知模型中选择；其他模型名可直接在输入框填写。"));
 	label_endpoint->set_text(TR(STR_SETTINGS_ENDPOINT));
 	label_max_tokens->set_text(TR(STR_SETTINGS_MAX_TOKENS));
+	label_thinking->set_text(AI_L("Thinking:", "思考强度："));
+	custom_max_tokens_check->set_text(AI_L("Custom", "自定义"));
+	custom_max_tokens_check->set_tooltip_text(AI_L("Off: the selected model's recommended value is used, and follows the model when it changes.", "关闭时使用所选模型的推荐值，换模型时跟着变。"));
 	label_temperature->set_text(TR(STR_SETTINGS_TEMPERATURE));
 	show_key_button->set_text(show_key_button->is_pressed() ? AI_L("Hide", "隐藏") : AI_L("Show", "显示"));
 	clear_key_button->set_text(AI_L("Remove saved", "清除已存"));
@@ -307,8 +326,8 @@ void AISettingsDialog::_update_ui_texts() {
 	refresh_models_button->set_text(AI_L("Test / refresh", "测试 / 刷新"));
 	refresh_models_button->set_tooltip_text(AI_L("Ask the provider for its model list with the key and endpoint above. It answers only if both work.", "用上面的密钥和端点向服务商请求模型列表；两者都正确才会成功。"));
 	custom_temperature_check->set_text(AI_L("Custom", "自定义"));
-	custom_temperature_check->set_tooltip_text(AI_L("Off: the model's own default is used. Many current reasoning models reject a custom temperature.", "关闭时使用模型自己的默认值。目前不少推理模型不接受自定义温度。"));
 	_update_api_key_state();
+	_show_model_facts(); // Its captions and tooltips follow the language too.
 
 	// General.
 	label_language->set_text(TR(STR_SETTINGS_LANGUAGE));
@@ -362,6 +381,12 @@ void AISettingsDialog::_update_ui_texts() {
 			"Markdown files in this folder replace the built-in prompts and knowledge. Empty: the default folder.",
 			"该目录中的 Markdown 文件会替换内置的提示词和知识。留空则使用默认目录。"));
 	open_knowledge_dir_button->set_text(AI_L("Open", "打开"));
+	label_model_specs->set_text(AI_L("Model facts", "模型参数"));
+	label_auto_update_specs->set_text(AI_L("Update:", "更新："));
+	auto_update_specs_check->set_text(AI_L("Download current model facts from models.dev weekly", "每周从 models.dev 下载最新的模型参数"));
+	auto_update_specs_check->set_tooltip_text(AI_L(
+			"Context windows, output limits and thinking settings of the models. When the copy is more than a week old, the editor fetches https://models.dev/api.json once at startup (through the proxy set above). Off: the copy built into the editor is used.",
+			"即各模型的上下文窗口、输出上限和思考选项。本地那份超过一周时，编辑器启动时会请求一次 https://models.dev/api.json（经由上面设置的代理）。关闭后使用编辑器内置的那份。"));
 }
 
 #endif // TOOLS_ENABLED
