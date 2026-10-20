@@ -176,14 +176,16 @@ void AIRuntimeWatch::_on_poll() {
 	}
 	was_playing = playing;
 
-	if (playing && _has_errors() && collect_timer->is_stopped()) {
+	// While the assistant is busy the game is its own (run_scene reports the
+	// errors itself) or a fix is under way: the watch does not stop it.
+	if (playing && _has_errors() && collect_timer->is_stopped() && !controller->is_busy()) {
 		controller->post_notice(AIAgentController::NOTICE_WARNING, String(U"⚠ ") + TR(STR_WATCH_DETECTING));
 		collect_timer->start();
 	}
 }
 
 void AIRuntimeWatch::_on_collect_timeout() {
-	if (EditorInterface::get_singleton()->is_playing_scene() && _has_errors()) {
+	if (EditorInterface::get_singleton()->is_playing_scene() && _has_errors() && !controller->is_busy()) {
 		AI_LOG("[Watch] Stopping the scene to apply a fix.");
 		// The poll notices the stop and requests the fix.
 		EditorInterface::get_singleton()->stop_playing_scene();

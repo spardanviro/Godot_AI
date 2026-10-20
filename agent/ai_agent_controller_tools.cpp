@@ -79,6 +79,9 @@ Vector<AIToolSpec> AIAgentController::_tool_specs() const {
 		if (tool.name == "take_screenshot" && !provider->supports_image_input()) {
 			continue; // It could not look at the picture.
 		}
+		if (tool.name == "propose_plan" && run.kind != RUN_USER_TURN) {
+			continue; // A plan step or a fix is carried out, not planned.
+		}
 		specs.push_back(tool);
 	}
 	return specs;
@@ -348,7 +351,7 @@ bool AIAgentController::_start_run_scene(const AIToolCall &p_call) {
 		EditorInterface::get_singleton()->stop_playing_scene();
 	}
 	const Variant seconds = arguments.get("seconds", RUN_SCENE_DEFAULT_SEC);
-	run.tool_game_errors_before = code_runner.get_error_monitor()->get_debugger_error_count();
+	run.tool_game_errors_before = code_runner.get_error_monitor()->get_debugger_error_total();
 	run.tool_game_output_before = code_runner.get_error_monitor()->get_game_output_total();
 	run.tool_wants_game_shot = bool(arguments.get("screenshot", false));
 	EditorInterface::get_singleton()->play_custom_scene(scene);
@@ -418,7 +421,7 @@ void AIAgentController::_finish_run_scene(const String &p_screenshot_note) {
 		EditorInterface::get_singleton()->stop_playing_scene();
 	}
 	const Ref<AIErrorMonitor> monitor = code_runner.get_error_monitor();
-	const int new_errors = monitor->get_debugger_error_count() - run.tool_game_errors_before;
+	const int new_errors = monitor->get_debugger_errors_since(run.tool_game_errors_before);
 	String result = still_running ? "The scene ran and was stopped." : "The scene started but was no longer running when checked: it quit or crashed.";
 	if (new_errors > 0) {
 		result += "\nErrors and warnings it raised:\n" + monitor->get_recent_debugger_errors(MIN(new_errors, RUN_SCENE_ERROR_COUNT));

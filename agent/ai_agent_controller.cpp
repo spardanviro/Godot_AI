@@ -26,6 +26,8 @@
 static const double STREAM_POLL_INTERVAL_SEC = 0.05;
 static const int FALLBACK_CONTEXT_LENGTH = 8192;
 static const int FALLBACK_MAX_OUTPUT_TOKENS = 4096;
+static const int RUNTIME_FIX_MAX_SCRIPTS = 5;
+static const int RUNTIME_FIX_MAX_SCRIPT_CHARS = 20000;
 
 // An address may carry a key in its query string (Gemini did, a custom endpoint still can); never print it.
 static String _redact_url_key(const String &p_url) {
@@ -315,13 +317,25 @@ bool AIAgentController::start_runtime_fix(const String &p_errors, const String &
 		return false;
 	}
 
-	// Give the model the scripts the errors point at.
+	// Give the model the scripts the errors point at. The paths come from
+	// text the running game printed: only project scripts, and not so many
+	// or so long that they crowd out the rest of the request.
 	String scripts_section;
 	const Vector<String> script_paths = AICodeText::extract_script_paths(p_errors);
-	for (int i = 0; i < script_paths.size(); i++) {
+	int included = 0;
+	for (int i = 0; i < script_paths.size() && included < RUNTIME_FIX_MAX_SCRIPTS; i++) {
+		String reason;
+		if (!AIToolbox::is_readable_project_file(script_paths[i], reason)) {
+			continue;
+		}
 		Ref<FileAccess> file = FileAccess::open(script_paths[i], FileAccess::READ);
 		if (file.is_valid()) {
-			scripts_section += "\nFile: " + script_paths[i] + "\n```gdscript\n" + file->get_as_text() + "\n```\n";
+			String source = file->get_as_text();
+			if (source.length() > RUNTIME_FIX_MAX_SCRIPT_CHARS) {
+				source = source.left(RUNTIME_FIX_MAX_SCRIPT_CHARS) + "\n# ... (cut; read the rest with read_file)";
+			}
+			scripts_section += "\nFile: " + script_paths[i] + "\n```gdscript\n" + source + "\n```\n";
+			included++;
 		}
 	}
 	if (!scripts_section.is_empty()) {
@@ -535,6 +549,13 @@ void AIAgentController::_on_stream_poll() {
 void AIAgentController::_handle_stream_error(const String &p_error) {
 	AI_ERR("Streaming error: " + p_error);
 	if (_try_overflow_retry(p_error) || _try_retry_without_temperature(p_error) || _try_retry_without_thinking_replay(p_error) || _try_retry_without_tools(p_error)) {
+		return;
+	}
+	// The plan was proposed whole in an earlier reply; only the request after
+	// it failed (an empty reply, a server error). It is shown all the same.
+	if (!run.proposed_plan.is_empty()) {
+		post_notice(NOTICE_WARNING, AI_L("Error after the plan was proposed: ", "提出计划后出错：") + p_error);
+		_show_proposed_plan();
 		return;
 	}
 	// The request was never answered: take it back, or the next message would

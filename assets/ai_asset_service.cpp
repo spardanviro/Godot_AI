@@ -12,6 +12,7 @@
 #include "../providers/ai_provider_setup.h"
 #include "../network/ai_proxy.h"
 
+#include "core/io/file_access.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "scene/main/http_request.h"
@@ -59,6 +60,16 @@ void AIAssetService::enqueue(const AIAssetRequest &p_request) {
 				AILocalization::get_language() == "zh"
 						? String(U"已跳过") + kind_zh + U"生成：保存路径必须位于 res:// 内 (" + p_request.save_path + ")."
 						: kind_en + " generation skipped: save path must be inside res:// (" + p_request.save_path + ").");
+		return;
+	}
+	// Generation does not replace files: a marker that names an existing
+	// image (or none, so the default one) would overwrite the project's art.
+	const String path = get_save_path(p_request);
+	if (FileAccess::exists(path)) {
+		_notify(AI_NOTICE_WARNING,
+				AILocalization::get_language() == "zh"
+						? String(U"已跳过") + kind_zh + U"生成：" + path + U" 已存在，生成不会覆盖已有文件。"
+						: kind_en + " generation skipped: " + path + " already exists, and generation does not replace files.");
 		return;
 	}
 	// Generation always talks to api.openai.com, so only the OpenAI key may be

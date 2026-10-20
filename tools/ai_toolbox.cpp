@@ -430,6 +430,11 @@ String AIToolbox::_list_files(const Dictionary &p_arguments, bool &r_ok) const {
 	if (!dir_path.begins_with("res://") || dir_path.contains("..") || dir_path.contains("\\")) {
 		return fail(r_ok, "only directories inside the project (res://) can be listed.");
 	}
+	for (const String &segment : dir_path.trim_prefix("res://").split("/", false)) {
+		if (segment.begins_with(".")) {
+			return fail(r_ok, "hidden folders are not listed.");
+		}
+	}
 	Ref<DirAccess> dir = DirAccess::open(dir_path);
 	if (dir.is_null()) {
 		return fail(r_ok, "'" + dir_path + "' is not a directory of the project.");

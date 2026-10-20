@@ -401,6 +401,9 @@ TEST_CASE("[AIAssistant][ToolEdits] files the editor owns and secret stores are 
 	CHECK(AIToolbox::is_writable_project_file("res://scripts/player.gd", reason));
 	CHECK(AIToolbox::is_writable_project_file("res://data/levels.json", reason));
 
+	// The engine applies override.cfg over the project settings at start-up.
+	CHECK_FALSE(AIToolbox::is_writable_project_file("res://override.cfg", reason));
+	CHECK(reason.contains("override.cfg"));
 	// Where files belong is advice to the model, not a rule against the user's own path.
 	CHECK(AIToolbox::is_writable_project_file("res://player.gd", reason));
 	CHECK_FALSE(AIToolbox::is_writable_project_file("res://project.godot", reason));

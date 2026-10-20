@@ -226,6 +226,7 @@ void AIErrorMonitor::receive_debugger_error(const String &p_message, const Strin
 
 	MutexLock lock(self->mutex);
 	self->debugger_errors.push_back(entry);
+	self->debugger_error_total++;
 	while (self->debugger_errors.size() > self->max_debugger_buffer_size) {
 		self->debugger_errors.remove_at(0);
 	}
@@ -291,6 +292,17 @@ String AIErrorMonitor::get_recent_debugger_errors(int p_count) const {
 int AIErrorMonitor::get_debugger_error_count() const {
 	MutexLock lock(mutex);
 	return debugger_errors.size();
+}
+
+uint64_t AIErrorMonitor::get_debugger_error_total() const {
+	MutexLock lock(mutex);
+	return debugger_error_total;
+}
+
+int AIErrorMonitor::get_debugger_errors_since(uint64_t p_total) const {
+	MutexLock lock(mutex);
+	const uint64_t arrived = debugger_error_total - MIN(p_total, debugger_error_total);
+	return (int)MIN(arrived, (uint64_t)debugger_errors.size());
 }
 
 void AIErrorMonitor::clear_debugger_errors() {

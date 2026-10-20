@@ -3,7 +3,7 @@
 #include "core/string/ustring.h"
 #include "core/templates/vector.h"
 
-// A numbered plan produced in PLAN mode and the progress of carrying it out.
+// A numbered plan the model proposed and the progress of carrying it out.
 // The steps are also kept as a Markdown checklist in res://ai_plans/, so the
 // plan can be read, committed and followed outside the chat.
 class AIPlan {
@@ -18,6 +18,8 @@ public:
 	// the checklist file. Returns the res:// path of the file, or "" if there
 	// were no steps or it could not be written.
 	String set_from_text(const String &p_plan_text);
+	// The same for steps that are already known (one line each, without numbers).
+	String set_steps(const Vector<String> &p_steps);
 
 	bool is_empty() const { return steps.is_empty(); }
 	bool is_running() const { return running; }

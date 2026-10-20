@@ -16,6 +16,7 @@ public:
 	// file parses and can be run from the script editor. r_file_name receives a
 	// suggested name (p_index keeps names from different blocks apart).
 	static String build_saved_script(const String &p_code, int p_index, String &r_file_name);
+	static const int MAX_FILE_NAME_BASE = 40;
 	// Models sometimes repeat the same block twice in a row.
 	static Vector<String> dedupe_consecutive(const Vector<String> &p_blocks);
 };

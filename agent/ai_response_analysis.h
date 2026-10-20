@@ -29,9 +29,5 @@ public:
 	// Reduces a memory note to one short inert line; empty if nothing is left.
 	static String sanitize_memory_note(const String &p_content);
 
-	// Greetings and acknowledgements: a text-only reply to these is correct and
-	// must not trigger the "you forgot the code block" retry.
-	static bool is_conversational_input(const String &p_user_input);
-
 	static const int MAX_MEMORY_NOTE_LENGTH = 300;
 };

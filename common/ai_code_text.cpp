@@ -106,7 +106,18 @@ String AICodeText::build_saved_script(const String &p_code, int p_index, String 
 				continue;
 			}
 			if (line.begins_with(EXTENDS)) {
-				r_file_name = line.substr(EXTENDS.length()).strip_edges().to_lower() + "_script_" + itos(p_index) + ".gd";
+				// The base may be a path ("res://x.gd") or anything a model wrote:
+				// only letters, digits and underscores go into the file name.
+				const String written = line.substr(EXTENDS.length()).strip_edges().to_lower();
+				String base;
+				for (int c = 0; c < written.length(); c++) {
+					if (is_ascii_alphanumeric_char(written[c]) || written[c] == '_') {
+						base += written[c];
+					}
+				}
+				if (!base.is_empty()) {
+					r_file_name = base.left(MAX_FILE_NAME_BASE) + "_script_" + itos(p_index) + ".gd";
+				}
 			}
 			return p_code;
 		}

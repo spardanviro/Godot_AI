@@ -301,7 +301,12 @@ void AIAssistantPanel::_save_code_block(int p_index) {
 	}
 	String file_name;
 	const String script = AICodeText::build_saved_script(code, p_index, file_name);
-	const String save_path = "res://" + file_name;
+	// The block numbers start again with every chat: a file saved from an
+	// earlier one is not replaced, the new one gets the next free name.
+	String save_path = "res://" + file_name;
+	for (int n = 2; FileAccess::exists(save_path); n++) {
+		save_path = "res://" + file_name.get_basename() + "_" + itos(n) + ".gd";
+	}
 
 	Ref<FileAccess> file = FileAccess::open(save_path, FileAccess::WRITE);
 	if (file.is_null()) {

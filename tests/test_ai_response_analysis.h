@@ -232,22 +232,6 @@ TEST_CASE("[AIAssistant][Policy] memory notes become one short line without head
 	CHECK(AIResponseAnalysis::sanitize_memory_note(String("one") + String::chr(0x2028) + "two") == "one two");
 }
 
-// --- Intent ---
-
-TEST_CASE("[AIAssistant][Intent] greetings and acknowledgements are conversational") {
-	CHECK(AIResponseAnalysis::is_conversational_input("Hello!"));
-	CHECK(AIResponseAnalysis::is_conversational_input("thanks, that works"));
-	CHECK(AIResponseAnalysis::is_conversational_input(String::utf8("你好")));
-	CHECK(AIResponseAnalysis::is_conversational_input(String::utf8("好的，谢谢")));
-	CHECK(AIResponseAnalysis::is_conversational_input("ok"));
-}
-
-TEST_CASE("[AIAssistant][Intent] task requests are not conversational") {
-	CHECK_FALSE(AIResponseAnalysis::is_conversational_input("add a player with a camera"));
-	CHECK_FALSE(AIResponseAnalysis::is_conversational_input("highlight the selected node"));
-	CHECK_FALSE(AIResponseAnalysis::is_conversational_input(String::utf8("创建一个主菜单场景")));
-}
-
 // --- Plans ---
 
 TEST_CASE("[AIAssistant][Plan] numbered lines become steps and everything else is ignored") {
@@ -258,6 +242,17 @@ TEST_CASE("[AIAssistant][Plan] numbered lines become steps and everything else i
 	CHECK(steps[0] == "1. Create the player scene");
 	CHECK(steps[1] == "2) Add a camera");
 	CHECK(steps[2] == "10. Wire up input");
+}
+
+TEST_CASE("[AIAssistant][Plan] steps given as such are taken as they are, not read out of text") {
+	AIPlan plan;
+
+	plan.set_steps({ "1) A health bar and a damage flash", "Write the script" });
+
+	// A step that happens to start with a number stays one step, as written.
+	REQUIRE(plan.get_steps().size() == 2);
+	CHECK(plan.get_steps()[0] == "1) A health bar and a damage flash");
+	CHECK(plan.get_current_step() == "1) A health bar and a damage flash");
 }
 
 TEST_CASE("[AIAssistant][Plan] steps are ticked off one at a time, in order") {
@@ -309,6 +304,16 @@ TEST_CASE("[AIAssistant][Analysis] build_saved_script keeps a complete script an
 
 	CHECK(script == "# player\nextends CharacterBody2D\n\nfunc _ready():\n\tpass");
 	CHECK(file_name == "characterbody2d_script_3.gd");
+}
+
+TEST_CASE("[AIAssistant][Analysis] a base class given as a path cannot steer the saved file elsewhere") {
+	String file_name;
+
+	AICodeText::build_saved_script("extends \"res://../../outside/evil.gd\"\n\nfunc _ready():\n\tpass", 1, file_name);
+
+	CHECK(file_name == "resoutsideevilgd_script_1.gd");
+	CHECK_FALSE(file_name.contains("/"));
+	CHECK_FALSE(file_name.contains(".."));
 }
 
 TEST_CASE("[AIAssistant][Analysis] build_saved_script wraps editor code so the saved file parses") {

@@ -19,8 +19,12 @@ void AIPlan::clear() {
 }
 
 String AIPlan::set_from_text(const String &p_plan_text) {
+	return set_steps(AIPlan::parse_plan_steps(p_plan_text));
+}
+
+String AIPlan::set_steps(const Vector<String> &p_steps) {
 	clear();
-	steps = AIPlan::parse_plan_steps(p_plan_text);
+	steps = p_steps;
 	if (steps.is_empty()) {
 		return String();
 	}

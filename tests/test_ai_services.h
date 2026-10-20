@@ -301,6 +301,23 @@ TEST_CASE("[AIAssistant][ErrorMonitor] errors of the running game arrive on thei
 	CHECK(monitor->get_recent_error_count() == 0); // Not mixed into the editor console.
 }
 
+TEST_CASE("[AIAssistant][ErrorMonitor] the errors of one run are counted from a mark, even when a game start cleared the buffer") {
+	Ref<AIErrorMonitor> monitor;
+	monitor.instantiate();
+	// Left over from an earlier run.
+	AIErrorMonitor::receive_debugger_error("Old error", "res://a.gd", 1, false);
+	AIErrorMonitor::receive_debugger_error("Old error", "res://a.gd", 2, false);
+	const uint64_t mark = monitor->get_debugger_error_total();
+
+	monitor->clear_debugger_errors(); // As when the next game connects.
+	AIErrorMonitor::receive_debugger_error("New error", "res://b.gd", 3, false);
+
+	// The size of the buffer went down (2 -> 1) while one error arrived.
+	CHECK(monitor->get_debugger_errors_since(mark) == 1);
+	CHECK(monitor->get_recent_debugger_errors(monitor->get_debugger_errors_since(mark)).contains("New error"));
+	CHECK(monitor->get_debugger_errors_since(monitor->get_debugger_error_total()) == 0);
+}
+
 // --- Interface strings ---
 
 TEST_CASE("[AIAssistant][Localization] every interface string exists in English and in Chinese") {

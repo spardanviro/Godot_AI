@@ -47,6 +47,7 @@ private:
 	Vector<ErrorEntry> all_errors;           // Ring buffer of all editor/console errors.
 	Vector<ErrorEntry> ai_errors;            // Errors captured during AI execution window.
 	Vector<DebuggerErrorEntry> debugger_errors; // Ring buffer of game runtime errors.
+	uint64_t debugger_error_total = 0; // Every one received; not reset when the buffer is cleared.
 	bool ai_execution_active = false;
 	int max_buffer_size = 100;
 	int max_debugger_buffer_size = 50;
@@ -95,6 +96,10 @@ public:
 	// Get recent game runtime (debugger) errors.
 	String get_recent_debugger_errors(int p_count = 20) const;
 	int get_debugger_error_count() const;
+	// A mark to count from: how many game errors have arrived so far.
+	uint64_t get_debugger_error_total() const;
+	// How many of the errors that arrived since that mark are still in the buffer.
+	int get_debugger_errors_since(uint64_t p_total) const;
 	void clear_debugger_errors();
 
 	// Clear buffers.

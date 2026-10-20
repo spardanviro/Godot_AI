@@ -1524,5 +1524,47 @@
       }
     ],
     "mock_only": true
+  },
+  {
+    "id": "tools.plan_survives_a_failed_reply",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "Plan a main menu, steps first.",
+    "checks": [
+      {
+        "type": "plan_steps_min",
+        "value": 2
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "node_count",
+        "class": "Button",
+        "max": 0
+      }
+    ],
+    "mock_replies": [
+      {
+        "requires_tools": true,
+        "tool_calls": [
+          {
+            "name": "propose_plan",
+            "arguments": {
+              "steps": [
+                "Add a Control named Menu",
+                "Add Start and Quit buttons"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "status": 500,
+        "body": "{\"error\":{\"message\":\"upstream timed out\"}}"
+      }
+    ],
+    "mock_only": true
   }
 ]

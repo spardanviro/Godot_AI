@@ -97,32 +97,3 @@ String AIResponseAnalysis::sanitize_memory_note(const String &p_content) {
 	}
 	return note;
 }
-
-bool AIResponseAnalysis::is_conversational_input(const String &p_user_input) {
-	const int MAX_TRIVIAL_LENGTH = 3;
-	static const char *greetings[] = {
-		"你好", "嗨", "hi", "hello", "hey", "yo",
-		"thanks", "thank you", "谢谢", "感谢", "thx",
-		"ok", "okay", "好的", "好", "是", "是的", "明白", "了解",
-		"太好了", "很好", "nice", "great", "cool",
-		nullptr
-	};
-	static const char *separators[] = { " ", "!", "！", "~", "，", ",", "。", nullptr };
-
-	const String input = p_user_input.to_lower().strip_edges();
-	if (input.length() <= MAX_TRIVIAL_LENGTH) {
-		return true; // Too short to be a task.
-	}
-	for (int i = 0; greetings[i]; i++) {
-		const String greeting = String::utf8(greetings[i]);
-		if (input == greeting) {
-			return true;
-		}
-		for (int s = 0; separators[s]; s++) {
-			if (input.begins_with(greeting + String::utf8(separators[s]))) {
-				return true;
-			}
-		}
-	}
-	return false;
-}

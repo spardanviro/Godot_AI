@@ -76,7 +76,7 @@ void AIAgentController::_handle_response(const String &p_response, const String 
 	// A model without tools proposes a plan by starting its reply with
 	// [PLAN]. Code it put into a plan anyway is not what was asked for, and
 	// is not run.
-	if (run.kind == RUN_USER_TURN && !provider->has_tools() && AIResponseAnalysis::is_plan_reply(p_response)) {
+	if (p_trusted && run.kind == RUN_USER_TURN && !provider->has_tools() && AIResponseAnalysis::is_plan_reply(p_response)) {
 		PackedStringArray plan_text;
 		plan_text.push_back(AIResponseAnalysis::strip_plan_marker(String("\n\n").join(text_segments)));
 		_handle_plan(plan_text);
@@ -97,7 +97,10 @@ void AIAgentController::_handle_response(const String &p_response, const String 
 		return;
 	}
 
-	_emit_response(text_segments, code_blocks, false, false);
+	// To the user's message the prose is part of the answer (it may be all
+	// they wanted, if the code turns out to be an example); in an automatic
+	// run it is noise around the code.
+	_emit_response(text_segments, code_blocks, run.kind == RUN_USER_TURN, false);
 	if (!p_trusted) {
 		// Shown, kept in the history, never executed.
 		post_notice(NOTICE_WARNING, String(U"⚠ ") + run.untrusted_reason);
@@ -112,6 +115,9 @@ void AIAgentController::_handle_text_only(const PackedStringArray &p_text_segmen
 		// Asking again would only get cut off or withheld again.
 		_emit_response(p_text_segments, Vector<String>(), true, false);
 		post_notice(NOTICE_WARNING, String(U"⚠ ") + run.untrusted_reason);
+		if (_show_proposed_plan()) {
+			return; // The steps came whole, in the tool call; only the sentence after them did not.
+		}
 		if (run.kind == RUN_USER_TURN) {
 			_settle(); // A cut-off answer is still an answer.
 		} else {
@@ -134,15 +140,7 @@ void AIAgentController::_handle_text_only(const PackedStringArray &p_text_segmen
 	}
 
 	_emit_response(p_text_segments, Vector<String>(), true, false);
-	if (!run.proposed_plan.is_empty()) {
-		// The model proposed a plan with the tool and has said its piece.
-		String plan_text = run.proposed_plan_summary.is_empty() ? String() : run.proposed_plan_summary + "\n\n";
-		for (int i = 0; i < run.proposed_plan.size(); i++) {
-			plan_text += itos(i + 1) + ". " + run.proposed_plan[i] + "\n";
-		}
-		PackedStringArray plan_segments;
-		plan_segments.push_back(plan_text);
-		_handle_plan(plan_segments);
+	if (_show_proposed_plan()) {
 		return;
 	}
 	if (expects_code) {
@@ -158,8 +156,26 @@ void AIAgentController::_handle_text_only(const PackedStringArray &p_text_segmen
 	_settle();
 }
 
-void AIAgentController::_handle_plan(const PackedStringArray &p_text_segments) {
-	const String plan_file = plan.set_from_text(String("\n").join(p_text_segments));
+// The plan the model proposed with propose_plan, if it did: shown, and the
+// run ends. Returns false when there is none.
+bool AIAgentController::_show_proposed_plan() {
+	if (run.proposed_plan.is_empty()) {
+		return false;
+	}
+	String plan_text = run.proposed_plan_summary.is_empty() ? String() : run.proposed_plan_summary + "\n\n";
+	Vector<String> steps;
+	for (int i = 0; i < run.proposed_plan.size(); i++) {
+		plan_text += itos(i + 1) + ". " + run.proposed_plan[i] + "\n";
+		steps.push_back(run.proposed_plan[i]);
+	}
+	PackedStringArray plan_segments;
+	plan_segments.push_back(plan_text);
+	_handle_plan(plan_segments, steps);
+	return true;
+}
+
+void AIAgentController::_handle_plan(const PackedStringArray &p_text_segments, const Vector<String> &p_steps) {
+	const String plan_file = p_steps.is_empty() ? plan.set_from_text(String("\n").join(p_text_segments)) : plan.set_steps(p_steps);
 	if (!plan_file.is_empty()) {
 		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	}
@@ -179,9 +195,13 @@ void AIAgentController::_handle_plan(const PackedStringArray &p_text_segments) {
 void AIAgentController::_handle_code(const String &p_code) {
 	// "Ask" permissions always ask. With auto-execute off everything asks,
 	// a runtime fix included: what it reacts to is text printed by the
-	// running project, which is not the user speaking.
+	// running project, which is not the user speaking. And code a model
+	// without tools wrote in reply to the user always asks: there is no mode
+	// any more to say whether the message wanted a change or an explanation,
+	// and an example in an answer looks just like code to run. (A plan step
+	// the user started, and a runtime fix, follow the setting.)
 	const bool autorun = AISettings::get("autorun", true);
-	const AICodeRunner::Review review = code_runner.review(p_code, !autorun);
+	const AICodeRunner::Review review = code_runner.review(p_code, !autorun || run.kind == RUN_USER_TURN);
 
 	switch (review.action) {
 		case AICodeRunner::ACTION_FIX_SYNTAX: {
@@ -213,7 +233,7 @@ void AIAgentController::_handle_code(const String &p_code) {
 			}
 			run.code = review.code;
 			_set_state(STATE_AWAITING_PERMISSION);
-			emit_signal(SNAME("permission_requested"), review.message, review.code);
+			emit_signal(SNAME("permission_requested"), _script_question(review.message), review.code);
 		} break;
 		case AICodeRunner::ACTION_RUN: {
 			_execute(review.code);

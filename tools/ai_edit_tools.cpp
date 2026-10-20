@@ -10,6 +10,7 @@
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/os/keyboard.h"
+#include "core/templates/hash_set.h"
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_parser.h"
 #include "scene/main/node.h"
@@ -122,6 +123,35 @@ Dictionary with_layout_mode(const Object *p_object, const Dictionary &p_values) 
 		ordered[*key] = p_values[*key];
 	}
 	return ordered;
+}
+
+// Whether p_scene is p_target or loads it, directly or through what it loads.
+// A dependency is listed as "res://path", or as "uid://…::Type::res://path".
+bool depends_on(const String &p_scene, const String &p_target, HashSet<String> &r_seen) {
+	if (p_scene == p_target) {
+		return true;
+	}
+	if (r_seen.has(p_scene)) {
+		return false;
+	}
+	r_seen.insert(p_scene);
+	List<String> dependencies;
+	ResourceLoader::get_dependencies(p_scene, &dependencies);
+	for (const String &dependency : dependencies) {
+		const int separator = dependency.rfind("::");
+		const String path = separator < 0 ? dependency : dependency.substr(separator + 2);
+		if (path.get_extension().to_lower() == "tscn" || path.get_extension().to_lower() == "scn") {
+			if (depends_on(path, p_target, r_seen)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool depends_on(const String &p_scene, const String &p_target) {
+	HashSet<String> seen;
+	return depends_on(p_scene, p_target, seen);
 }
 
 void collect_owned(Node *p_node, const Node *p_owner, Vector<Node *> &r_owned) {
@@ -263,8 +293,8 @@ String AIToolbox::_instantiate_scene(const Dictionary &p_arguments, bool &r_ok) 
 		return fail(r_ok, "'" + scene_path + "' is not a scene file of the project.");
 	}
 	const Node *root = _get_scene_root();
-	if (root && root->get_scene_file_path() == scene_path) {
-		return fail(r_ok, "a scene cannot contain an instance of itself.");
+	if (root && !root->get_scene_file_path().is_empty() && depends_on(scene_path, root->get_scene_file_path())) {
+		return fail(r_ok, "a scene cannot contain an instance of itself, also not through a scene it instances.");
 	}
 	const Ref<PackedScene> scene = ResourceLoader::load(scene_path, "PackedScene");
 	if (scene.is_null()) {
@@ -558,7 +588,13 @@ bool AIToolbox::is_writable_project_file(const String &p_path, String &r_reason)
 	const String file = p_path.get_file().to_lower();
 	const String extension = file.get_extension();
 	if (file == "project.godot") {
-		r_reason = "project.godot is changed through ProjectSettings (run_editor_script), not by writing the file.";
+		r_reason = "project.godot is changed with set_project_setting or add_input_action, not by writing the file.";
+		return false;
+	}
+	// The engine reads override.cfg at start-up over project.godot: it could
+	// add autoloads and enable editor plugins, which no tool may do.
+	if (file == "override.cfg") {
+		r_reason = "override.cfg overrides the project settings when the project starts, so it is not written. Use set_project_setting.";
 		return false;
 	}
 	if (extension == "import" || extension == "tscn" || extension == "tres") {
@@ -773,8 +809,13 @@ String AIToolbox::_save_scene(const Dictionary &p_arguments, bool &r_ok) const {
 	if (!root->get_scene_file_path().is_empty() && root->get_scene_file_path() != path) {
 		return fail(r_ok, "the scene already has a file, " + root->get_scene_file_path() + ". Call save_scene without 'path' to save it there.");
 	}
-	if (!path.begins_with("res://") || path.contains("..") || path.get_extension().to_lower() != "tscn") {
+	String reason;
+	if (!is_readable_project_file(path, reason) || path.get_extension().to_lower() != "tscn") {
 		return fail(r_ok, "'path' has to be a .tscn of the project, e.g. res://scenes/main.tscn.");
+	}
+	// "Save as" over another scene would replace that scene with this one.
+	if (FileAccess::exists(path)) {
+		return fail(r_ok, "'" + path + "' is another scene that already exists. Choose a new path; to change that scene, open it first.");
 	}
 	DirAccess::make_dir_recursive_absolute(path.get_base_dir());
 	EditorInterface::get_singleton()->save_scene_as(path, false);

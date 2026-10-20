@@ -179,7 +179,7 @@ private:
 		bool tool_waiting_for_shot = false; // run_scene: the game was asked for that frame.
 		int64_t tool_shot_id = 0; // The id the game answers that request under.
 		uint64_t tool_game_output_before = 0; // run_scene: what the game had printed before this run.
-		int tool_game_errors_before = 0;
+		uint64_t tool_game_errors_before = 0; // The game-error total when the run started.
 		String tool_image_b64; // A screenshot a tool took, to show with the next request.
 		String sent_tool_image_b64; // The one the last request carried, for a resend.
 		bool tools_off = false; // No tools for the rest of this run: the model has to answer.
@@ -316,7 +316,10 @@ private:
 	void _handle_response(const String &p_response, const String &p_thinking, bool p_trusted);
 	void _handle_code(const String &p_code);
 	void _handle_text_only(const PackedStringArray &p_text_segments);
-	void _handle_plan(const PackedStringArray &p_text_segments);
+	// p_steps: the plan's steps, when they are known as such (propose_plan);
+	// otherwise they are read out of the numbered lines of the text.
+	void _handle_plan(const PackedStringArray &p_text_segments, const Vector<String> &p_steps = Vector<String>());
+	bool _show_proposed_plan();
 	void _execute(const String &p_code);
 	void _on_verify_timeout();
 	void _dispatch_side_effects();
