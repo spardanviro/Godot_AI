@@ -1,7 +1,6 @@
 [
   {
     "id": "gameplay.coin_pickup",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -69,7 +68,6 @@
   },
   {
     "id": "gameplay.collision_layers",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -113,7 +111,6 @@
   },
   {
     "id": "gameplay.new_scene_file",
-    "mode": "agent",
     "setup": {},
     "prompt": "Create a new scene whose root is a Node2D named \"Level1\" and save it as res://levels/level1.tscn.",
     "checks": [
@@ -146,7 +143,6 @@
   },
   {
     "id": "gameplay.input_action",
-    "mode": "agent",
     "setup": {},
     "prompt": "Add an input action named \"jump\" bound to the Space key and save the project settings.",
     "checks": [

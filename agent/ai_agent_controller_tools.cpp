@@ -73,18 +73,9 @@ bool AIAgentController::_offers_tools() const {
 			!models_without_tools.has(AIProviderSetup::get_model_key(provider));
 }
 
-// Outside AGENT mode the model may look but not touch.
-bool AIAgentController::_may_edit_with_tools() const {
-	return run.mode == MODE_AGENT || run.kind != RUN_USER_TURN;
-}
-
-bool AIAgentController::_edits_with_tools() const {
-	return _offers_tools() && _may_edit_with_tools();
-}
-
 Vector<AIToolSpec> AIAgentController::_tool_specs() const {
 	Vector<AIToolSpec> specs;
-	for (const AIToolSpec &tool : toolbox.get_specs(!_may_edit_with_tools())) {
+	for (const AIToolSpec &tool : toolbox.get_specs()) {
 		if (tool.name == "take_screenshot" && !provider->supports_image_input()) {
 			continue; // It could not look at the picture.
 		}
@@ -199,8 +190,15 @@ bool AIAgentController::_start_tool(const AIToolCall &p_call) {
 	if (kind == AIToolSpec::KIND_WEB) {
 		return _start_web_tool(p_call);
 	}
-	if (!_may_edit_with_tools()) {
-		_finish_tool("Error: in this mode you can look but not change anything. Describe what should be done instead.", false);
+	if (p_call.name == "propose_plan") {
+		const String result = _propose_plan(p_call, ok);
+		_finish_tool(result, ok);
+		return true;
+	}
+	// A plan proposed in this run is the user's to start: until then the
+	// model looks, but does not change anything.
+	if (!run.proposed_plan.is_empty()) {
+		_finish_tool("Error: you proposed a plan in this turn. Nothing is changed until the user starts it; finish with a sentence about the plan.", false);
 		return true;
 	}
 
@@ -438,6 +436,41 @@ void AIAgentController::_finish_run_scene(const String &p_screenshot_note) {
 	if (serial == run_serial) {
 		_run_tool_queue();
 	}
+}
+
+// =============================================================================
+// A plan
+// =============================================================================
+
+// Records the steps; the plan is shown, and can be started, once the model
+// has answered (see _handle_text_only).
+String AIAgentController::_propose_plan(const AIToolCall &p_call, bool &r_ok) {
+	static const int MAX_STEPS = 30;
+	r_ok = false;
+	if (run.kind != RUN_USER_TURN) {
+		return "Error: a plan is being carried out. Do the step you were given.";
+	}
+	Dictionary arguments;
+	AIToolbox::parse_arguments(p_call.arguments, arguments);
+	const Variant raw_steps = arguments.get("steps", Variant());
+	PackedStringArray steps;
+	if (raw_steps.get_type() == Variant::ARRAY) {
+		const Array list = raw_steps;
+		for (int i = 0; i < list.size() && steps.size() < MAX_STEPS; i++) {
+			// One line each: the plan file has one checkbox per step.
+			const String step = String(list[i]).replace("\r", " ").replace("\n", " ").strip_edges();
+			if (!step.is_empty()) {
+				steps.push_back(step);
+			}
+		}
+	}
+	if (steps.is_empty()) {
+		return "Error: 'steps' has to be a list of the plan's steps, one concrete action each.";
+	}
+	run.proposed_plan = steps;
+	run.proposed_plan_summary = String(arguments.get("summary", "")).strip_edges();
+	r_ok = true;
+	return "The plan (" + itos(steps.size()) + " steps) will be shown to the user, who can start it. Nothing is changed before that. Finish with one sentence about it; do not repeat the steps.";
 }
 
 // =============================================================================

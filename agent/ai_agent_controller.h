@@ -53,12 +53,6 @@ public:
 		STATE_WEB_REQUEST, // Fetching a page or search results the model asked for.
 	};
 
-	enum Mode {
-		MODE_ASK, // Answer in text; never run code.
-		MODE_AGENT, // Run the code the model writes.
-		MODE_PLAN, // Produce a numbered plan first; run it step by step on request.
-	};
-
 	enum RunKind {
 		RUN_USER_TURN, // The user sent a message.
 		RUN_PLAN_STEP, // One step of an approved plan.
@@ -86,8 +80,10 @@ public:
 
 	// --- Actions ---
 	// Starts a turn. p_message is what the model receives (mentions expanded);
-	// p_raw_input is what the user typed. Returns false while busy.
-	bool submit_user_message(const String &p_message, const String &p_raw_input, Mode p_mode);
+	// p_raw_input is what the user typed. Returns false while busy. There is
+	// no mode: what the message asks for decides whether the model answers,
+	// carries something out, or proposes a plan (see the system prompt).
+	bool submit_user_message(const String &p_message, const String &p_raw_input);
 	// Ends whatever is in flight. Nothing further is started on its behalf.
 	void stop();
 	// Runs the steps of the last generated plan. Returns false if there is none
@@ -152,7 +148,6 @@ private:
 	// when the run ends, so nothing can leak into the next one.
 	struct Run {
 		RunKind kind = RUN_USER_TURN;
-		Mode mode = MODE_AGENT;
 		String user_input; // What the user typed; empty for automatic runs.
 		String restart_scene_path; // RUN_RUNTIME_FIX: scene to play again afterwards.
 
@@ -173,6 +168,13 @@ private:
 		bool tool_checkpoint_taken = false; // One checkpoint per run, before its first change.
 		bool tool_waiting_for_game = false; // run_scene: the game is running, the timer is on.
 		bool tool_waiting_for_web = false; // web_search / fetch_url: the request is out.
+		// propose_plan: the steps the model proposed. Once there are some,
+		// nothing is changed in this run; the user starts the plan.
+		PackedStringArray proposed_plan;
+		String proposed_plan_summary;
+		// Replies are shown as they stream in (a model with tools answering
+		// the user); otherwise they are shown once handled.
+		bool streams_answer = false;
 		bool tool_wants_game_shot = false; // run_scene: a frame of the game was asked for.
 		bool tool_waiting_for_shot = false; // run_scene: the game was asked for that frame.
 		int64_t tool_shot_id = 0; // The id the game answers that request under.
@@ -250,7 +252,7 @@ private:
 
 	// --- State machine ---
 	void _set_state(State p_state);
-	void _begin_run(RunKind p_kind, Mode p_mode, const String &p_user_input);
+	void _begin_run(RunKind p_kind, const String &p_user_input);
 	// Ends the run and returns to IDLE.
 	void _end_run(RunOutcome p_outcome);
 	// Reports the run and clears it without leaving the busy state (the caller
@@ -272,10 +274,10 @@ private:
 	// carries on from the results (p_message is ignored).
 	bool _send_request(const String &p_message, bool p_resend = false, bool p_continue = false);
 	// --- Tools (ai_agent_controller_tools.cpp) ---
+	// The model is offered the tools, and changes the project with them,
+	// not with a code block.
 	bool _offers_tools() const;
-	bool _may_edit_with_tools() const;
-	// The model is to change the project with tools, not with a code block.
-	bool _edits_with_tools() const;
+	String _propose_plan(const AIToolCall &p_call, bool &r_ok);
 	Vector<AIToolSpec> _tool_specs() const;
 	void _handle_tool_calls(const String &p_content, const String &p_thinking, const Vector<AIToolCall> &p_calls, const String &p_thinking_signature = String());
 	void _run_tool_queue();
@@ -335,7 +337,6 @@ private:
 };
 
 VARIANT_ENUM_CAST(AIAgentController::State);
-VARIANT_ENUM_CAST(AIAgentController::Mode);
 VARIANT_ENUM_CAST(AIAgentController::NoticeLevel);
 
 #endif // TOOLS_ENABLED

@@ -41,7 +41,7 @@ static String _redact_url_key(const String &p_url) {
 }
 
 void AIAgentController::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("submit_user_message", "message", "raw_input", "mode"), &AIAgentController::submit_user_message);
+	ClassDB::bind_method(D_METHOD("submit_user_message", "message", "raw_input"), &AIAgentController::submit_user_message);
 	ClassDB::bind_method(D_METHOD("stop"), &AIAgentController::stop);
 	ClassDB::bind_method(D_METHOD("execute_plan"), &AIAgentController::execute_plan);
 	ClassDB::bind_method(D_METHOD("confirm_permission", "allowed"), &AIAgentController::confirm_permission);
@@ -85,9 +85,6 @@ void AIAgentController::_bind_methods() {
 	BIND_ENUM_CONSTANT(STATE_AWAITING_PERMISSION);
 	BIND_ENUM_CONSTANT(STATE_VERIFYING);
 	BIND_ENUM_CONSTANT(STATE_WEB_REQUEST);
-	BIND_ENUM_CONSTANT(MODE_ASK);
-	BIND_ENUM_CONSTANT(MODE_AGENT);
-	BIND_ENUM_CONSTANT(MODE_PLAN);
 	BIND_ENUM_CONSTANT(NOTICE_INFO);
 	BIND_ENUM_CONSTANT(NOTICE_SUCCESS);
 	BIND_ENUM_CONSTANT(NOTICE_WARNING);
@@ -114,18 +111,16 @@ void AIAgentController::_on_child_notice(int p_level, const String &p_text) {
 	post_notice((NoticeLevel)p_level, p_text);
 }
 
-void AIAgentController::_begin_run(RunKind p_kind, Mode p_mode, const String &p_user_input) {
+void AIAgentController::_begin_run(RunKind p_kind, const String &p_user_input) {
 	run = Run();
 	run_serial++;
 	run.kind = p_kind;
-	run.mode = p_mode;
 	run.user_input = p_user_input;
 }
 
 void AIAgentController::_report_run(RunOutcome p_outcome) {
 	Dictionary report;
 	report["kind"] = (int)run.kind;
-	report["mode"] = (int)run.mode;
 	report["outcome"] = (int)p_outcome;
 	report["requests"] = run.requests;
 	report["retries"] = run.retries;
@@ -220,7 +215,7 @@ void AIAgentController::_settle() {
 // Actions
 // =============================================================================
 
-bool AIAgentController::submit_user_message(const String &p_message, const String &p_raw_input, Mode p_mode) {
+bool AIAgentController::submit_user_message(const String &p_message, const String &p_raw_input) {
 	if (is_busy() || p_message.strip_edges().is_empty()) {
 		return false;
 	}
@@ -230,7 +225,7 @@ bool AIAgentController::submit_user_message(const String &p_message, const Strin
 	if (session.get_chat_id().is_empty()) {
 		session.set_chat_id(AISession::make_chat_id(Time::get_singleton()->get_datetime_dict_from_system()));
 	}
-	_begin_run(RUN_USER_TURN, p_mode, p_raw_input);
+	_begin_run(RUN_USER_TURN, p_raw_input);
 	_send_request(p_message);
 	return true;
 }
@@ -336,9 +331,9 @@ bool AIAgentController::start_runtime_fix(const String &p_errors, const String &
 	values["errors"] = p_errors;
 	values["scripts_section"] = scripts_section;
 
-	_begin_run(RUN_RUNTIME_FIX, MODE_AGENT, String());
+	_begin_run(RUN_RUNTIME_FIX, String());
 	run.restart_scene_path = p_scene_path;
-	_send_request(AIKnowledge::get_singleton()->format_prompt(_edits_with_tools() ? "runtime_fix_tools" : "runtime_fix", values));
+	_send_request(AIKnowledge::get_singleton()->format_prompt(_offers_tools() ? "runtime_fix_tools" : "runtime_fix", values));
 	return true;
 }
 
@@ -348,13 +343,7 @@ bool AIAgentController::start_runtime_fix(const String &p_errors, const String &
 
 String AIAgentController::_get_mode_prompt_id() const {
 	if (run.kind == RUN_PLAN_STEP) {
-		return _edits_with_tools() ? "mode_plan_step_tools" : "mode_plan_step";
-	}
-	if (run.kind == RUN_USER_TURN && run.mode == MODE_ASK) {
-		return "mode_ask";
-	}
-	if (run.kind == RUN_USER_TURN && run.mode == MODE_PLAN) {
-		return "mode_plan";
+		return _offers_tools() ? "mode_plan_step_tools" : "mode_plan_step";
 	}
 	return String();
 }
@@ -387,14 +376,17 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend, bo
 		run.request_message = p_message;
 	}
 	provider->set_tools(_offers_tools() ? _tool_specs() : Vector<AIToolSpec>());
-	// With the editing tools on offer the prompt teaches those, not how to
-	// write code blocks to be run; with any tools on offer, not the text
-	// markers they replace.
-	const AISystemPrompt::Variant variant = !provider->has_tools() ? AISystemPrompt::VARIANT_SCRIPT : (_may_edit_with_tools() ? AISystemPrompt::VARIANT_TOOLS : AISystemPrompt::VARIANT_LOOK_UP);
+	// With the tools on offer the prompt teaches those, not how to write code
+	// blocks to be run, nor the text markers they replace.
+	const AISystemPrompt::Variant variant = provider->has_tools() ? AISystemPrompt::VARIANT_TOOLS : AISystemPrompt::VARIANT_SCRIPT;
 	String system_prompt = prompt_builder.build_system_prompt(_get_mode_prompt_id(), run.request_message, variant);
 	if (provider->has_tools()) {
-		system_prompt += "\n" + AIKnowledge::get_singleton()->get_prompt(_may_edit_with_tools() ? "tools" : "tools_read_only") + "\n";
+		system_prompt += "\n" + AIKnowledge::get_singleton()->get_prompt("tools") + "\n";
 	}
+	// A model with tools answers in prose, or acts and says what it did in a
+	// sentence or two: either is worth watching arrive. A model without tools
+	// may be writing a code block, which is shown once it has been handled.
+	run.streams_answer = run.kind == RUN_USER_TURN && provider->has_tools();
 	last_system_prompt_tokens = AISession::estimate_tokens(system_prompt);
 	AI_LOG("System prompt: " + itos(system_prompt.length()) + " chars (~" + itos(last_system_prompt_tokens) + " tokens)");
 
@@ -442,7 +434,7 @@ bool AIAgentController::_send_request(const String &p_message, bool p_resend, bo
 	stream.start(request);
 	_set_state(STATE_STREAMING);
 	stream_poll_timer->start(STREAM_POLL_INTERVAL_SEC);
-	emit_signal(SNAME("request_started"), run.mode == MODE_ASK && run.kind == RUN_USER_TURN);
+	emit_signal(SNAME("request_started"), run.streams_answer);
 	return true;
 }
 
@@ -486,7 +478,7 @@ void AIAgentController::_on_stream_poll() {
 				run.response = result.content;
 				PackedStringArray text_segments;
 				const Vector<String> code_blocks = _parse_reply(result.content, text_segments);
-				_emit_response(text_segments, code_blocks, run.mode != MODE_ASK, true);
+				_emit_response(text_segments, code_blocks, true, true);
 				if (serial != run_serial) {
 					return;
 				}

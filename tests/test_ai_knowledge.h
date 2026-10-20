@@ -184,7 +184,7 @@ TEST_CASE("[AIAssistant][Knowledge] the built-in knowledge base loads completely
 
 TEST_CASE("[AIAssistant][Knowledge] every prompt template the code asks for exists") {
 	static const char *required[] = {
-		"mode_ask", "mode_plan", "mode_plan_step",
+		"mode_plan_step", "mode_plan_step_tools", "tools",
 		"retry_compile_error", "retry_safety", "retry_no_code", "retry_no_tools", "retry_exec_error", "retry_deferred_errors",
 		"plan_step", "runtime_fix", "web_results", "summary_system", "summary_user",
 		"preset_fix_errors", "preset_performance", nullptr
@@ -216,7 +216,7 @@ TEST_CASE("[AIAssistant][Knowledge] built-in templates carry the placeholders th
 TEST_CASE("[AIAssistant][Knowledge] an override directory replaces files and adds new ones") {
 	const String dir = TestUtils::get_temp_path("ai_knowledge_override");
 	_remove_dir(dir);
-	_write_file(dir.path_join("prompts/mode_ask.md"), "ASK OVERRIDE\n");
+	_write_file(dir.path_join("prompts/retry_safety.md"), "SAFETY OVERRIDE\n");
 	_write_file(dir.path_join("gotchas/team.md"), "<!-- keywords: TeamLogger -->\n### Use TeamLogger\nNever call print() directly.\n");
 	_write_file(dir.path_join("domains/netcode.md"), "---\nkeywords: rollback\n---\n## Netcode\n");
 	AIKnowledge baseline;
@@ -225,8 +225,8 @@ TEST_CASE("[AIAssistant][Knowledge] an override directory replaces files and add
 	AIKnowledge knowledge;
 	knowledge.set_override_dir(dir);
 
-	CHECK(knowledge.get_prompt("mode_ask") == "ASK OVERRIDE");
-	CHECK(knowledge.get_prompt("mode_plan") == baseline.get_prompt("mode_plan")); // Untouched files stay built in.
+	CHECK(knowledge.get_prompt("retry_safety") == "SAFETY OVERRIDE");
+	CHECK(knowledge.get_prompt("plan_step") == baseline.get_prompt("plan_step")); // Untouched files stay built in.
 	CHECK(knowledge.get_gotchas().size() == baseline.get_gotchas().size() + 1);
 	CHECK(knowledge.get_domains().size() == baseline.get_domains().size() + 1);
 	CHECK(knowledge.get_overridden_files().size() == 3);

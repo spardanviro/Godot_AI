@@ -335,4 +335,12 @@ TEST_CASE("[AIAssistant][Analysis] dedupe_consecutive drops immediate repeats on
 	CHECK(unique[2] == "a");
 }
 
+TEST_CASE("[AIAssistant][ResponseAnalysis] a reply that starts with [PLAN] is a plan, and the marker is not part of it") {
+	CHECK(AIResponseAnalysis::is_plan_reply("  [PLAN]\n1. Add a player.\n2. Add a floor."));
+	CHECK_FALSE(AIResponseAnalysis::is_plan_reply("Here is how: 1. ... [PLAN]"));
+	CHECK_FALSE(AIResponseAnalysis::is_plan_reply("1. Add a player."));
+	CHECK(AIResponseAnalysis::strip_plan_marker("[PLAN]\n1. Add a player.") == "1. Add a player.");
+	CHECK(AIResponseAnalysis::strip_plan_marker("1. Add a player.") == "1. Add a player.");
+}
+
 } // namespace TestAIResponseAnalysis

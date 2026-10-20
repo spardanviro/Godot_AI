@@ -1,7 +1,6 @@
 [
   {
     "id": "ui.main_menu",
-    "mode": "agent",
     "setup": {
       "scene_root": "Control"
     },
@@ -54,7 +53,6 @@
   },
   {
     "id": "ui.hud",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -112,7 +110,6 @@
   },
   {
     "id": "ui.anchor_label",
-    "mode": "agent",
     "setup": {
       "scene_root": "Control"
     },
@@ -157,7 +154,6 @@
   },
   {
     "id": "ui.theme_override",
-    "mode": "agent",
     "setup": {
       "scene_root": "Control",
       "nodes": [

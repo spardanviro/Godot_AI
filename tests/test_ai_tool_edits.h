@@ -585,12 +585,9 @@ TEST_CASE("[AIAssistant][ToolEdits] the prompt template yields one variant, with
 						  "<!-- MARKERS-ONLY -->\n[WEB_SEARCH: query]\n<!-- END MARKERS-ONLY -->\nshared rules\n";
 
 	const String script = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_SCRIPT);
-	const String look_up = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_LOOK_UP);
 	const String tools = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_TOOLS);
 
 	CHECK(script == "intro\nwrite a code block\n[WEB_SEARCH: query]\nshared rules\n");
-	// With tools that only look, the model still writes code to be read, but asks for the web with a tool.
-	CHECK(look_up == "intro\nwrite a code block\nshared rules\n");
 	CHECK(tools == "intro\nuse the tools\nshared rules\n");
 	CHECK(AISystemPrompt::select_variant("no markers\nat all", AISystemPrompt::VARIANT_TOOLS) == "no markers\nat all");
 }
@@ -599,14 +596,16 @@ TEST_CASE("[AIAssistant][ToolEdits] the shipped prompt teaches the text markers 
 	const String prompt = AIKnowledge::get_singleton()->get_system_prompt();
 
 	const String script = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_SCRIPT);
-	const String look_up = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_LOOK_UP);
 	const String tools = AISystemPrompt::select_variant(prompt, AISystemPrompt::VARIANT_TOOLS);
 
-	for (const char *marker : { "[WEB_SEARCH:", "[FETCH_URL:", "[GENERATE_IMAGE:", "[GENERATE_AUDIO:", "[WRITE_MEMORY:" }) {
+	for (const char *marker : { "[WEB_SEARCH:", "[FETCH_URL:", "[GENERATE_IMAGE:", "[GENERATE_AUDIO:", "[WRITE_MEMORY:", "[PLAN]" }) {
 		CHECK_MESSAGE(script.contains(marker), marker);
-		CHECK_FALSE_MESSAGE(look_up.contains(marker), marker);
 		CHECK_FALSE_MESSAGE(tools.contains(marker), marker);
 	}
+	// Both are told that the message, not a mode, decides; the one with tools plans with a tool.
+	CHECK(script.contains("There is no mode switch"));
+	CHECK(tools.contains("There is no mode switch"));
+	CHECK(tools.contains("propose_plan"));
 	CHECK_FALSE(tools.contains("-ONLY -->"));
 	// The variant for tools is the short one: it has no code blocks to teach.
 	CHECK(tools.length() < script.length() / 2);

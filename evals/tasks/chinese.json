@@ -1,7 +1,6 @@
 [
   {
     "id": "zh.add_sprite",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -41,7 +40,6 @@
   },
   {
     "id": "zh.jump_script",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -92,7 +90,6 @@
   },
   {
     "id": "zh.hide_enemies",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [

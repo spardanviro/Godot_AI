@@ -37,7 +37,6 @@ class AIAssistantPanel : public VBoxContainer {
 	Button *history_button = nullptr;
 	Button *screenshot_button = nullptr;
 	Button *settings_button = nullptr;
-	OptionButton *mode_selector = nullptr;
 
 	// Chat view and input.
 	AIChatView *chat_view = nullptr;

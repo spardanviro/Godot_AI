@@ -1,7 +1,6 @@
 [
   {
     "id": "tools.inspect_then_act",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -81,7 +80,6 @@
   },
   {
     "id": "tools.read_file_then_act",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "files": {
@@ -144,7 +142,6 @@
   },
   {
     "id": "tools.scene_tree_in_ask_mode",
-    "mode": "ask",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -197,7 +194,6 @@
   },
   {
     "id": "tools.errors_are_results",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -261,7 +257,6 @@
   },
   {
     "id": "tools.secrets_are_not_read",
-    "mode": "ask",
     "setup": {
       "scene_root": "Node2D",
       "files": {
@@ -312,7 +307,6 @@
   },
   {
     "id": "tools.endpoint_without_tools",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -357,7 +351,6 @@
   },
   {
     "id": "tools.round_limit",
-    "mode": "ask",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -459,7 +452,6 @@
   },
   {
     "id": "tools.build_scene",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -581,7 +573,6 @@
   },
   {
     "id": "tools.write_attach_connect",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -663,7 +654,6 @@
   },
   {
     "id": "tools.broken_script_is_not_written",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -733,7 +723,6 @@
   },
   {
     "id": "tools.delete_can_be_undone",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -787,7 +776,6 @@
   },
   {
     "id": "tools.denied_by_permissions",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -838,50 +826,7 @@
     "mock_only": true
   },
   {
-    "id": "tools.ask_mode_cannot_edit",
-    "mode": "ask",
-    "setup": {
-      "scene_root": "Node2D"
-    },
-    "prompt": "Could you add a Camera2D?",
-    "checks": [
-      {
-        "type": "run_completed"
-      },
-      {
-        "type": "node_missing",
-        "path": "Camera2D"
-      },
-      {
-        "type": "response_contains_any",
-        "values": [
-          "Agent mode"
-        ]
-      }
-    ],
-    "mock_replies": [
-      {
-        "requires_tools": true,
-        "forbids": "\"create_node\"",
-        "tool_calls": [
-          {
-            "name": "create_node",
-            "arguments": {
-              "class": "Camera2D"
-            }
-          }
-        ]
-      },
-      {
-        "requires_tool_result": "you can look but not change anything",
-        "text": "I can only look in this mode. Switch to Agent mode and I will add it."
-      }
-    ],
-    "mock_only": true
-  },
-  {
     "id": "tools.script_fallback",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -948,7 +893,6 @@
   },
   {
     "id": "tools.a_code_block_is_shown_not_run",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1012,7 +956,6 @@
   },
   {
     "id": "tools.remember",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1067,7 +1010,6 @@
   },
   {
     "id": "tools.markers_are_for_models_without_tools",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1096,7 +1038,6 @@
   },
   {
     "id": "tools.web_is_bounded",
-    "mode": "ask",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1164,7 +1105,6 @@
   },
   {
     "id": "tools.generate_needs_a_key",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1223,7 +1163,6 @@
   },
   {
     "id": "tools.a_text_answer_is_an_answer",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1254,7 +1193,6 @@
   },
   {
     "id": "tools.move_can_be_undone",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -1349,7 +1287,6 @@
   },
   {
     "id": "tools.input_actions_and_settings",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1423,7 +1360,6 @@
   },
   {
     "id": "tools.thinking_model_calls_without_text",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -1462,6 +1398,129 @@
       {
         "requires_tool_result": "Created Spawn",
         "text": "Added Spawn."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.plan_is_proposed_not_carried_out",
+    "setup": {
+      "scene_root": "Node2D",
+      "nodes": [
+        {
+          "path": "Enemy",
+          "class": "Area2D"
+        }
+      ]
+    },
+    "prompt": "Plan a health bar for the player. Steps first, don't build it yet.",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "plan_steps_min",
+        "value": 3
+      },
+      {
+        "type": "node_missing",
+        "path": "HealthBar"
+      },
+      {
+        "type": "node_exists",
+        "path": "Enemy"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "tool_calls_equal",
+        "value": 4
+      },
+      {
+        "type": "requests_max",
+        "value": 3
+      }
+    ],
+    "mock_replies": [
+      {
+        "requires_tools": true,
+        "forbids": "[PLAN]",
+        "tool_calls": [
+          {
+            "name": "get_scene_tree",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Enemy (Area2D)",
+        "tool_calls": [
+          {
+            "name": "propose_plan",
+            "arguments": {
+              "summary": "A health bar that follows the player's health.",
+              "steps": [
+                "Add a CanvasLayer named HUD with a ProgressBar named HealthBar.",
+                "Write res://scripts/health.gd with a health value and a health_changed signal.",
+                "Connect health_changed to the bar's value."
+              ]
+            }
+          },
+          {
+            "name": "create_node",
+            "arguments": {
+              "class": "ProgressBar",
+              "name": "HealthBar"
+            }
+          },
+          {
+            "name": "delete_node",
+            "arguments": {
+              "path": "Enemy"
+            }
+          }
+        ]
+      },
+      {
+        "requires_tool_result": "Nothing is changed until the user starts it",
+        "text": "Here is the plan; start it when you are ready."
+      }
+    ],
+    "mock_only": true
+  },
+  {
+    "id": "tools.a_question_is_answered",
+    "setup": {
+      "scene_root": "Node2D"
+    },
+    "prompt": "What is the difference between _process and _physics_process?",
+    "checks": [
+      {
+        "type": "run_completed"
+      },
+      {
+        "type": "no_execution"
+      },
+      {
+        "type": "requests_max",
+        "value": 1
+      },
+      {
+        "type": "retries_equal",
+        "value": 0
+      },
+      {
+        "type": "response_contains_any",
+        "values": [
+          "fixed rate"
+        ]
+      }
+    ],
+    "mock_replies": [
+      {
+        "requires_tools": true,
+        "text": "`_process` runs every frame; `_physics_process` runs at a fixed rate, in step with physics."
       }
     ],
     "mock_only": true

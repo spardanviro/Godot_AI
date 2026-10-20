@@ -20,10 +20,6 @@ public:
 		STR_BTN_SEND,
 
 		// Mode selector.
-		STR_MODE_ASK,
-		STR_MODE_AGENT,
-		STR_MODE_PLAN,
-		STR_MODE_TOOLTIP,
 
 		// Tooltips.
 		STR_TIP_NEW_CHAT,
@@ -155,10 +151,6 @@ private:
 			case STR_BTN_SEND: return "Send";
 
 			// Mode selector.
-			case STR_MODE_ASK: return "ASK";
-			case STR_MODE_AGENT: return "AGENT";
-			case STR_MODE_PLAN: return "PLAN";
-			case STR_MODE_TOOLTIP: return "AI Mode: ASK (text only), AGENT (auto-execute), PLAN (plan then execute)";
 
 			// Tooltips.
 			case STR_TIP_NEW_CHAT: return "Start a new conversation";
@@ -266,10 +258,6 @@ private:
 			case STR_BTN_SEND: return String::utf8("发送");
 
 			// Mode selector.
-			case STR_MODE_ASK: return String::utf8("问答");
-			case STR_MODE_AGENT: return String::utf8("代理");
-			case STR_MODE_PLAN: return String::utf8("规划");
-			case STR_MODE_TOOLTIP: return String::utf8("AI 模式：问答（仅文字）、代理（自动执行）、规划（先规划再执行）");
 
 			// Tooltips.
 			case STR_TIP_NEW_CHAT: return String::utf8("开始新对话");

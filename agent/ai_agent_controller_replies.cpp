@@ -54,7 +54,7 @@ void AIAgentController::_emit_response(const PackedStringArray &p_text_segments,
 	Dictionary response;
 	response["text_segments"] = p_text_segments;
 	response["code_blocks"] = blocks;
-	response["streamed"] = run.mode == MODE_ASK && run.kind == RUN_USER_TURN;
+	response["streamed"] = run.streams_answer;
 	response["show_text"] = p_show_text;
 	response["stopped"] = p_stopped;
 	emit_signal(SNAME("response_received"), response);
@@ -73,6 +73,15 @@ void AIAgentController::_handle_response(const String &p_response, const String 
 	run.markers = provider->has_tools() ? AIResponseAnalysis::Markers() : AIResponseAnalysis::parse_markers(p_response);
 	AI_LOG("Reply: " + itos(text_segments.size()) + " text segments, " + itos(code_blocks.size()) + " code blocks");
 
+	// A model without tools proposes a plan by starting its reply with
+	// [PLAN]. Code it put into a plan anyway is not what was asked for, and
+	// is not run.
+	if (run.kind == RUN_USER_TURN && !provider->has_tools() && AIResponseAnalysis::is_plan_reply(p_response)) {
+		PackedStringArray plan_text;
+		plan_text.push_back(AIResponseAnalysis::strip_plan_marker(String("\n\n").join(text_segments)));
+		_handle_plan(plan_text);
+		return;
+	}
 	if (code_blocks.is_empty()) {
 		_handle_text_only(text_segments);
 		return;
@@ -80,18 +89,11 @@ void AIAgentController::_handle_response(const String &p_response, const String 
 	// A model that has the tools runs code by calling one. A code block in
 	// its reply is something it shows the user — a script to read, a command
 	// for their terminal — and is shown, fences and all, not run.
-	if (_edits_with_tools()) {
+	if (_offers_tools()) {
 		AI_LOG("The model has tools: the code in its reply is shown, not executed.");
 		PackedStringArray whole_reply;
 		whole_reply.push_back(p_response);
 		_handle_text_only(whole_reply);
-		return;
-	}
-
-	// A plan is a list of steps. Code the model put into it anyway is not
-	// what the user asked for in this mode, and is not run.
-	if (run.kind == RUN_USER_TURN && run.mode == MODE_PLAN) {
-		_handle_plan(text_segments);
 		return;
 	}
 
@@ -102,56 +104,48 @@ void AIAgentController::_handle_response(const String &p_response, const String 
 		_fail_run(run.untrusted_reason);
 		return;
 	}
-	// ASK mode answers in text; a runtime fix always applies its code.
-	if (run.mode == MODE_ASK && run.kind != RUN_RUNTIME_FIX) {
-		AI_LOG("ASK mode: code is shown, not executed.");
-		_dispatch_side_effects();
-		_settle();
-		return;
-	}
 	_handle_code(code_blocks[code_blocks.size() - 1]);
 }
 
 void AIAgentController::_handle_text_only(const PackedStringArray &p_text_segments) {
-	if (run.kind == RUN_USER_TURN && run.mode == MODE_PLAN) {
-		_handle_plan(p_text_segments);
-		return;
-	}
-
-	// Outside ASK mode a reply without code usually means the model described
-	// the work instead of doing it. Exceptions: the user was just chatting, the
-	// reply asks for web data first, or we invited an explanation ourselves.
 	if (!run.untrusted_reason.is_empty()) {
 		// Asking again would only get cut off or withheld again.
-		_emit_response(p_text_segments, Vector<String>(), run.mode != MODE_ASK, false);
+		_emit_response(p_text_segments, Vector<String>(), true, false);
 		post_notice(NOTICE_WARNING, String(U"⚠ ") + run.untrusted_reason);
-		if (run.mode == MODE_ASK && run.kind == RUN_USER_TURN) {
-			_settle(); // A cut-off explanation is still an explanation.
+		if (run.kind == RUN_USER_TURN) {
+			_settle(); // A cut-off answer is still an answer.
 		} else {
 			_fail_run(run.untrusted_reason);
 		}
 		return;
 	}
 
-	const bool expects_code = run.mode != MODE_ASK && run.tool_calls == 0 && !run.response.strip_edges().is_empty() &&
-			!run.markers.has_web_request() && !run.explanation_invited &&
-			(run.kind != RUN_USER_TURN || !AIResponseAnalysis::is_conversational_input(run.user_input));
-
-	// Asked once. A second answer in text is the model's considered reply
-	// (a refusal, a question back), not an oversight to keep pushing on.
-	// A model that has the tools is not asked at all when it answers the
-	// user: it could have acted and chose to speak. Only a step it was sent
-	// to carry out (a plan step, a runtime fix) is asked for again.
-	const bool has_tools = _edits_with_tools();
-	if (expects_code && !(has_tools && run.kind == RUN_USER_TURN) && !run.no_code_nudged && run.retries < MAX_AUTO_RETRIES) {
+	// The user's message decides what is wanted, so a text reply to it is
+	// the model's answer: a question answered, a refusal, a question back.
+	// Only a step the model was sent to carry out (a plan step, a runtime
+	// fix) has to produce more than text; it is asked once more.
+	const bool expects_code = run.kind != RUN_USER_TURN && run.tool_calls == 0 && !run.response.strip_edges().is_empty() &&
+			!run.markers.has_web_request() && !run.explanation_invited;
+	if (expects_code && !run.no_code_nudged && run.retries < MAX_AUTO_RETRIES) {
 		run.no_code_nudged = true;
 		_emit_response(p_text_segments, Vector<String>(), false, false);
-		_retry_or_fail(has_tools ? "retry_no_tools" : "retry_no_code", Dictionary(), String(U"⚠ ") + TR(STR_NO_CODE_BLOCK_RETRY), String());
+		_retry_or_fail(_offers_tools() ? "retry_no_tools" : "retry_no_code", Dictionary(), String(U"⚠ ") + TR(STR_NO_CODE_BLOCK_RETRY), String());
 		return;
 	}
 
-	_emit_response(p_text_segments, Vector<String>(), run.mode != MODE_ASK, false);
-	if (expects_code && run.kind != RUN_USER_TURN) {
+	_emit_response(p_text_segments, Vector<String>(), true, false);
+	if (!run.proposed_plan.is_empty()) {
+		// The model proposed a plan with the tool and has said its piece.
+		String plan_text = run.proposed_plan_summary.is_empty() ? String() : run.proposed_plan_summary + "\n\n";
+		for (int i = 0; i < run.proposed_plan.size(); i++) {
+			plan_text += itos(i + 1) + ". " + run.proposed_plan[i] + "\n";
+		}
+		PackedStringArray plan_segments;
+		plan_segments.push_back(plan_text);
+		_handle_plan(plan_segments);
+		return;
+	}
+	if (expects_code) {
 		// An automatic run that never produced code has not done its job.
 		const String message = AI_L("The model did not produce code for this step.", "模型没有为该步骤生成代码。");
 		post_notice(NOTICE_ERROR, message);
@@ -257,7 +251,7 @@ void AIAgentController::_execute(const String &p_code) {
 	report["code"] = p_code;
 	report["response"] = run.response;
 	report["checkpoint_id"] = result.checkpoint_id;
-	report["compact"] = run.mode != MODE_ASK;
+	report["compact"] = true;
 	const uint64_t serial = run_serial;
 	emit_signal(SNAME("execution_finished"), report);
 	if (serial != run_serial) {
@@ -347,8 +341,8 @@ void AIAgentController::_start_plan_step() {
 	values["total_steps"] = step_count;
 	values["step_text"] = step_text;
 
-	_begin_run(RUN_PLAN_STEP, MODE_AGENT, String());
-	_send_request(AIKnowledge::get_singleton()->format_prompt(_edits_with_tools() ? "plan_step_tools" : "plan_step", values));
+	_begin_run(RUN_PLAN_STEP, String());
+	_send_request(AIKnowledge::get_singleton()->format_prompt(_offers_tools() ? "plan_step_tools" : "plan_step", values));
 }
 
 void AIAgentController::_mark_plan_step_done() {

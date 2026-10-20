@@ -75,6 +75,15 @@ AIResponseAnalysis::Markers AIResponseAnalysis::parse_markers(const String &p_re
 	return markers;
 }
 
+bool AIResponseAnalysis::is_plan_reply(const String &p_response) {
+	return p_response.strip_edges().begins_with(PLAN_MARKER);
+}
+
+String AIResponseAnalysis::strip_plan_marker(const String &p_text) {
+	const String text = p_text.strip_edges();
+	return text.begins_with(PLAN_MARKER) ? text.substr(String(PLAN_MARKER).length()).strip_edges() : text;
+}
+
 String AIResponseAnalysis::sanitize_memory_note(const String &p_content) {
 	// Every kind of line break, including the Unicode ones a model could use to
 	// smuggle a second line past the "one line" rule.

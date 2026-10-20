@@ -10,8 +10,7 @@ class AISystemPrompt {
 public:
 	// How the model is to work, which decides what the prompt teaches.
 	enum Variant {
-		VARIANT_SCRIPT, // No tools: code blocks to be run, text markers for the web, assets and notes.
-		VARIANT_LOOK_UP, // Tools that look things up, nothing that changes the project (ASK and PLAN modes).
+		VARIANT_SCRIPT, // No tools: code blocks to be run, text markers for the web, assets, notes and plans.
 		VARIANT_TOOLS, // Tools for everything.
 	};
 
@@ -22,8 +21,8 @@ public:
 
 	// The template holds every variant: what is not for all of them sits
 	// between marker lines. SCRIPT-ONLY is for a model that writes code
-	// blocks, TOOLS-ONLY for one that edits with tools, MARKERS-ONLY for one
-	// that has no tools at all. Returns the text of one variant, without the
+	// blocks, TOOLS-ONLY for one that works with tools, MARKERS-ONLY (the
+	// same model as SCRIPT-ONLY) for the text markers it uses instead. Returns the text of one variant, without the
 	// marker lines (pure).
 	static String select_variant(const String &p_template, Variant p_variant);
 

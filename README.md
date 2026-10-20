@@ -34,11 +34,15 @@ The panel is mounted in the right dock area of the editor.
   - `Fix Errors`
   - `Performance`
 
-### Assistant modes
+### No modes: the message decides
 
-- `ASK`: conversational mode, no code execution
-- `AGENT`: action-oriented mode with execution flow
-- `PLAN`: planning-first mode before execution
+There is no ASK / AGENT / PLAN switch. What the message asks for decides what the assistant does:
+
+- A question is answered. The model may look at the project with the tools, but changes nothing.
+- A request to do something is carried out.
+- A request for a plan ("plan ...", "how would you build ...", "steps first") gets a plan: the model calls `propose_plan` with the steps and changes nothing in that turn (a model without tools starts its reply with `[PLAN]`). The plan is shown with its checklist file and is started, one step per request, when the user chooses.
+
+When it is unclear whether a change is wanted, the model is told to explain and offer to make it. The user's permissions still apply to every change, so a question cannot turn into one the user did not allow.
 
 ### Node and file mentions and editor-aware input
 
@@ -115,7 +119,6 @@ Specialized system prompt fragments for domain-focused requests (UI/Control layo
 - Supports compile-only validation before execution
 - Checks generated code against a safety policy before execution
 - Integrates permission checks for sensitive operations
-- Skips code execution in `ASK` mode
 - If a streamed response is manually stopped, partial code is preserved in history but not executed
 
 Safety policy for editor-executed code (checked on the token stream, so comments and string contents are not mistaken for code):
@@ -135,7 +138,7 @@ With a provider that speaks tool calls — all five do — the model works on th
 
 | Kind | Tools | |
 |------|-------|-|
-| Look | `get_scene_tree`, `get_node_properties`, `read_file`, `list_files`, `get_errors` | Change nothing and need no permission. With the web tools, the only ones offered in ASK and PLAN modes. |
+| Look | `get_scene_tree`, `get_node_properties`, `read_file`, `list_files`, `get_errors` | Change nothing and need no permission. |
 | Web | `web_search`, `fetch_url` | Look something up outside the project: public http(s) addresses only, at most 3 requests per message. What comes back is handed to the model marked as untrusted content. |
 | Edit | `create_node`, `instantiate_scene`, `set_node_properties`, `rename_node`, `move_node`, `delete_node`, `connect_signal`, `attach_script`, `write_file`, `save_scene`, `set_project_setting`, `add_input_action` | Each falls under one permission category (*Settings > Permissions*): allowed, asked about, or refused, per tool call. |
 | Host | `run_scene`, `take_screenshot`, `run_editor_script`, `generate_image`, `generate_speech`, `remember` | Run the game for a few seconds and report its errors, what it printed and (on request) a frame of it; show the editor viewport to the model; run arbitrary editor code; have an asset generated; write one line into `godot_ai.md`. Generating an asset follows the *Write Files* permission; a note has a permission of its own. |
@@ -149,7 +152,7 @@ With a provider that speaks tool calls — all five do — the model works on th
 - **Notes ask.** A line written with `remember` is part of the instructions of every later conversation, and what prompts it may be text the model read in a file or on a web page. *Remember Notes* is therefore a permission of its own and asks by default.
 - **`run_editor_script`** is the fallback for what no tool does (animations, tile maps, bulk changes). It goes through the same review as a code block — syntax, safety policy, permissions — but that review reads the code as text, and code can build at run time what the review looks for. So the user decides: the whole of the code is shown, in a scrolling view of the permission prompt, and runs only once they have allowed it, every time, whatever the auto-execute setting says. Its outcome is the tool's result: what the code `print()`ed, or the error it raised.
 - **A code block is something to read.** A model that has the tools runs code by calling `run_editor_script`. A code block in its reply — a script it explains, a command for the user's terminal — is shown and never executed.
-- **A text answer is an answer.** A model that has the tools and replies to the user in text (a refusal, a question back) is not pushed to "output the code block" the way a model without tools is. Only a step it was sent to carry out — a plan step, a runtime fix — is asked for once more, and then with the tools.
+- **A text answer is an answer.** A text reply to the user (an answer, a refusal, a question back) is final: the model is not pushed to "output the code block". Only a step it was sent to carry out — a plan step, a runtime fix — is asked for once more.
 - **Errors are results.** A tool never fails the run: what went wrong is handed back as text for the model to act on. A message may take at most 8 rounds of tool calls.
 
 #### Without tools (legacy)
@@ -175,7 +178,7 @@ Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny
 
 Generated code cannot reach the assistant's own controls: its classes, the editor's interface tree (`get_tree().root`, `EditorInterface.get_base_control()`, `Engine.get_main_loop()`) and the switches on the controller are rejected by the safety check, and the two controller methods that exist for the headless eval runner (`set_auto_approve`, `configure_provider`) do nothing unless the editor was started by `evals/run_evals.py`.
 
-A reply is only executed if it is complete and is the model's answer. Code is shown but not run when the reply was cut off at the output limit, was withheld by the provider's filter, consists only of reasoning, or was written in PLAN mode. When code fails half-way, the scene and files are put back to the checkpoint taken before it ran, and only then is the model asked to try again.
+A reply is only executed if it is complete and is the model's answer. Code is shown but not run when the reply was cut off at the output limit, was withheld by the provider's filter, consists only of reasoning, or is a plan. When code fails half-way, the scene and files are put back to the checkpoint taken before it ran, and only then is the model asked to try again.
 
 The table is consulted for every piece of generated code, whatever its risk tier: `Deny` blocks it and `Ask` always shows a confirmation dialog, including when auto-execute is on. With auto-execute off, every execution is confirmed first.
 
@@ -260,7 +263,7 @@ AIAssistantPanel (dock: widgets, dialogs)
      |- AIStreamClient         one streaming request on a worker thread
      |- AICodeRunner           review (syntax, safety, permissions) + execution
      |- AIPromptBuilder        system prompt = knowledge + editor state
-     |- AIPlan                 PLAN-mode steps and their checklist file
+     |- AIPlan                 a proposed plan's steps and their checklist file
      |- AIWebRequester         search / fetch asked for by a reply
      |- AIHistorySummarizer    optional model-written history summary
      `- AIAssetService         image / speech generation queue
@@ -316,7 +319,7 @@ Whether a request may start, whether code may run and what Stop means all follow
 | `network/ai_url_policy.*` | Which addresses a model-supplied URL may point at |
 | `assets/ai_asset_request.*` | A generation request and the check on its save path |
 | `common/ai_code_text.*`, `common/ai_notice.h` | Summaries and script paths read out of code and error text; notice levels |
-| `agent/ai_plan.*` | PLAN-mode steps and their Markdown checklist |
+| `agent/ai_plan.*` | A proposed plan's steps and their Markdown checklist |
 | `network/ai_web_requester.*`, `network/ai_web_fetch.*`, `network/ai_web_search.*` | Web search and page fetch; the fetch runs on a worker thread and connects only to addresses it has checked |
 | `assets/ai_asset_service.*`, `assets/ai_image_generator.*`, `assets/ai_audio_generator.*` | Image and speech generation |
 | `network/ai_proxy.*`, `network/ai_proxy_os.cpp` | Which HTTP proxy the assistant's requests use (system, none, custom) |
@@ -351,7 +354,7 @@ Everything the assistant is told that is not code lives in `knowledge/` as plain
 | Path | Content |
 |------|---------|
 | `system_prompt.md` | The base system prompt. `{{project_instructions}}` marks where the project's `godot_ai.md` goes |
-| `prompts/<id>.md` | Short templates with `{{name}}` placeholders: mode instructions, the retry messages, plan step, runtime fix, web results, summary, preset buttons |
+| `prompts/<id>.md` | Short templates with `{{name}}` placeholders: the tools, the retry messages, plan step, runtime fix, web results, summary, preset buttons |
 | `domains/<id>.md` | Guidance for one domain. Front matter lists the keywords that select it (`match: stem` or `match: word`) and its `order` in the prompt |
 | `gotchas.md` | One entry per `<!-- keywords: a, b -->` line; the text that follows is injected when a message mentions those keywords |
 | `api_docs.md` | One `## ClassName` section per class, injected when the class is named |
@@ -409,7 +412,7 @@ Adding `extra_suffix=tests` to the build keeps the test build's objects and bina
 
 ## Evals
 
-Whether the assistant is any good is decided by what the model produces, and that changes with every edit to a prompt or to the retry logic. `evals/` holds a set of standard tasks (scene building, scripts, UI, 3D, gameplay, ASK / PLAN modes, safety) and a runner that scores them without a human in the loop. See [evals/README.md](evals/README.md).
+Whether the assistant is any good is decided by what the model produces, and that changes with every edit to a prompt or to the retry logic. `evals/` holds a set of standard tasks (scene building, scripts, UI, 3D, gameplay, questions and plans, safety) and a runner that scores them without a human in the loop. See [evals/README.md](evals/README.md).
 
 ```bash
 # The harness and the agent loop themselves, against canned replies (no API key, ~2 minutes):
@@ -498,7 +501,7 @@ Create `res://godot_ai.md` in your project to define project-specific instructio
 3. Optionally override the endpoint and model.
 4. Choose whether Enter sends immediately and whether generated code auto-runs.
 5. Configure permission levels for sensitive operations.
-6. Start using the panel in `ASK`, `AGENT`, or `PLAN` mode.
+6. Type what you want: a question, something to do, or a request for a plan.
 7. Optionally enrich the next request by:
    - attaching a file with the `+` button
    - mentioning scene nodes or project files with `@`

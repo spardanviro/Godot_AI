@@ -36,11 +36,15 @@
   - `Fix Errors`（修复报错）
   - `Performance`（性能分析）
 
-### 助手模式
+### 没有模式：由消息决定
 
-- `ASK`：对话模式，不执行代码
-- `AGENT`：行动模式，会动手修改项目
-- `PLAN`：先出计划，确认后再逐步执行
+不再有 ASK / AGENT / PLAN 的切换。用户的消息要什么，助手就做什么：
+
+- 提问就回答。模型可以用工具查看项目，但不做任何修改。
+- 要求做事就去做。
+- 要求写计划（“计划一下……”“你会怎么做……”“先列步骤”）就给出计划：模型调用 `propose_plan` 提交步骤，这一轮不做任何修改（没有工具的模型以 `[PLAN]` 开头回复）。计划连同清单文件显示出来，用户什么时候想开始，就逐步执行，每步一次请求。
+
+不确定用户是否要改动时，模型会先说明做法，并提出可以代为完成。每一次修改仍受权限设置约束，所以一个提问不会变成用户没有允许的修改。
 
 ### 节点与文件提及
 
@@ -117,7 +121,6 @@ OpenAI、DeepSeek、GLM 使用同一种 chat-completions 协议，共用一份�
 - 执行前可只做编译检查
 - 执行前按安全策略检查生成的代码
 - 敏感操作接入权限检查
-- `ASK` 模式下不执行代码
 - 流式回复被手动停止时，已收到的部分代码保留在历史里，但不执行
 
 编辑器内执行代码的安全策略（在词法单元上检查，因此注释和字符串内容不会被当成代码）：
@@ -137,7 +140,7 @@ OpenAI、DeepSeek、GLM 使用同一种 chat-completions 协议，共用一份�
 
 | 类别 | 工具 | |
 |------|------|-|
-| 查看 | `get_scene_tree`、`get_node_properties`、`read_file`、`list_files`、`get_errors` | 不改动任何东西，不需要权限。ASK 和 PLAN 模式下只提供这一类和联网类。 |
+| 查看 | `get_scene_tree`、`get_node_properties`、`read_file`、`list_files`、`get_errors` | 不改动任何东西，不需要权限。 |
 | 联网 | `web_search`、`fetch_url` | 到项目之外查资料：只允许公网 http(s) 地址，每条消息最多 3 次请求。返回的内容以“不可信内容”的标记交给模型。 |
 | 修改 | `create_node`、`instantiate_scene`、`set_node_properties`、`rename_node`、`move_node`、`delete_node`、`connect_signal`、`attach_script`、`write_file`、`save_scene`、`set_project_setting`、`add_input_action` | 每个工具对应一个权限类别（*设置 > 权限*），按单次调用判定允许、询问或禁止。 |
 | 宿主 | `run_scene`、`take_screenshot`、`run_editor_script`、`generate_image`、`generate_speech`、`remember` | 运行游戏几秒并回报错误、打印的内容以及（按需）一帧画面；把编辑器视口给模型看；执行任意编辑器代码；生成素材；往 `godot_ai.md` 里记一行。生成素材跟随“写入文件”权限；记笔记有自己的权限。 |
@@ -151,7 +154,7 @@ OpenAI、DeepSeek、GLM 使用同一种 chat-completions 协议，共用一份�
 - **记笔记要询问。** `remember` 写下的一行会成为今后每次对话的指令的一部分，而促使模型去记的可能是它在文件或网页里读到的文字。因此“记笔记”是单独的权限，默认询问。
 - **`run_editor_script`** 是兜底，用于没有工具能做的事（动画、瓦片地图、批量修改）。它和代码块一样经过语法、安全策略、权限三项审查，但审查读的是代码文本，而代码可以在运行时拼出审查要找的东西。所以由用户把关：确认弹窗的滚动视图里显示代码全文，用户同意后才运行，每次如此，与“自动执行”开关无关。它的结果就是工具的结果：代码 `print()` 的内容，或它抛出的错误。
 - **代码块是给人看的。** 有工具的模型要运行代码就调用 `run_editor_script`。它回复里的代码块（讲解用的脚本、让用户自己在终端运行的命令）只显示，从不执行。
-- **文字回答就是回答。** 有工具的模型用文字回复用户（拒绝、反问）时，不会像没有工具的模型那样被催促“请输出代码块”。只有派给它去执行的步骤（计划步骤、运行时修复）才会再要求一次，而且要求的是用工具完成。
+- **文字回答就是回答。** 对用户的文字回复（回答、拒绝、反问）就是最终结果，不会被催促“请输出代码块”。只有派给它去执行的步骤（计划步骤、运行时修复）才会再要求一次。
 - **错误即结果。** 工具不会让整轮失败：出了什么问题会以文本形式交回模型处理。一条消息最多进行 8 轮工具调用。
 
 #### 没有工具时（遗留路径）
@@ -177,7 +180,7 @@ OpenAI、DeepSeek、GLM 使用同一种 chat-completions 协议，共用一份�
 
 生成的代码够不到助手自己的开关：它的类、编辑器的界面树（`get_tree().root`、`EditorInterface.get_base_control()`、`Engine.get_main_loop()`）和控制器上的开关都会被安全检查拒绝；控制器上为无头评测准备的两个方法（`set_auto_approve`、`configure_provider`）只有在编辑器由 `evals/run_evals.py` 启动时才起作用。
 
-只有完整的、确实是模型答案的回复才会被执行。回复在输出上限处被截断、被服务商的过滤器拦截、只有推理过程，或是在 PLAN 模式下写的，其中的代码只显示不运行。代码执行到一半失败时，先把场景和文件恢复到运行前的检查点，再让模型重试。
+只有完整的、确实是模型答案的回复才会被执行。回复在输出上限处被截断、被服务商的过滤器拦截、只有推理过程，或是一份计划，其中的代码只显示不运行。代码执行到一半失败时，先把场景和文件恢复到运行前的检查点，再让模型重试。
 
 每段生成的代码都要查这张表，不论风险等级：“禁止”直接拦下，“询问”总会弹确认框，即使开着自动执行。关掉自动执行后，每次执行都要先确认。
 
@@ -262,7 +265,7 @@ AIAssistantPanel（停靠面板：控件、对话框）
      |- AIStreamClient         工作线程上的一次流式请求
      |- AICodeRunner           审查（语法、安全、权限）与执行
      |- AIPromptBuilder        系统提示词 = 知识 + 编辑器状态
-     |- AIPlan                 PLAN 模式的步骤及其清单文件
+     |- AIPlan                 所提计划的步骤及其清单文件
      |- AIWebRequester         回复要求的搜索 / 抓取
      |- AIHistorySummarizer    可选的、由模型撰写的历史摘要
      `- AIAssetService         图像 / 语音生成队列
@@ -318,7 +321,7 @@ STREAMING --回复调用工具--> 执行工具（视需要进入 AWAITING_PERMIS
 | `network/ai_url_policy.*` | 模型给出的网址可以指向哪些地址 |
 | `assets/ai_asset_request.*` | 一次生成请求及对保存路径的检查 |
 | `common/ai_code_text.*`、`common/ai_notice.h` | 从代码和错误文本里读出的摘要与脚本路径；通知级别 |
-| `agent/ai_plan.*` | PLAN 模式的步骤及其 Markdown 清单 |
+| `agent/ai_plan.*` | 所提计划的步骤及其 Markdown 清单 |
 | `network/ai_web_requester.*`、`network/ai_web_fetch.*`、`network/ai_web_search.*` | 网页搜索与抓取；抓取在工作线程上进行，只连接检查过的地址 |
 | `assets/ai_asset_service.*`、`assets/ai_image_generator.*`、`assets/ai_audio_generator.*` | 图像与语音生成 |
 | `network/ai_proxy.*`、`network/ai_proxy_os.cpp` | 助手的请求走哪个 HTTP 代理（系统、不用、自定义） |
@@ -353,7 +356,7 @@ STREAMING --回复调用工具--> 执行工具（视需要进入 AWAITING_PERMIS
 | 路径 | 内容 |
 |------|------|
 | `system_prompt.md` | 基础系统提示词。`{{project_instructions}}` 标出项目的 `godot_ai.md` 插入的位置 |
-| `prompts/<id>.md` | 带 `{{name}}` 占位符的短模板：各模式的说明、重试消息、计划步骤、运行时修复、网页结果、摘要、预设按钮 |
+| `prompts/<id>.md` | 带 `{{name}}` 占位符的短模板：工具说明、重试消息、计划步骤、运行时修复、网页结果、摘要、预设按钮 |
 | `domains/<id>.md` | 某一领域的指引。文件头列出选中它的关键词（`match: stem` 或 `match: word`）和它在提示词里的顺序 `order` |
 | `gotchas.md` | 每条以一行 `<!-- keywords: a, b -->` 开头；消息提到这些关键词时，其后的文字被注入 |
 | `api_docs.md` | 每个类一节 `## 类名`，提到该类时注入 |
@@ -411,7 +414,7 @@ bin/godot.windows.editor.x86_64.console.exe --test --test-case="*AIAssistant*"
 
 ## 评测
 
-助手好不好用取决于模型产出什么，而这会随着每一次对提示词或重试逻辑的改动而变化。`evals/` 里有一组标准任务（搭场景、写脚本、界面、3D、玩法、ASK / PLAN 模式、安全）和一个不需要人参与的打分运行器。详见 [evals/README.md](evals/README.md)。
+助手好不好用取决于模型产出什么，而这会随着每一次对提示词或重试逻辑的改动而变化。`evals/` 里有一组标准任务（搭场景、写脚本、界面、3D、玩法、提问与计划、安全）和一个不需要人参与的打分运行器。详见 [evals/README.md](evals/README.md)。
 
 ```bash
 # 测评测框架和智能体循环本身，用预设回复回放（不需要 API 密钥，约 2 分钟）：
@@ -500,7 +503,7 @@ scons platform=windows target=editor
 3. 需要的话填写端点和模型。
 4. 选择 Enter 是否直接发送、生成的代码是否自动运行。
 5. 为敏感操作配置权限级别。
-6. 以 `ASK`、`AGENT` 或 `PLAN` 模式开始使用。
+6. 直接输入你想要的：提一个问题、要它做一件事，或要它先出计划。
 7. 还可以这样丰富下一次请求：
    - 用 `+` 按钮附加文件
    - 用 `@` 提及场景节点或项目文件

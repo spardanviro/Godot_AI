@@ -76,6 +76,16 @@ void add_read_tools(Vector<AIToolSpec> &r_specs) {
 			object_schema(Dictionary())));
 }
 
+void add_plan_tool(Vector<AIToolSpec> &r_specs) {
+	Dictionary plan;
+	plan["steps"] = string_list("The steps in order. Each one concrete action that can be carried out on its own, e.g. \"Create a CharacterBody2D named Player with a collision shape\".", "One step.");
+	plan["summary"] = property("string", "One or two sentences on what the plan builds. Optional.");
+	r_specs.push_back(spec("propose_plan", AIToolSpec::KIND_HOST,
+			"Proposes a plan instead of doing the work: the user sees the steps and starts them when they want, one step at a time. "
+			"Only when the user asks for a plan (\"plan ...\", \"how would you build ...\", \"steps first\"); otherwise just do what they ask. Look around first if you need to, but change nothing in the same turn.",
+			object_schema(plan, { "steps" })));
+}
+
 void add_web_tools(Vector<AIToolSpec> &r_specs) {
 	Dictionary search;
 	search["query"] = property("string", "What to search for, as you would type it into a search engine.");
@@ -252,6 +262,7 @@ Vector<AIToolSpec> AIToolbox::get_specs(bool p_read_only) const {
 		add_edit_tools(specs);
 		add_project_tools(specs);
 		add_host_tools(specs);
+		add_plan_tool(specs);
 	}
 	return specs;
 }

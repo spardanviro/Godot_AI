@@ -20,6 +20,12 @@ public:
 
 	static Markers parse_markers(const String &p_response);
 
+	// A model without tools answers a request for a plan with a reply that
+	// starts with [PLAN] (see the system prompt).
+	static bool is_plan_reply(const String &p_response);
+	static String strip_plan_marker(const String &p_text);
+	static constexpr const char *PLAN_MARKER = "[PLAN]";
+
 	// Reduces a memory note to one short inert line; empty if nothing is left.
 	static String sanitize_memory_note(const String &p_content);
 

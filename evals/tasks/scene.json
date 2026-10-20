@@ -1,7 +1,6 @@
 [
   {
     "id": "scene.add_sprite",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -41,7 +40,6 @@
   },
   {
     "id": "scene.player_2d",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -105,7 +103,6 @@
   },
   {
     "id": "scene.enemy_group",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -154,7 +151,6 @@
   },
   {
     "id": "scene.timer",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -208,7 +204,6 @@
   },
   {
     "id": "scene.rename_reparent",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -264,7 +259,6 @@
   },
   {
     "id": "scene.delete_node",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -306,7 +300,6 @@
   },
   {
     "id": "scene.tilemap_layer",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -346,7 +339,6 @@
   },
   {
     "id": "scene.animation",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },

@@ -1,7 +1,6 @@
 [
   {
     "id": "selftest.retry_syntax",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -41,7 +40,6 @@
   },
   {
     "id": "selftest.retry_runtime_error",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -80,8 +78,7 @@
     "mock_only": true
   },
   {
-    "id": "selftest.retry_no_code",
-    "mode": "agent",
+    "id": "selftest.text_reply_is_the_answer",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -91,12 +88,16 @@
         "type": "run_completed"
       },
       {
-        "type": "node_exists",
+        "type": "node_missing",
         "path": "Eventually"
       },
       {
         "type": "retries_equal",
-        "value": 1
+        "value": 0
+      },
+      {
+        "type": "requests_max",
+        "value": 2
       }
     ],
     "mock_replies": [
@@ -109,26 +110,12 @@
         "text": [
           "I will add a Node2D named Eventually to your scene."
         ]
-      },
-      {
-        "requires_tools": false,
-        "text": [
-          "```gdscript",
-          "var root = get_scene()",
-          "var node = Node2D.new()",
-          "node.name = \"Eventually\"",
-          "root.add_child(node)",
-          "node.owner = root",
-          "print(\"Added Eventually\")",
-          "```"
-        ]
       }
     ],
     "mock_only": true
   },
   {
     "id": "selftest.late_error",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -168,7 +155,6 @@
   },
   {
     "id": "selftest.plan_execute",
-    "mode": "plan",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -196,6 +182,7 @@
     ],
     "mock_replies": [
       [
+        "[PLAN]",
         "1. Add a Node2D named StepOne.",
         "2. Add a Node2D named StepTwo."
       ],
@@ -225,7 +212,6 @@
   },
   {
     "id": "selftest.think_tags",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -260,7 +246,6 @@
   },
   {
     "id": "selftest.memory_note",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -304,7 +289,6 @@
   },
   {
     "id": "selftest.unicode",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -341,7 +325,6 @@
   },
   {
     "id": "selftest.stop_while_streaming",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -379,7 +362,6 @@
   },
   {
     "id": "selftest.stop_while_handling_reply",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -417,7 +399,6 @@
   },
   {
     "id": "selftest.stop_after_failed_execution",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -458,7 +439,6 @@
   },
   {
     "id": "selftest.resend_keeps_screenshot",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "screenshot": true
@@ -505,7 +485,6 @@
   },
   {
     "id": "selftest.truncated_reply_not_executed",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -540,8 +519,7 @@
     "mock_only": true
   },
   {
-    "id": "selftest.plan_mode_does_not_run_code",
-    "mode": "plan",
+    "id": "selftest.plan_does_not_run_code",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -564,6 +542,7 @@
     ],
     "mock_replies": [
       [
+        "[PLAN]",
         "1. Create a Control root for the menu.",
         "2. Add Start and Quit buttons.",
         "",
@@ -579,7 +558,6 @@
   },
   {
     "id": "selftest.failed_code_is_rolled_back",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },

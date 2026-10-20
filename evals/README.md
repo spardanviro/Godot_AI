@@ -76,7 +76,6 @@ Requests   41 (11 automatic retries)
 ```json
 {
   "id": "scene.add_sprite",
-  "mode": "agent",
   "setup": { "scene_root": "Node2D" },
   "prompt": "Add a Sprite2D named \"Logo\" to the scene at position (100, 50).",
   "checks": [
@@ -90,7 +89,7 @@ Requests   41 (11 automatic retries)
 ```
 
 - `id` — `<category>.<name>`; the category is used for the per-category summary.
-- `mode` — `ask`, `agent` or `plan`. `"execute_plan": true` also runs the plan that PLAN mode produced.
+- There is no mode: the prompt decides whether the model answers, acts or proposes a plan. `"execute_plan": true` also runs the plan the reply proposed.
 - `setup` — what exists before the prompt is sent:
   - `scene_root`: class of the root of an open scene (`res://main.tscn`); omit for "no scene open".
   - `nodes`: nodes to create under it, `{ "path", "class", "properties" }`.
@@ -109,7 +108,7 @@ Requests   41 (11 automatic retries)
 | `run_stopped` | The (last) run was stopped |
 | `executed_ok` / `no_execution` | The last execution succeeded / no code was executed at all |
 | `retries_max`, `retries_equal`, `requests_max` (`value`) | Bounds on what the loop needed |
-| `plan_steps_min` (`value`) | PLAN mode produced at least this many numbered steps |
+| `plan_steps_min` (`value`) | The reply proposed a plan of at least this many steps |
 | `node_exists` (`path`, optional `class`) | The node exists below the scene root and is of that class |
 | `node_missing` (`path`) | It does not |
 | `node_count` (`class`, `min` / `max`) | Number of nodes of a class in the scene |

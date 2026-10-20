@@ -8,7 +8,6 @@ extends SceneTree
 ## product's own loop: prompt assembly, the model's reply, the safety review,
 ## execution in the editor, and the automatic retries.
 
-const MODES := {"ask": 0, "agent": 1, "plan": 2}
 const OUTCOME_COMPLETED := 0
 const OUTCOME_STOPPED := 1
 const SETTLE_FRAMES := 5
@@ -76,8 +75,7 @@ func _main() -> void:
 
 	var started_ms := Time.get_ticks_msec()
 	var prompt: String = _task.get("prompt", "")
-	var mode: int = MODES.get(_task.get("mode", "agent"), 1)
-	if not _controller.submit_user_message(prompt, prompt, mode):
+	if not _controller.submit_user_message(prompt, prompt):
 		result["error"] = "The controller refused the message."
 		_finish(result)
 		return

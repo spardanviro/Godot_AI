@@ -1,7 +1,6 @@
 [
   {
     "id": "script.create_attach",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -54,7 +53,6 @@
   },
   {
     "id": "script.topdown_movement",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D",
       "nodes": [
@@ -112,7 +110,6 @@
   },
   {
     "id": "script.signal_button",
-    "mode": "agent",
     "setup": {
       "scene_root": "Control",
       "nodes": [
@@ -161,7 +158,6 @@
   },
   {
     "id": "script.godot3_to_4",
-    "mode": "agent",
     "setup": {
       "files": {
         "res://legacy.gd": [
@@ -230,7 +226,6 @@
   },
   {
     "id": "script.resource_class",
-    "mode": "agent",
     "setup": {},
     "prompt": "Create res://game_state.gd: a Resource with class_name GameState, an integer variable score, and a signal score_changed that is emitted whenever score is set.",
     "checks": [
@@ -284,7 +279,6 @@
   },
   {
     "id": "script.state_machine",
-    "mode": "agent",
     "setup": {},
     "prompt": "Create res://enemy.gd extending CharacterBody2D with an enum State { IDLE, CHASE, ATTACK }, a variable holding the current state, and a match statement in _physics_process that handles each state.",
     "checks": [

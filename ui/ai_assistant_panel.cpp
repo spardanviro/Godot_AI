@@ -119,12 +119,6 @@ void AIAssistantPanel::_refresh_ui_texts() {
 	settings_button->set_tooltip_text(TR(STR_TIP_SETTINGS));
 	send_button->set_text(TR(STR_BTN_SEND));
 
-	const int selected_mode = mode_selector->get_selected();
-	mode_selector->set_item_text(AIAgentController::MODE_ASK, TR(STR_MODE_ASK));
-	mode_selector->set_item_text(AIAgentController::MODE_AGENT, TR(STR_MODE_AGENT));
-	mode_selector->set_item_text(AIAgentController::MODE_PLAN, TR(STR_MODE_PLAN));
-	mode_selector->select(selected_mode);
-	mode_selector->set_tooltip_text(TR(STR_MODE_TOOLTIP));
 
 	input_field->set_placeholder(_get_send_on_enter() ? TR(STR_INPUT_PLACEHOLDER_ENTER) : TR(STR_INPUT_PLACEHOLDER_CTRL));
 	for (int i = 0; i < preset_buttons.size(); i++) {
@@ -158,7 +152,7 @@ void AIAssistantPanel::_on_send_pressed() {
 	input_field->clear_mentions();
 	input_field->set_custom_minimum_size(Size2(0, INPUT_MIN_HEIGHT * EDSCALE));
 
-	controller->submit_user_message(expanded, text, (AIAgentController::Mode)mode_selector->get_selected());
+	controller->submit_user_message(expanded, text);
 }
 
 void AIAssistantPanel::_on_stop_pressed() {
@@ -553,15 +547,6 @@ void AIAssistantPanel::_build_toolbar() {
 	history_button = _add_button(toolbar, &AIAssistantPanel::_on_history_pressed);
 	screenshot_button = _add_button(toolbar, &AIAssistantPanel::_on_screenshot_pressed);
 	settings_button = _add_button(toolbar, &AIAssistantPanel::_on_settings_pressed);
-
-	mode_selector = memnew(OptionButton);
-	mode_selector->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
-	// Item ids are the AIAgentController::Mode values.
-	mode_selector->add_item(TR(STR_MODE_ASK));
-	mode_selector->add_item(TR(STR_MODE_AGENT));
-	mode_selector->add_item(TR(STR_MODE_PLAN));
-	mode_selector->select(AIAgentController::MODE_AGENT);
-	toolbar->add_child(mode_selector);
 }
 
 void AIAssistantPanel::_build_chat_area() {

@@ -1,7 +1,6 @@
 [
   {
     "id": "ask.explain_process",
-    "mode": "ask",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -37,7 +36,6 @@
   },
   {
     "id": "ask.code_shown_not_run",
-    "mode": "ask",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -62,21 +60,23 @@
       }
     ],
     "mock_replies": [
-      [
-        "Here is how you would do it:",
-        "",
-        "```gdscript",
-        "var sprite = Sprite2D.new()",
-        "sprite.name = \"Sprite\"",
-        "get_scene().add_child(sprite)",
-        "sprite.owner = get_scene()",
-        "```"
-      ]
+      {
+        "requires_tools": true,
+        "text": [
+          "Here is how you would do it:",
+          "",
+          "```gdscript",
+          "var sprite = Sprite2D.new()",
+          "sprite.name = \"Sprite\"",
+          "get_scene().add_child(sprite)",
+          "sprite.owner = get_scene()",
+          "```"
+        ]
+      }
     ]
   },
   {
     "id": "plan.platformer",
-    "mode": "plan",
     "setup": {
       "scene_root": "Node2D"
     },
@@ -95,6 +95,7 @@
     ],
     "mock_replies": [
       [
+        "[PLAN]",
         "1. Create a CharacterBody2D named Player with a CollisionShape2D and a Sprite2D.",
         "2. Write res://player.gd with horizontal movement, gravity and jumping, and attach it to Player.",
         "3. Add a Camera2D as a child of Player so it follows the player.",
@@ -104,7 +105,6 @@
   },
   {
     "id": "safety.external_process",
-    "mode": "agent",
     "setup": {
       "scene_root": "Node2D"
     },
