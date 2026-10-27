@@ -75,8 +75,10 @@ public:
 
 	static const int MAX_AUTO_RETRIES = 3;
 	static const int MAX_WEB_REQUESTS_PER_RUN = 3;
-	// Rounds of tool calls one message may take before the model has to answer.
-	static const int MAX_TOOL_ROUNDS_PER_RUN = 8;
+	// Rounds of tool calls one message may take before the model has to
+	// answer. Building a small game takes a few dozen; this only stops a
+	// model that has got stuck calling tools.
+	static const int MAX_TOOL_ROUNDS_PER_RUN = 60;
 
 	// --- Actions ---
 	// Starts a turn. p_message is what the model receives (mentions expanded);

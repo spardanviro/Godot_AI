@@ -84,6 +84,7 @@ public:
 		STR_PERM_WRITE_FILES,
 		STR_PERM_DELETE_FILES,
 		STR_PERM_REMEMBER,
+		STR_PERM_RUN_SCRIPTS,
 		STR_PERM_ALLOW,
 		STR_PERM_ASK,
 		STR_PERM_DENY,
@@ -213,6 +214,7 @@ private:
 			case STR_PERM_WRITE_FILES: return "Write Files:";
 			case STR_PERM_DELETE_FILES: return "Delete Files:";
 			case STR_PERM_REMEMBER: return "Remember Notes:";
+			case STR_PERM_RUN_SCRIPTS: return "Run Editor Scripts:";
 			case STR_PERM_ALLOW: return "Allow";
 			case STR_PERM_ASK: return "Ask";
 			case STR_PERM_DENY: return "Deny";
@@ -320,6 +322,7 @@ private:
 			case STR_PERM_WRITE_FILES: return String::utf8("写入文件：");
 			case STR_PERM_DELETE_FILES: return String::utf8("删除文件：");
 			case STR_PERM_REMEMBER: return String::utf8("记笔记：");
+			case STR_PERM_RUN_SCRIPTS: return String::utf8("运行编辑器脚本：");
 			case STR_PERM_ALLOW: return String::utf8("允许");
 			case STR_PERM_ASK: return String::utf8("询问");
 			case STR_PERM_DENY: return String::utf8("拒绝");

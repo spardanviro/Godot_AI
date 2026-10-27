@@ -361,7 +361,7 @@
       },
       {
         "type": "tool_calls_equal",
-        "value": 9
+        "value": 61
       },
       {
         "type": "response_contains_any",
@@ -371,6 +371,422 @@
       }
     ],
     "mock_replies": [
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "name": "get_errors",
+            "arguments": {}
+          }
+        ]
+      },
       {
         "tool_calls": [
           {

@@ -609,7 +609,16 @@ bool AIAgentController::_start_script_tool(const AIToolCall &p_call) {
 		_finish_tool("Error: 'code' is required.", false);
 		return true;
 	}
-	const AICodeRunner::Review review = code_runner.review(code, true);
+	const AIPermissionManager::Level level = code_runner.get_permission_manager()->get_permission(AIPermissionManager::PERM_RUN_SCRIPTS);
+	if (level == AIPermissionManager::LEVEL_DENY) {
+		_finish_tool("Error: the user's permission settings do not allow running editor code (Run Editor Scripts). Do it with the other tools, or tell the user it is turned off in Settings > Permissions.", false);
+		return true;
+	}
+	// "Ask" (the default) shows the code every time; "Allow" runs it like the
+	// other tools, unless auto-execute is off. The categories the code touches
+	// (deleting files, scripts...) are still asked about or refused as set.
+	const bool autorun = AISettings::get("autorun", true);
+	const AICodeRunner::Review review = code_runner.review(code, level == AIPermissionManager::LEVEL_ASK || !autorun);
 	switch (review.action) {
 		case AICodeRunner::ACTION_FIX_SYNTAX:
 			_finish_tool("Error: the code does not parse and was not run:\n" + review.message, false);

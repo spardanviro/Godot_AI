@@ -226,7 +226,7 @@ void add_host_tools(Vector<AIToolSpec> &r_specs) {
 	script["description"] = property("string", "One sentence on what the code does, shown to the user who has to allow it.");
 	r_specs.push_back(spec("run_editor_script", AIToolSpec::KIND_HOST,
 			"Runs GDScript in the editor. For what no other tool can do: animations, tile maps, bulk changes. "
-			"The user is shown the code and has to approve it every time, so put everything that needs it into one call, and prefer the specific tools.",
+			"The user may be shown the code and asked to approve it, so put everything that needs it into one call, and prefer the specific tools.",
 			object_schema(script, { "code", "description" })));
 
 	Dictionary image;

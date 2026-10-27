@@ -196,12 +196,20 @@ void AIAgentController::_handle_code(const String &p_code) {
 	// "Ask" permissions always ask. With auto-execute off everything asks,
 	// a runtime fix included: what it reacts to is text printed by the
 	// running project, which is not the user speaking. And code a model
-	// without tools wrote in reply to the user always asks: there is no mode
-	// any more to say whether the message wanted a change or an explanation,
-	// and an example in an answer looks just like code to run. (A plan step
-	// the user started, and a runtime fix, follow the setting.)
+	// without tools wrote in reply to the user follows Run Editor Scripts
+	// (Ask by default): there is no mode any more to say whether the message
+	// wanted a change or an explanation, and an example in an answer looks
+	// just like code to run. (A plan step the user started, and a runtime
+	// fix, follow auto-execute.)
 	const bool autorun = AISettings::get("autorun", true);
-	const AICodeRunner::Review review = code_runner.review(p_code, !autorun || run.kind == RUN_USER_TURN);
+	const AIPermissionManager::Level run_scripts = code_runner.get_permission_manager()->get_permission(AIPermissionManager::PERM_RUN_SCRIPTS);
+	if (run_scripts == AIPermissionManager::LEVEL_DENY) {
+		const String message = AI_L("Running editor code is turned off (Settings > Permissions > Run Editor Scripts).", "运行编辑器代码已关闭（设置 > 权限 > 运行编辑器脚本）。");
+		post_notice(NOTICE_ERROR, message);
+		_fail_run(message);
+		return;
+	}
+	const AICodeRunner::Review review = code_runner.review(p_code, !autorun || (run.kind == RUN_USER_TURN && run_scripts == AIPermissionManager::LEVEL_ASK));
 
 	switch (review.action) {
 		case AICodeRunner::ACTION_FIX_SYNTAX: {

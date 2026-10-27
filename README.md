@@ -150,10 +150,10 @@ With a provider that speaks tool calls — all five do — the model works on th
 - **The project.** `set_project_setting` changes a setting that exists, to a value of its type; autoloads and editor plugins — what decides which code runs — are left to the user. `add_input_action` registers an action with keys (by position on the keyboard, as the Input Map does) and mouse buttons. Both save `project.godot`, which the checkpoint covers.
 - **The running game.** `run_scene` reports the errors the game raised and what it printed, and with `screenshot: true` a frame of it, asked of the game over the debugger connection just before it is stopped. That is how the model checks anything visual; `take_screenshot` shows the editor's viewport.
 - **Notes ask.** A line written with `remember` is part of the instructions of every later conversation, and what prompts it may be text the model read in a file or on a web page. *Remember Notes* is therefore a permission of its own and asks by default.
-- **`run_editor_script`** is the fallback for what no tool does (animations, tile maps, bulk changes). It goes through the same review as a code block — syntax, safety policy, permissions — but that review reads the code as text, and code can build at run time what the review looks for. So the user decides: the whole of the code is shown, in a scrolling view of the permission prompt, and runs only once they have allowed it, every time, whatever the auto-execute setting says. Its outcome is the tool's result: what the code `print()`ed, or the error it raised.
+- **`run_editor_script`** is the fallback for what no tool does (animations, tile maps, bulk changes). It goes through the same review as a code block — syntax, safety policy, permissions — but that review reads the code as text, and code can build at run time what the review looks for. So by default the user decides: the permission *Run Editor Scripts* is Ask, the whole of the code is shown in a scrolling view of the prompt, and it runs only once they have allowed it. Set to Allow, it runs like the other tools (unless auto-execute is off); set to Deny, it is refused. Its outcome is the tool's result: what the code `print()`ed, or the error it raised.
 - **A code block is something to read.** A model that has the tools runs code by calling `run_editor_script`. A code block in its reply — a script it explains, a command for the user's terminal — is shown and never executed.
 - **A text answer is an answer.** A text reply to the user (an answer, a refusal, a question back) is final: the model is not pushed to "output the code block". Only a step it was sent to carry out — a plan step, a runtime fix — is asked for once more.
-- **Errors are results.** A tool never fails the run: what went wrong is handed back as text for the model to act on. A message may take at most 8 rounds of tool calls.
+- **Errors are results.** A tool never fails the run: what went wrong is handed back as text for the model to act on. A message may take at most 60 rounds of tool calls; only a model that has got stuck reaches that.
 
 #### Without tools (legacy)
 
@@ -173,8 +173,9 @@ Execution permissions are categorized and configurable per operation type:
 - Write files
 - Delete files
 - Remember notes
+- Run editor scripts
 
-Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny; modifying scripts and remembering notes default to ask: a script is code that runs later, and what is inside a script file is not seen by the safety check, and a note becomes part of the prompt of every later conversation. Writing a `.gd` file counts as modifying scripts, as attaching one does.
+Each category supports `Allow`, `Ask`, or `Deny`. File deletion defaults to deny; modifying scripts, remembering notes and running editor scripts default to ask: a script is code that runs later, and what is inside a script file is not seen by the safety check, a note becomes part of the prompt of every later conversation, and editor code is arbitrary code the safety check can only read as text. Writing a `.gd` file counts as modifying scripts, as attaching one does.
 
 Generated code cannot reach the assistant's own controls: its classes, the editor's interface tree (`get_tree().root`, `EditorInterface.get_base_control()`, `Engine.get_main_loop()`) and the switches on the controller are rejected by the safety check, and the two controller methods that exist for the headless eval runner (`set_auto_approve`, `configure_provider`) do nothing unless the editor was started by `evals/run_evals.py`.
 

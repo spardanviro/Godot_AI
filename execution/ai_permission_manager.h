@@ -20,6 +20,10 @@ public:
 		// A note in godot_ai.md is read by the model at the start of every
 		// future conversation: it is an instruction that outlives this one.
 		PERM_REMEMBER,
+		// Arbitrary editor code: run_editor_script, or a code block from a
+		// model without tools. The safety check reads it as text and cannot
+		// see what it builds at run time, so by default the user reads it too.
+		PERM_RUN_SCRIPTS,
 		PERM_MAX
 	};
 

@@ -17,6 +17,7 @@ String AIPermissionManager::_category_name(Category p_cat) {
 		case PERM_FILE_WRITE: return "Write Files";
 		case PERM_FILE_DELETE: return "Delete Files";
 		case PERM_REMEMBER: return "Remember Notes";
+		case PERM_RUN_SCRIPTS: return "Run Editor Scripts";
 		default: return "Unknown";
 	}
 }
@@ -30,7 +31,8 @@ AIPermissionManager::Level AIPermissionManager::get_default_level(Category p_cat
 	// or attaching one is shown to the user first. So is a note: it is read
 	// as part of the instructions of every conversation that follows, and
 	// what prompts it may be text the model read somewhere, not the user.
-	return p_category == PERM_MODIFY_SCRIPTS || p_category == PERM_REMEMBER ? LEVEL_ASK : LEVEL_ALLOW;
+	// Arbitrary editor code is shown first too, until the user says otherwise.
+	return p_category == PERM_MODIFY_SCRIPTS || p_category == PERM_REMEMBER || p_category == PERM_RUN_SCRIPTS ? LEVEL_ASK : LEVEL_ALLOW;
 }
 
 String AIPermissionManager::get_setting_key(Category p_category) {
@@ -43,6 +45,7 @@ String AIPermissionManager::get_setting_key(Category p_category) {
 		case PERM_FILE_WRITE: return "ai_assistant/permissions/file_write";
 		case PERM_FILE_DELETE: return "ai_assistant/permissions/file_delete";
 		case PERM_REMEMBER: return "ai_assistant/permissions/remember";
+		case PERM_RUN_SCRIPTS: return "ai_assistant/permissions/run_scripts";
 		default: return "";
 	}
 }
