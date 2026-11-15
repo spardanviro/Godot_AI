@@ -2,6 +2,7 @@
 
 #include "../providers/ai_provider.h"
 #include "ai_proxy.h"
+#include "ai_retry.h"
 #include "ai_stream_protocol.h"
 
 #include "core/os/mutex.h"
@@ -74,7 +75,11 @@ private:
 	// Thinking the signature does not cover arrived (redacted, or in the text).
 	bool thinking_redacted = false;
 
+	struct Connection;
+
 	static void _thread_func(void *p_userdata);
+	static AIRetry::Attempt _connect_attempt(void *p_userdata);
+	AIRetry::Attempt _connect(Connection &r_connection);
 	void _run();
 	bool _should_stop();
 	void _finish(Outcome p_outcome, const String &p_error = String());
