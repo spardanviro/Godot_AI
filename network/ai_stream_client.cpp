@@ -1,5 +1,6 @@
 #include "ai_stream_client.h"
 
+#include "../common/ai_log.h"
 #include "ai_network_thread.h"
 
 #include "core/io/http_client.h"
@@ -11,6 +12,37 @@ static const uint64_t IDLE_TIMEOUT_MS = 180000;
 static const uint64_t ERROR_BODY_TIMEOUT_MS = 15000;
 static const int POLL_INTERVAL_USEC = 10000;
 static const int CONNECT_INTERVAL_USEC = 50000;
+// The wait between attempts does not see Stop: a server that asks for a longer
+// one gets its error shown at once instead.
+static const double MAX_RETRY_AFTER_SEC = 10.0;
+
+// One request's way to the server, tried again by AIRetry until the response
+// headers are in. Worker only.
+struct AIStreamClient::Connection {
+	AIStreamClient *owner = nullptr;
+	String host;
+	String path;
+	int port = 80;
+	bool use_tls = false;
+	int attempts = 0;
+	Ref<HTTPClient> client; // After a successful attempt: at the response body.
+	Outcome outcome = OUTCOME_ERROR; // How a failed attempt ends the request.
+	String error;
+};
+
+// Seconds from a Retry-After header in delta-seconds form; -1 for none (or an
+// HTTP date, which then gets the usual backoff).
+static double _retry_after_seconds(const Ref<HTTPClient> &p_client) {
+	List<String> headers;
+	p_client->get_response_headers(&headers);
+	for (const String &header : headers) {
+		if (header.to_lower().begins_with("retry-after:")) {
+			const String value = header.substr(12).strip_edges();
+			return value.is_valid_float() ? MAX(value.to_float(), 0.0) : -1.0;
+		}
+	}
+	return -1.0;
+}
 
 bool AIStreamClient::start(const Request &p_request) {
 	if (busy) {
@@ -102,67 +134,64 @@ void AIStreamClient::_push_pieces(const Vector<AIStreamPiece> &p_pieces) {
 	}
 }
 
-void AIStreamClient::_run() {
-	String url = request.url;
-	bool use_tls = false;
-	int port = 80;
-	if (url.begins_with("https://")) {
-		use_tls = true;
-		port = 443;
-		url = url.substr(8);
-	} else if (url.begins_with("http://")) {
-		url = url.substr(7);
-	}
+AIRetry::Attempt AIStreamClient::_connect_attempt(void *p_userdata) {
+	Connection *connection = static_cast<Connection *>(p_userdata);
+	return connection->owner->_connect(*connection);
+}
 
-	String host = url;
-	String path = "/";
-	const int slash_pos = url.find("/");
-	if (slash_pos >= 0) {
-		host = url.substr(0, slash_pos);
-		path = url.substr(slash_pos);
+AIRetry::Attempt AIStreamClient::_connect(Connection &r_connection) {
+	AIRetry::Attempt attempt;
+	r_connection.attempts++;
+	if (r_connection.attempts > 1) {
+		AI_LOG("Retrying the request (attempt " + itos(r_connection.attempts) + ") after: " + r_connection.error.left(200));
 	}
-	const int colon_pos = host.find(":");
-	if (colon_pos >= 0) {
-		port = host.substr(colon_pos + 1).to_int();
-		host = host.substr(0, colon_pos);
+	r_connection.outcome = OUTCOME_ERROR;
+	r_connection.error = String();
+	r_connection.client.unref();
+	if (_should_stop()) { // Stop during the wait before this attempt.
+		r_connection.outcome = OUTCOME_STOPPED;
+		return attempt;
 	}
 
 	Ref<HTTPClient> client = Ref<HTTPClient>(HTTPClient::create());
 	if (client.is_null()) {
-		_finish(OUTCOME_ERROR, "Failed to create HTTPClient.");
-		return;
+		r_connection.error = "Failed to create HTTPClient.";
+		return attempt;
 	}
+	r_connection.client = client;
 
 	if (request.proxy.is_set()) {
 		client->set_http_proxy(request.proxy.host, request.proxy.port);
 		client->set_https_proxy(request.proxy.host, request.proxy.port);
 	}
 	Ref<TLSOptions> tls_opts;
-	if (use_tls) {
+	if (r_connection.use_tls) {
 		tls_opts = TLSOptions::client();
 	}
-	if (client->connect_to_host(host, port, tls_opts) != OK) {
-		_finish(OUTCOME_ERROR, "Failed to connect to " + host);
-		return;
+	if (client->connect_to_host(r_connection.host, r_connection.port, tls_opts) != OK) {
+		r_connection.error = "Failed to connect to " + r_connection.host;
+		return attempt;
 	}
 
 	while (client->get_status() == HTTPClient::STATUS_CONNECTING || client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		if (_should_stop()) {
-			_finish(OUTCOME_STOPPED);
-			return;
+			r_connection.outcome = OUTCOME_STOPPED;
+			return attempt;
 		}
 		client->poll();
 		OS::get_singleton()->delay_usec(CONNECT_INTERVAL_USEC);
 	}
 	if (client->get_status() != HTTPClient::STATUS_CONNECTED) {
-		_finish(OUTCOME_ERROR, "Connection failed" + (request.proxy.is_set() ? " (through the proxy " + request.proxy.to_text() + ")" : String()) + ". Status: " + itos((int)client->get_status()));
-		return;
+		// Not tried again: a host that cannot be reached at all rarely can a
+		// second later, and each attempt may wait out the whole connect timeout.
+		r_connection.error = "Connection failed" + (request.proxy.is_set() ? " (through the proxy " + request.proxy.to_text() + ")" : String()) + ". Status: " + itos((int)client->get_status());
+		return attempt;
 	}
 
 	const CharString body_utf8 = request.body.utf8();
-	if (client->request(HTTPClient::METHOD_POST, path, request.headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length()) != OK) {
-		_finish(OUTCOME_ERROR, "Failed to send HTTP request.");
-		return;
+	if (client->request(HTTPClient::METHOD_POST, r_connection.path, request.headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length()) != OK) {
+		r_connection.error = "Failed to send HTTP request.";
+		return attempt;
 	}
 
 	// Waiting for response headers: honour Stop, and give up on a server that
@@ -170,20 +199,22 @@ void AIStreamClient::_run() {
 	const uint64_t request_started_ms = OS::get_singleton()->get_ticks_msec();
 	while (client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		if (_should_stop()) {
-			_finish(OUTCOME_STOPPED);
-			return;
+			r_connection.outcome = OUTCOME_STOPPED;
+			return attempt;
 		}
 		if (OS::get_singleton()->get_ticks_msec() - request_started_ms > HEADER_TIMEOUT_MS) {
-			_finish(OUTCOME_ERROR, "Timed out waiting for the server to respond.");
-			return;
+			r_connection.error = "Timed out waiting for the server to respond.";
+			return attempt;
 		}
 		client->poll();
 		OS::get_singleton()->delay_usec(CONNECT_INTERVAL_USEC);
 	}
 
 	if (!client->has_response()) {
-		_finish(OUTCOME_ERROR, "No response from server.");
-		return;
+		// The connection dropped before the answer: nothing of the reply is lost.
+		r_connection.error = "No response from server.";
+		attempt.retryable = true;
+		return attempt;
 	}
 
 	const int response_code = client->get_response_code();
@@ -197,8 +228,8 @@ void AIStreamClient::_run() {
 		const uint64_t error_body_started_ms = OS::get_singleton()->get_ticks_msec();
 		while (client->get_status() == HTTPClient::STATUS_BODY) {
 			if (_should_stop()) {
-				_finish(OUTCOME_STOPPED);
-				return;
+				r_connection.outcome = OUTCOME_STOPPED;
+				return attempt;
 			}
 			if (OS::get_singleton()->get_ticks_msec() - error_body_started_ms > ERROR_BODY_TIMEOUT_MS) {
 				break; // The status code alone will have to do.
@@ -211,9 +242,50 @@ void AIStreamClient::_run() {
 			OS::get_singleton()->delay_usec(POLL_INTERVAL_USEC);
 		}
 		const String error_body = String::utf8((const char *)error_bytes.ptr(), error_bytes.size());
-		_finish(OUTCOME_ERROR, "API Error (HTTP " + itos(response_code) + "): " + error_body.left(500));
+		r_connection.error = "API Error (HTTP " + itos(response_code) + "): " + error_body.left(500);
+		// Whether the code is worth another try (429, 5xx, 529) is llm-retry's call.
+		attempt.http_code = response_code;
+		attempt.retry_after_seconds = _retry_after_seconds(client);
+		attempt.retryable = attempt.retry_after_seconds <= MAX_RETRY_AFTER_SEC;
+		return attempt;
+	}
+
+	attempt.ok = true;
+	return attempt;
+}
+
+void AIStreamClient::_run() {
+	Connection connection;
+	connection.owner = this;
+	String url = request.url;
+	if (url.begins_with("https://")) {
+		connection.use_tls = true;
+		connection.port = 443;
+		url = url.substr(8);
+	} else if (url.begins_with("http://")) {
+		url = url.substr(7);
+	}
+
+	connection.host = url;
+	connection.path = "/";
+	const int slash_pos = url.find("/");
+	if (slash_pos >= 0) {
+		connection.host = url.substr(0, slash_pos);
+		connection.path = url.substr(slash_pos);
+	}
+	const int colon_pos = connection.host.find(":");
+	if (colon_pos >= 0) {
+		connection.port = connection.host.substr(colon_pos + 1).to_int();
+		connection.host = connection.host.substr(0, colon_pos);
+	}
+
+	// Only this part is tried again: once the body is read, deltas have been
+	// shown, and a second attempt would repeat them.
+	if (!AIRetry::run(_connect_attempt, &connection).ok) {
+		_finish(connection.outcome, connection.error);
 		return;
 	}
+	Ref<HTTPClient> client = connection.client;
 
 	AISSEDecoder decoder;
 	AIThinkTagSplitter splitter;
