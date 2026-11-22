@@ -33,6 +33,20 @@ env_ai.CommandNoCache(
     env.Run(ai_knowledge_builders.model_specs_builder),
 )
 
+# llm-retry (thirdparty/llm-retry, MIT) tells a failed attempt by throwing,
+# and the engine is built without exceptions: the one file that calls it gets
+# them back. Nothing is thrown past AIRetry::run().
+env_retry = env_ai.Clone()
+env_retry.Prepend(CPPPATH=["thirdparty/llm-retry"])
+if env.msvc:
+    env_retry.Append(CXXFLAGS=["/EHsc"])
+else:
+    if "-fno-exceptions" in env_retry["CXXFLAGS"]:
+        env_retry["CXXFLAGS"].remove("-fno-exceptions")
+    env_retry.Append(CXXFLAGS=["-fexceptions"])
+env_retry.add_source_files(env.modules_sources, "network/ai_retry.cpp")
+
 env_ai.add_source_files(env.modules_sources, "*.cpp")
 for folder in ("common", "ui", "agent", "execution", "prompt", "network", "providers", "assets", "tools"):
-    env_ai.add_source_files(env.modules_sources, folder + "/*.cpp")
+    sources = [f for f in env_ai.Glob(folder + "/*.cpp") if f.name != "ai_retry.cpp"]
+    env_ai.add_source_files(env.modules_sources, sources)
